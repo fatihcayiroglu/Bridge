@@ -47,3 +47,62 @@ export function summarizeStartupSkips(samples) {
     limitNote: 'only stalls >= Choreographer SKIPPED_FRAME_WARNING_LIMIT (default 30 frames) are reported',
   };
 }
+
+// #209: debug-only MainThreadStallProbe (Looper dispatch timing + main-thread
+// stack sampling). Lines: "event=installed ...", "event=stall ms=N msg=M
+// where=W via=V samples=S", "event=uninstalled ...". Only allowlisted
+// categories are accepted; anything else counts as malformed.
+const PROBE_LINE = /^[VDIWEF]\/BridgeStallProbe\(\s*([0-9]{1,8})\):\s(.*)$/;
+const STALL = /^event=stall ms=([0-9]{1,6}) msg=([a-z-]{1,20}) where=([a-z-]{1,20}) via=([a-z]{1,12}) samples=([0-9]{1,4})$/;
+const WHERE = new Set(['sleep', 'binder', 'gc', 'io', 'font', 'classload', 'inflate', 'webview', 'capacitor',
+  'bridge', 'render', 'layout', 'frame', 'lifecycle', 'other', 'idle', 'none', 'unsampled']);
+const MSG = new Set(['activity-thread', 'frame', 'view-root', 'bridge', 'capacitor', 'webview', 'other', 'unknown']);
+const VIA = new Set(['bridge', 'capacitor', 'webview', 'none', 'unsampled']);
+
+export function parseStallProbe(raw, pid) {
+  const appPid = /^[0-9]{1,8}$/.test(String(pid)) ? String(pid) : null;
+  const result = { available: typeof raw === 'string' && appPid !== null, installed: false,
+    stalls: 0, maxMs: 0, totalMs: 0, byWhere: {}, byMsg: {}, byVia: {}, malformed: 0 };
+  if (!result.available) return result;
+  const bump = (map, key) => { map[key] = (map[key] ?? 0) + 1; };
+  for (const line of raw.split(/\r?\n/).slice(0, 5000)) {
+    if (!line.includes('BridgeStallProbe')) continue;
+    const match = PROBE_LINE.exec(line.trimEnd());
+    if (!match) { result.malformed++; continue; }
+    if (match[1] !== appPid) continue;
+    const message = match[2];
+    if (/^event=installed windowMs=[0-9]{1,7} reportMs=[0-9]{1,6}$/.test(message)) { result.installed = true; continue; }
+    if (/^event=uninstalled stalls=[0-9]{1,6} maxMs=[0-9]{1,6}$/.test(message)) continue;
+    const stall = STALL.exec(message);
+    if (!stall || !MSG.has(stall[2]) || !WHERE.has(stall[3]) || !VIA.has(stall[4])) { result.malformed++; continue; }
+    const ms = Number(stall[1]);
+    result.stalls++;
+    result.totalMs += ms;
+    result.maxMs = Math.max(result.maxMs, ms);
+    bump(result.byWhere, stall[3]); bump(result.byMsg, stall[2]); bump(result.byVia, stall[4]);
+  }
+  return result;
+}
+
+/** The control blocks its main thread with SystemClock.sleep for stallMs. */
+export function stallProbeCalibrated(probe, stallMs) {
+  return Boolean(probe?.available && probe.installed && (probe.byWhere.sleep ?? 0) >= 1
+    && probe.maxMs >= Math.floor(stallMs * 0.9));
+}
+
+/** MEASURED aggregate of the probe over CS01's cold starts. */
+export function summarizeStartupStallProbe(samples) {
+  const rows = (Array.isArray(samples) ? samples : []).map(s => s?.mainThreadStalls ?? null).filter(r => r?.available);
+  const merge = key => rows.reduce((acc, r) => {
+    for (const [k, n] of Object.entries(r[key])) acc[k] = (acc[k] ?? 0) + n;
+    return acc;
+  }, {});
+  return {
+    measured: rows.length,
+    installed: rows.filter(r => r.installed).length,
+    stalls: rows.reduce((n, r) => n + r.stalls, 0),
+    maxMs: rows.reduce((m, r) => Math.max(m, r.maxMs), 0),
+    byWhere: merge('byWhere'), byMsg: merge('byMsg'), byVia: merge('byVia'),
+    malformed: rows.reduce((n, r) => n + r.malformed, 0),
+  };
+}

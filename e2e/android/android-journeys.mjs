@@ -29,7 +29,9 @@ import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-re
 import { pausedPreferenceControlApplies, runPausedPreferenceControl, readPausedPreference } from './paused-preference-control.mjs';
 import { createDebuggerStoragePause } from './debugger-storage-pause.mjs';
 import { collectKernelPressure } from './pressure-evidence.mjs';
-import { parseChoreographerSkips, summarizeStartupSkips } from './frame-skip-evidence.mjs';
+import {
+  parseChoreographerSkips, summarizeStartupSkips, parseStallProbe, stallProbeCalibrated, summarizeStartupStallProbe,
+} from './frame-skip-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -1548,6 +1550,11 @@ async function runUpstreamWebViewControls() {
     await sleep(stallMs + 4_000);
     await Promise.race([injection, sleep(5_000)]);
     markers = await readMarkers().catch(() => markers);
+    // #209: positive control for the debug MainThreadStallProbe. The control
+    // sleeps its main thread for stallMs; the probe must report that dispatch
+    // as `sleep` with at least 90 % of the duration. Counts/categories only.
+    const stallProbe = await androidFailureShell('logcat -d -v brief --pid ' + controlPid +
+      " -s BridgeStallProbe:I '*:S'").then(raw => parseStallProbe(raw, controlPid)).catch(() => null);
     const aliveBeforeHome = (await pid().catch(() => null)) === controlPid;
     const dialogBeforeHome = inspectAnrDialogWindows(
       await androidFailureShell('dumpsys window windows').catch(() => ''), PKG);
@@ -1576,7 +1583,9 @@ async function runUpstreamWebViewControls() {
       anrAfterStallBeganMs: anr ? anr.atMs - stallBeganAtMs : null,
       aliveBeforeHome, dialogBeforeHome, aliveAfterHome,
       killAfterAnrMs: anr?.killAfterMs ?? null, killReasonClass: anr?.killReasonClass ?? null,
-      exitReasonCode: exit.reasonCode, exitSubreasonCode: exit.subreasonCode };
+      exitReasonCode: exit.reasonCode, exitSubreasonCode: exit.subreasonCode,
+      stallProbe: stallProbe && { installed: stallProbe.installed, calibrated: stallProbeCalibrated(stallProbe, stallMs),
+        maxMs: stallProbe.maxMs, byWhere: stallProbe.byWhere } };
   });
   await measureAn00('AN00', 7_000);
   await measureAn00('AN00-L', 20_000);
@@ -1677,6 +1686,12 @@ async function main() {
           "logcat -d -v brief --pid " + appPid + " -s Choreographer:I '*:S'"), appPid);
       } catch { return null; }
     };
+    const startupStalls = async appPid => {
+      try {
+        return parseStallProbe(await androidFailureShell(
+          "logcat -d -v brief --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
+      } catch { return null; }
+    };
     const samples = [];
     // Fixed and small on purpose; stress must not consume the entire emulator
     // CI budget or silently redefine later L01 / FD01 acceptance.
@@ -1701,6 +1716,7 @@ async function main() {
         pidStable: finalPid === initialPid,
         anrCount: newAnrs,
         skippedFrames: await startupSkips(initialPid),
+        mainThreadStalls: await startupStalls(initialPid),
       });
       facts.androidColdStartSamples = samples;
       assert(finalPid === initialPid,
@@ -2549,6 +2565,17 @@ async function main() {
     } finally {
       await sh('am force-stop ' + PKG).catch(() => {});
     }
+  });
+
+  // #209 SF02: what Bridge's main thread did during CS01's cold-start stalls
+  // (debug-only MainThreadStallProbe). The ANR-inducing stall control stays
+  // out of the product flow, so the probe is calibrated in the
+  // upstream-webview-controls suite (AN00 / AN00-L), not in this run.
+  // Measurement only.
+  await measure('SF02', 'what the main thread did during cold-start stalls (debug stall probe; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('debug stall probe requires the native app');
+    return { calibratedInRun: false, calibration: 'upstream-webview-controls AN00/AN00-L',
+      coldStarts: summarizeStartupStallProbe(facts.androidColdStartSamples) };
   });
 
   // EX01 runs AFTER every product verdict and ANR/exit checkpoint. It cannot
