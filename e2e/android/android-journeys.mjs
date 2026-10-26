@@ -2649,6 +2649,9 @@ async function main() {
       let session = null;
       let controlPage = null;
       let pauseControl = null;
+      // Only the EX02-owned target may be treated as gone after our own
+      // confirmed `am force-stop`; Playwright page.isClosed() alone can lag.
+      let ownedTargetStopped = false;
       const controlStart = await readAttachCrashClock();
       facts.androidPausedPreferenceControl = await runPausedPreferenceControl({
         emulatorDebug: facts.device?.qemu === '1' && PKG === 'com.bridge.app.debug',
@@ -2685,6 +2688,7 @@ async function main() {
           return platform.coldLaunch('', { shell: async command => {
             signal.throwIfAborted();
             const raw = await androidFailureShell(command);
+            if (command === `am force-stop ${PKG}`) ownedTargetStopped = true;
             signal.throwIfAborted();
             return raw;
           } });
@@ -2701,11 +2705,14 @@ async function main() {
         cleanup: async context => {
           const { step } = context;
           if (!session) return;
+          const targetGone = ownedTargetStopped || controlPage?.isClosed() === true;
           try {
-            if (pauseControl) await pauseControl.release(context, controlPage?.isClosed() === true);
+            if (pauseControl) await pauseControl.release(context, targetGone);
           } finally {
-            try { await step('detach', () => session.detach()); }
-            catch { if (controlPage && !controlPage.isClosed()) throw new Error('control cleanup unavailable'); }
+            // The verified stopped renderer no longer owns an attached CDP
+            // target. Attempting detach can hang on its now-defunct transport.
+            // A still-live target must detach successfully; never fake cleanup.
+            if (!targetGone) await step('detach', () => session.detach());
           }
         },
       });
