@@ -2350,8 +2350,9 @@ async function main() {
   // ANR02 (#209): for every FATAL ANR the OS recorded for this package during
   // the journeys, the app reads its own ApplicationExitInfo trace and reduces
   // the "main" thread to fixed enums: idle looper vs binder call vs lock wait,
-  // and Bridge / Capacitor / WebView / framework owner. Idle-looper means the
-  // input never reached a blocked app. MEASURED only: ANR01 above stays the
+  // and Bridge / Capacitor / WebView / framework owner, plus separate top
+  // Java-frame and first-owner operations. A sampled frame does not prove
+  // the cause or duration of a stall. MEASURED only: ANR01 above stays the
   // asserting gate, and zero fatal ANRs here never excuses an ANR01 failure.
   // Coverage limits: non-fatal ANRs leave no exit record, and Android keeps
   // only 16 exit records per package (config_app_exit_info_history_list_size),

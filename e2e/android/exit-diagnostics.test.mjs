@@ -1299,6 +1299,47 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
     anr02.indexOf("assert(result.complete, 'ANR02 probe did not report completion"));
 });
 
+test('ANR02 preserves distinct top and first-owner operation categories', () => {
+  const raw = [
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=capacitor nativeHint=none topOperation=class-load ownerOperation=capacitor-plugins',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=capacitor nativeHint=none topOperation=capacitor-build ownerOperation=capacitor-build',
+  ].join('\n');
+  const result = parseAnrTraceProbeMarkers(raw, 5150);
+  assert.deepEqual(result.traces, [
+    { traceAvailable: true, mainState: 'Runnable', top: 'running-code', subsystem: 'capacitor',
+      nativeHint: 'none', topOperation: 'class-load', ownerOperation: 'capacitor-plugins' },
+    { traceAvailable: true, mainState: 'Runnable', top: 'running-code', subsystem: 'capacitor',
+      nativeHint: 'none', topOperation: 'capacitor-build', ownerOperation: 'capacitor-build' },
+  ]);
+});
+
+test('ANR02 rejects unknown, partial or extended operations and foreign PIDs', () => {
+  const prefix = 'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=capacitor nativeHint=none';
+  for (const suffix of [
+    ' topOperation=com.secret.Customer ownerOperation=capacitor-build',
+    ' topOperation=class-load ownerOperation=secret',
+    ' topOperation=class-load',
+    ' ownerOperation=capacitor-build',
+    ' topOperation=class-load ownerOperation=capacitor-build token=private',
+    ' topOperation=class-load ownerOperation=capacitor-build-secret',
+  ]) {
+    assert.deepEqual(parseAnrTraceProbeMarkers(prefix + suffix, 5150).traces, []);
+  }
+  assert.deepEqual(parseAnrTraceProbeMarkers(prefix +
+    ' topOperation=class-load ownerOperation=capacitor-build', 6000).traces, []);
+});
+
+test('ANR02 bounds operation records and keeps unknown operations explicit', () => {
+  const marker = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=other-app nativeHint=none topOperation=other ownerOperation=other';
+  const result = parseAnrTraceProbeMarkers(Array(8).fill(marker).join('\n'), 77);
+  assert.equal(result.traces.length, 5);
+  assert.equal(result.traces[0].topOperation, 'other');
+  assert.equal(result.traces[0].ownerOperation, 'other');
+  assert.equal(result.complete, false);
+  assert.doesNotMatch(JSON.stringify(result), /secret|Customer|5150|6000/);
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker + '\n' + Array(200).fill('irrelevant').join('\n'), 77).traces, []);
+});
+
 test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => {
   const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const anr01 = journeys.indexOf("await check('ANR01'");
