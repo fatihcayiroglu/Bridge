@@ -1,14 +1,14 @@
 // EX02: independent causal control after a retained EX01 storage failure.
 // No expected data-retention outcome is counted as a PASS. App JavaScript is
-// frozen before the browser storage read and Android stop; EX01 stays failed.
+// paused before the browser storage read and Android stop; EX01 stays failed.
 import { boundedLifecycleAction } from './lifecycle-reproduction.mjs';
 
 // Internal callbacks name protocol steps, but only these fixed values may
 // enter the public evidence. Never serialize a protocol error or method text.
 const CONTROL_SUBSTEPS = new Set(['server', 'channel', 'read', 'session', 'storage-domain',
-  'freeze-listener', 'freeze', 'freeze-event', 'attach', 'probe-ready', 'probe']);
+  'debugger-domain', 'pause-request', 'pause-event', 'attach', 'probe-ready', 'probe']);
 
-export function summarizeFrozenPreferenceEntries(entries, key, expected) {
+export function summarizePausedPreferenceEntries(entries, key, expected) {
   const unknown = { available: false };
   if (!Array.isArray(entries) || entries.length > 512 || typeof key !== 'string' ||
       !key.startsWith('bridge:last-navigation:v1:channel:') || key.length > 1024 ||
@@ -27,7 +27,15 @@ export function summarizeFrozenPreferenceEntries(entries, key, expected) {
   return { available: true, preferencePresent: matching !== null, preferenceMatches: matching?.[1] === expected };
 }
 
-export function frozenPreferenceControlApplies(experiment) {
+export async function readPausedPreference(control, readEntries, key, expected) {
+  if (control?.isPaused() !== true) return { available: false };
+  const entries = await readEntries();
+  // Resuming while a browser read is in flight invalidates that baseline.
+  if (control.isPaused() !== true) return { available: false };
+  return summarizePausedPreferenceEntries(entries, key, expected);
+}
+
+export function pausedPreferenceControlApplies(experiment) {
   const first = experiment?.phases?.[0];
   const evidence = first?.failureEvidence;
   return experiment?.status === 'FAIL' && experiment.preparation === 'PASS' &&
@@ -37,11 +45,11 @@ export function frozenPreferenceControlApplies(experiment) {
     evidence.ui.bootNavigation.expectedAtBoot === false;
 }
 
-export async function runFrozenPreferenceControl({ emulatorDebug, select, readBefore,
-  freeze, readFrozen, coldLaunch, readBoot, cleanup, budgetMs = 100_000 }) {
-  const result = { case: 'EX02', status: 'FAIL', stage: 'guard', outcome: 'unverified',
-    substep: null, deadlineExceeded: false, beforeFreeze: null,
-    freezeEventObserved: null, frozen: null, boot: null, cleanup: 'not-needed' };
+export async function runPausedPreferenceControl({ emulatorDebug, select, readBefore,
+  pause, readPaused, coldLaunch, readBoot, cleanup, budgetMs = 100_000 }) {
+  const result = { case: 'EX02', status: 'FAIL', stage: 'guard', outcome: 'unverified', method: 'debugger-pause',
+    substep: null, deadlineExceeded: false, beforePause: null,
+    pauseEventObserved: null, paused: null, boot: null, cleanup: 'not-needed' };
   if (emulatorDebug !== true || !Number.isInteger(budgetMs) || budgetMs < 1 || budgetMs > 100_000) return result;
   let touched = false;
   let actionSignal = null;
@@ -60,17 +68,17 @@ export async function runFrozenPreferenceControl({ emulatorDebug, select, readBe
       };
       touched = true;
       await step('select', () => select(diagnosticContext));
-      result.beforeFreeze = await step('before-read', () => readBefore(diagnosticContext));
-      if (result.beforeFreeze?.available !== true || result.beforeFreeze.preferenceMatches !== true ||
-          result.beforeFreeze.activeChannelMatches !== true) throw new Error('control baseline unavailable');
-      const freezeResult = await step('freeze', () => freeze(diagnosticContext));
-      result.freezeEventObserved = freezeResult?.eventObserved === true;
-      if (!result.freezeEventObserved) throw new Error('page freeze not verified');
-      result.frozen = await step('frozen-read', () => readFrozen(diagnosticContext));
+      result.beforePause = await step('before-read', () => readBefore(diagnosticContext));
+      if (result.beforePause?.available !== true || result.beforePause.preferenceMatches !== true ||
+          result.beforePause.activeChannelMatches !== true) throw new Error('control baseline unavailable');
+      const pauseResult = await step('pause', () => pause(diagnosticContext));
+      result.pauseEventObserved = pauseResult?.method === 'debugger-pause' && pauseResult.eventObserved === true;
+      if (pauseResult?.method !== 'debugger-pause' || !result.pauseEventObserved) throw new Error('debugger pause not verified');
+      result.paused = await step('paused-read', () => readPaused(diagnosticContext));
       // The browser's storage area must still hold the desired value AFTER
-      // freezing. No subsequent app task may write during this stop window.
-      if (result.frozen?.available !== true || result.frozen.preferencePresent !== true ||
-          result.frozen.preferenceMatches !== true) throw new Error('frozen baseline unavailable');
+      // pausing. No subsequent app task may write during this stop window.
+      if (result.paused?.available !== true || result.paused.preferencePresent !== true ||
+          result.paused.preferenceMatches !== true) throw new Error('paused baseline unavailable');
       const launch = await step('cold-launch', () => coldLaunch(diagnosticContext));
       if (launch?.status !== 'ok' || launch.launchState !== 'COLD') throw new Error('not a verified cold launch');
       result.boot = await step('boot-read', () => readBoot(diagnosticContext));
