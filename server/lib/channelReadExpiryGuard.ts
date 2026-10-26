@@ -35,6 +35,7 @@ export async function channelLiveForMessageRead(
 /**
  * The authoritative decision behind channelLiveForMessageRead, plus how much
  * longer the channel stays live by the database clock, from the same read. `remainingMs` is expiresAt - now
+ * minus conservatively measured query/transport time on this process's monotonic clock.
  * for an expiring channel and null for a permanent one. A caller may reuse a
  * positive answer only within that window; the expiry API's minimum lifetime
  * means an expiry can never be moved closer than it, while a tombstone only
@@ -46,6 +47,7 @@ export async function channelLiveWindowForRead(
   const closed = { live: false, remainingMs: 0 };
   if (typeof channelId !== 'string' || typeof serverId !== 'string' ||
       !channelId || !serverId || channelId.length > 256 || serverId.length > 256) return closed;
+  const startedAtMs = performance.now();
   const result = await pool.query(CHANNEL_READ_EXPIRY_SQL, [channelId, serverId]);
   if (!result || !Array.isArray(result.rows) || result.rows.length !== 1) return closed;
   const row = result.rows[0];
@@ -60,7 +62,8 @@ export async function channelLiveWindowForRead(
     if (!decision.accessible) return closed;
     if (decision.state === 'permanent') return { live: true, remainingMs: null };
     const expiresAt = parsePersistedNonNegativeInteger(row.expiresAt, 'channel expiry');
-    return { live: true, remainingMs: expiresAt - nowMs };
+    const remainingMs = expiresAt - nowMs - (performance.now() - startedAtMs);
+    return remainingMs > 0 ? { live: true, remainingMs } : closed;
   } catch {
     return closed;
   }
@@ -146,5 +149,11 @@ export async function liveChannelWindowsForRead(
 export async function liveChannelIdsForRead(
   pool: ChannelReadQuery, pairs: ReadonlyArray<ChannelPair>,
 ): Promise<Set<string>> {
-  return new Set((await liveChannelWindowsForRead(pool, pairs)).keys());
+  const windows = await liveChannelWindowsForRead(pool, pairs);
+  // Query/transport latency, including later chunks, can consume a positive
+  // database lifetime before this Set is returned. Keep the existing policy
+  // and deadlines; do not turn the map's expired keys into fresh permission.
+  const nowMs = performance.now();
+  return new Set([...windows].filter(([, window]) =>
+    window.validUntilMs === null || window.validUntilMs > nowMs).map(([id]) => id));
 }
