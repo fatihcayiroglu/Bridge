@@ -314,6 +314,33 @@ test('#209 EX01 fails closed on missing, duplicated or truncated live sections a
   assert.equal((await observeLifecycleWindow(shell('', cases.noLiveDisplays), pkg, start)).focusScope, 'live-displays-missing');
 });
 
+test('#209 EX01 classifies the persisted last-ANR snapshot by owner and reason category only', async () => {
+  const snapshot = (fault, reason) => [
+    H('lastanr'), '  ANR time: 26 Oct 2026 18:01:02', fault, `  Reason: ${reason}`, '',
+    '  mTopFocusedDisplayId=0', '', 'Last ANR continued', H('displays'), 'Display: mDisplayId=0', '  mCurrentFocus=null',
+  ];
+  const own = await observeLifecycleWindow(shell('', liveDump({ stale: snapshot(
+    `  Application at fault: ActivityRecord{9a1 u0 ${MAIN} t42}`,
+    'Input dispatching timed out (owner@example.com secret Waited 5001ms for FocusEvent(hasFocus=true))') })), pkg, start);
+  assert.equal(own.lastAnrSnapshot, true);
+  assert.equal(own.staleFocusEntries, 0); // null focus is not a window entry
+  assert.equal(own.lastAnrFaultOwner, 'bridge-main');
+  assert.equal(own.lastAnrReasonKind, 'input-dispatch-timeout');
+  assert.equal(own.lastAnrWaitedForFocus, true);
+  assert.equal(own.lastAnrNoFocusedWindow, false);
+  assert.equal(own.nativeWindowFocused, true);
+  assert.doesNotMatch(JSON.stringify(own), /owner@|secret|5001|ActivityRecord|MainActivity|9a1/);
+  const foreign = await observeLifecycleWindow(shell('', liveDump({ stale: snapshot(
+    '  Window at fault: private.example/private.example.Secret',
+    'Input dispatching timed out (Application does not have a focused window)') })), pkg, start);
+  assert.equal(foreign.lastAnrFaultOwner, 'other');
+  assert.equal(foreign.lastAnrWaitedForFocus, false);
+  assert.doesNotMatch(JSON.stringify(foreign), /private\.example|Secret/);
+  const none = await observeLifecycleWindow(shell('', liveDump()), pkg, start);
+  assert.equal(none.lastAnrFaultOwner, null);
+  assert.equal(none.lastAnrReasonKind, null);
+});
+
 test('#209 EX01 counts only live ANR dialogs, not a stale snapshot of one', async () => {
   const stale = await observeLifecycleWindow(shell('', liveDump({ stale: staleAnr({ dialog: true }) })), pkg, start);
   assert.equal(stale.dialogs.anrDialogs, 0);

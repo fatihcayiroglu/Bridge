@@ -53,7 +53,7 @@ const FOCUS_RE = /\bmCurrentFocus=Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\
 export function scopeWindowDump(dump) {
   const text = String(dump ?? '');
   const heads = [...text.matchAll(WM_HEADER)].slice(0, 64);
-  if (!heads.length) return { sectioned: false, displays: null, windows: null, lastAnrSnapshot: null, staleFocusEntries: 0 };
+  if (!heads.length) return { sectioned: false, displays: null, windows: null, lastAnrSnapshot: null, staleFocusEntries: 0, lastAnrFault: null, lastAnrReason: null };
   const lastAnr = heads.findIndex(h => h[1] === 'lastanr');
   const liveFrom = lastAnr < 0 ? 0 : heads.findIndex((h, i) => i > lastAnr && h[1] === 'policy');
   const stale = lastAnr < 0 ? '' : text.slice(heads[lastAnr].index, liveFrom < 0 ? text.length : heads[liveFrom].index);
@@ -61,6 +61,12 @@ export function scopeWindowDump(dump) {
     sectioned: true, displays: null, windows: null,
     lastAnrSnapshot: lastAnr < 0 ? null : !stale.includes('<no ANR has occurred since boot>'),
     staleFocusEntries: Math.min([...stale.matchAll(FOCUS_RE)].length, 99),
+    // saveANRStateLocked: "Application at fault: <ActivityRecord{.. u0 pkg/cls ..}>",
+    // "Window at fault: <title>", "Reason: <text>". Private strings: callers
+    // must classify them, never return them.
+    lastAnrFault: (/^ {2}Application at fault: ActivityRecord\{[0-9a-f]{1,16} u\d+ ([^\s}]{1,200})/m.exec(stale)
+      ?? /^ {2}Window at fault: ([^\r\n]{1,200})$/m.exec(stale))?.[1] ?? null,
+    lastAnrReason: /^ {2}Reason: ([^\r\n]{1,500})$/m.exec(stale)?.[1] ?? null,
   };
   if (liveFrom < 0) return scope;
   const live = heads.slice(liveFrom);
@@ -136,12 +142,14 @@ export async function observeLifecycleWindow(shell, pkg, start) {
       : unscopedSingle ? focus[1] === expectedMain : false;
     const defaultFocusIndex = focusDisplayIds.findIndex(id => id === 0);
     const ownMainIndex = focusEntries.findIndex(entry => entry[1] === expectedMain);
-    const focusOwner = !focus ? 'unknown'
-      : focus[1] === expectedMain ? 'bridge-main'
-      : focus[1].startsWith(pkg + '/') ? 'bridge-other'
-      : focus[1].startsWith('com.android.systemui/') ? 'system-ui'
-      : /launcher/i.test(focus[1]) ? 'launcher'
+    const ownerOf = component => !component ? 'unknown'
+      : component === expectedMain ? 'bridge-main'
+      : component === pkg || component.startsWith(pkg + '/') || component.startsWith(pkg + ':') ? 'bridge-other'
+      : component.startsWith('com.android.systemui') ? 'system-ui'
+      : /launcher/i.test(component) ? 'launcher'
       : 'other';
+    const focusOwner = !focus ? 'unknown' : ownerOf(focus[1]);
+    const reason = scope.lastAnrReason;
     return { available: !truncated && !timeline.truncated && timeline.unparsedLines === 0,
       coverage: truncated || timeline.truncated || timeline.unparsedLines ? 'partial' : 'observed-only',
       anrCount: timeline.anrs.length, events: timeline.events.length,
@@ -160,6 +168,13 @@ export async function observeLifecycleWindow(shell, pkg, start) {
       focusScope: scope.sectioned ? (scope.displays === null ? 'live-displays-missing' : 'live-displays') : 'unsectioned',
       lastAnrSnapshot: scope.lastAnrSnapshot,
       staleFocusEntries: scope.staleFocusEntries,
+      // #209: whose ANR the persisted snapshot is, by category only.
+      lastAnrFaultOwner: scope.lastAnrSnapshot ? ownerOf(scope.lastAnrFault) : null,
+      lastAnrReasonKind: !scope.lastAnrSnapshot ? null : !reason ? 'unknown'
+        : /Input dispatching timed out/i.test(reason) ? 'input-dispatch-timeout'
+        : /broadcast/i.test(reason) ? 'broadcast' : /service/i.test(reason) ? 'service' : 'other',
+      lastAnrWaitedForFocus: scope.lastAnrSnapshot && reason ? /FocusEvent/.test(reason) : null,
+      lastAnrNoFocusedWindow: scope.lastAnrSnapshot && reason ? /no focused window/i.test(reason) : null,
       topFocusedDisplayValues: Math.min(topDisplayMatches.length, 9),
       dialogs: inspectAnrDialogWindows(scope.sectioned
         ? [scope.windows ?? '', scope.displays ?? ''].join('\n') : boundedWindows, pkg) };
