@@ -2685,13 +2685,16 @@ async function main() {
         },
         coldLaunch: async ({ signal }) => {
           if (!pauseControl?.isPaused()) throw new Error('control is no longer paused');
-          return platform.coldLaunch('', { shell: async command => {
+          const launch = await platform.coldLaunch('', { shell: async command => {
             signal.throwIfAborted();
             const raw = await androidFailureShell(command);
-            if (command === `am force-stop ${PKG}`) ownedTargetStopped = true;
             signal.throwIfAborted();
             return raw;
           } });
+          // A verified new COLD launch means this control's prior renderer
+          // was stopped. A shell response alone has no usable exit status.
+          if (launch?.status === 'ok' && launch.launchState === 'COLD') ownedTargetStopped = true;
+          return launch;
         },
         readBoot: async ({ step }) => {
           await step('attach', () => attachPage({ crashWindowStart: controlStart }));
