@@ -21,10 +21,14 @@
     const valid = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
     if (!complete || !valid(user) || !valid(server) || !valid(expected)) return { available: false };
     const key = PREFIX + 'channel:' + user + ':' + server;
+    const serverKey = PREFIX + 'server:' + user;
     try {
       const now = window.localStorage.getItem(key);
       const before = boot.get(key);
       const keyAtBoot = boot.has(key);
+      const serverNow = window.localStorage.getItem(serverKey);
+      const serverBefore = boot.get(serverKey);
+      const serverKeyAtBoot = boot.has(serverKey);
       return {
         available: true,
         keyAtBoot,
@@ -32,6 +36,12 @@
         keyNow: now !== null,
         expectedNow: now === expected,
         changedSinceBoot: keyAtBoot ? before !== now : now !== null,
+        // Independent cross-key evidence: is the server preference also stale?
+        // Only booleans leave the page; never export either stored value.
+        serverKeyAtBoot,
+        serverExpectedAtBoot: serverKeyAtBoot && serverBefore === server,
+        serverExpectedNow: serverNow === server,
+        serverChangedSinceBoot: serverKeyAtBoot ? serverBefore !== serverNow : serverNow !== null,
         navigationKeysAtBoot: Math.min(boot.size, LIMIT),
       };
     } catch { return { available: false }; }
