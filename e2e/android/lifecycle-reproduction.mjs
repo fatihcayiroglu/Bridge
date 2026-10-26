@@ -48,12 +48,26 @@ export async function observeLifecycleWindow(shell, pkg, start) {
     const timeline = parseAnrEventTimeline(raw.slice(0, 262_144), pkg,
       start.epochMs, 64, end.epochMs - start.epochMs);
     const boundedWindows = windows.slice(0, 1_000_000);
-    const focus = /\bmCurrentFocus=Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\}/.exec(boundedWindows);
+    // Bounded, privacy-safe focus ownership evidence. Keep the original
+    // strict FIRST-focus equality gate; secondary displays do not turn FAIL
+    // into PASS. Never expose a raw component/package/window string.
+    const focusEntries = [...boundedWindows.matchAll(/\bmCurrentFocus=Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\}/g)].slice(0, 9);
+    const focus = focusEntries[0] ?? null;
+    const expectedMain = pkg + '/com.bridge.app.MainActivity';
+    const focusOwner = !focus ? 'unknown'
+      : focus[1] === expectedMain ? 'bridge-main'
+      : focus[1].startsWith(pkg + '/') ? 'bridge-other'
+      : focus[1].startsWith('com.android.systemui/') ? 'system-ui'
+      : /launcher/i.test(focus[1]) ? 'launcher'
+      : 'other';
     return { available: !truncated && !timeline.truncated && timeline.unparsedLines === 0,
       coverage: truncated || timeline.truncated || timeline.unparsedLines ? 'partial' : 'observed-only',
       anrCount: timeline.anrs.length, events: timeline.events.length,
       truncated: truncated || timeline.truncated === true, unparsedLines: timeline.unparsedLines,
-      nativeWindowFocused: focus ? focus[1] === pkg + '/com.bridge.app.MainActivity' : null,
+      nativeWindowFocused: focus ? focus[1] === expectedMain : null,
+      focusOwner, focusEntries: Math.min(focusEntries.length, 8),
+      focusEntriesOverflow: focusEntries.length > 8,
+      ownMainInSecondaryEntry: focusEntries.slice(1).some(entry => entry[1] === expectedMain),
       dialogs: inspectAnrDialogWindows(boundedWindows, pkg) };
   } catch { return none; }
 }
