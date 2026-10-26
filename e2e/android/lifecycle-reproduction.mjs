@@ -56,7 +56,8 @@ export async function observeLifecycleWindow(shell, pkg, start) {
     const expectedMain = pkg + '/com.bridge.app.MainActivity';
     // AOSP dumps one mCurrentFocus per DisplayContent. Record which display
     // emitted each focus and the explicitly reported top-focused display.
-    // This is diagnostics only: the independent strict gate below is unchanged.
+    // Select ONLY the explicitly top-focused display when multiple windows exist.
+    // An absent/ambiguous mapping cannot turn any secondary app window into PASS.
     const displayHeaders = [...boundedWindows.matchAll(/^\s*Display: mDisplayId=(0|[1-9]\d{0,4})\b/gm)].slice(0, 24);
     const focusDisplayIds = focusEntries.map(entry => {
       for (let i = displayHeaders.length - 1; i >= 0; i--) {
@@ -68,6 +69,21 @@ export async function observeLifecycleWindow(shell, pkg, start) {
     const topFocusedDisplayId = topDisplayMatch ? Number(topDisplayMatch[1]) : null;
     const topFocusIndex = topFocusedDisplayId === null ? -1
       : focusDisplayIds.findIndex(id => id === topFocusedDisplayId);
+    const focusDisplayMappingComplete = topFocusedDisplayId !== null &&
+      focusEntries.length > 0 && focusEntries.length <= 8 && focusDisplayIds.every(id => id !== null);
+    const topFocusCount = focusDisplayMappingComplete
+      ? focusDisplayIds.filter(id => id === topFocusedDisplayId).length : 0;
+    const resolvedTopFocusIndex = topFocusCount === 1 ? topFocusIndex : -1;
+    // Synthetic/older unscoped single-window output retains its original gate.
+    // Real scoped dumps with missing top attribution fail closed, as do
+    // duplicates, overflow and unscoped multi-display lists.
+    const unscopedSingle = focusEntries.length === 1 &&
+      topFocusedDisplayId === null && focusDisplayIds[0] === null;
+    const focusDecisionSource = !focus ? 'unknown' : resolvedTopFocusIndex >= 0
+      ? 'top-display' : unscopedSingle ? 'unscoped-single' : 'unresolved';
+    const nativeWindowFocused = !focus ? null : resolvedTopFocusIndex >= 0
+      ? focusEntries[resolvedTopFocusIndex][1] === expectedMain
+      : unscopedSingle ? focus[1] === expectedMain : false;
     const defaultFocusIndex = focusDisplayIds.findIndex(id => id === 0);
     const ownMainIndex = focusEntries.findIndex(entry => entry[1] === expectedMain);
     const focusOwner = !focus ? 'unknown'
@@ -80,15 +96,14 @@ export async function observeLifecycleWindow(shell, pkg, start) {
       coverage: truncated || timeline.truncated || timeline.unparsedLines ? 'partial' : 'observed-only',
       anrCount: timeline.anrs.length, events: timeline.events.length,
       truncated: truncated || timeline.truncated === true, unparsedLines: timeline.unparsedLines,
-      nativeWindowFocused: focus ? focus[1] === expectedMain : null,
+      nativeWindowFocused, focusDecisionSource,
       focusOwner, focusEntries: Math.min(focusEntries.length, 8),
       focusEntriesOverflow: focusEntries.length > 8,
       ownMainInSecondaryEntry: focusEntries.slice(1).some(entry => entry[1] === expectedMain),
       topFocusedDisplayId, firstFocusDisplayId: focusDisplayIds[0] ?? null,
       ownMainFocusDisplayId: ownMainIndex < 0 ? null : focusDisplayIds[ownMainIndex],
-      focusDisplayMappingComplete: topFocusedDisplayId !== null &&
-        focusEntries.length > 0 && focusEntries.length <= 8 && focusDisplayIds.every(id => id !== null),
-      topFocusedWindowIsMain: topFocusIndex < 0 ? null : focusEntries[topFocusIndex][1] === expectedMain,
+      focusDisplayMappingComplete,
+      topFocusedWindowIsMain: resolvedTopFocusIndex < 0 ? null : focusEntries[resolvedTopFocusIndex][1] === expectedMain,
       defaultDisplayWindowIsMain: defaultFocusIndex < 0 ? null : focusEntries[defaultFocusIndex][1] === expectedMain,
       dialogs: inspectAnrDialogWindows(boundedWindows, pkg) };
   } catch { return none; }
