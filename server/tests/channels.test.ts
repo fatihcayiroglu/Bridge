@@ -15,6 +15,7 @@ const db      = require('../db/loader');
 const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import channelsRouter from '../routes/servers/channels';
+import { stepUpFor } from './helpers/stepUp';
 
 function buildApp() {
   const app = express();
@@ -159,7 +160,8 @@ describe('Channels Routes', () => {
     it('owner can delete channel', async () => {
       const res = await request(app)
         .delete(`/api/servers/${serverId}/channels/${channelId}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set(stepUpFor(ownerToken, 'destructive-admin'));
       expect(res.status).toBe(200);
     });
 

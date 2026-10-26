@@ -431,7 +431,10 @@ export async function checkSuspiciousLogin(
   }
   if (!isNewDevice) return;
 
-  logger.info({ username: user.username, ip, event: 'captcha.suspicious_login' }, '[CAPTCHA] Şüpheli giriş');
+  // A routine new-device login is not an incident log. Keep its bounded,
+  // TTL-backed fingerprint only in the security store, and disclose IP/UA
+  // only to this account's direct notification email — never to INFO logs.
+  // Exceptional alert failures remain observable through a separate WARN.
 
   if (user.email) {
     try {

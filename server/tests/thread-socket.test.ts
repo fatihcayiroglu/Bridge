@@ -13,10 +13,12 @@ process.env.NODE_ENV = 'test';
 const mockFindThread = jest.fn();
 const mockFindMember = jest.fn();
 const mockResolvePermissions = jest.fn();
+const mockFindChannel = jest.fn();
 
 jest.mock('../db/repositories', () => ({
   Threads: { findById: (...args: unknown[]) => mockFindThread(...args) },
   Members: { findOne: (...args: unknown[]) => mockFindMember(...args) },
+  Channels: { findById: (...args: unknown[]) => mockFindChannel(...args) },
 }));
 
 jest.mock('../lib/permissions', () => ({
@@ -88,9 +90,11 @@ beforeEach(() => {
   mockFindThread.mockReset();
   mockFindMember.mockReset();
   mockResolvePermissions.mockReset();
+  mockFindChannel.mockReset();
   mockFindThread.mockImplementation(async (threadId) => ({ _id: threadId, serverId: 'srv-1', channelId: 'ch-1' }));
   mockFindMember.mockResolvedValue({ userId: 'member', serverId: 'srv-1' });
   mockResolvePermissions.mockResolvedValue(1 | 2);
+  mockFindChannel.mockImplementation(async (channelId: string) => ({ _id: channelId, serverId: 'srv-1' }));
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -128,6 +132,56 @@ describe('thread:message:new', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('thread:join', () => {
+  it.each([
+    ['missing', null],
+    ['expired', { _id: 'ch-1', serverId: 'srv-1', expiresAt: 1, expiryVersion: 1 }],
+    ['wrong tenant', { _id: 'ch-1', serverId: 'other-server' }],
+  ])('denies %s parent without changing the selected room or acknowledging', async (_label, channel) => {
+    const socket = makeSocket('s-tjoin-unavailable');
+    socket.join('thread:previous');
+    registerThreadSocketEvents(socket, makeIo(), makeUser());
+    mockFindChannel.mockResolvedValue(channel);
+
+    await socket._trigger('thread:join', 'thread-denied');
+
+    expect(socket._rooms.has('thread:previous')).toBe(true);
+    expect(socket._rooms.has('thread:thread-denied')).toBe(false);
+    expect(socket._emitted).toEqual([]);
+  });
+
+  it('denies an unavailable parent lookup without changing rooms or acknowledging', async () => {
+    const socket = makeSocket('s-tjoin-unavailable-db');
+    socket.join('thread:previous');
+    registerThreadSocketEvents(socket, makeIo(), makeUser());
+    mockFindChannel.mockRejectedValue(new Error('database unavailable'));
+
+    await socket._trigger('thread:join', 'thread-denied');
+
+    expect(socket._rooms.has('thread:previous')).toBe(true);
+    expect(socket._rooms.has('thread:thread-denied')).toBe(false);
+    expect(socket._emitted).toEqual([]);
+  });
+
+  it('leaving while the parent availability read is pending cancels the join', async () => {
+    const socket = makeSocket('s-tjoin-availability-race');
+    registerThreadSocketEvents(socket, makeIo(), makeUser());
+    const parentRead = deferred<{ _id: string; serverId: string }>();
+    const reached = deferred<void>();
+    mockFindChannel.mockImplementation(() => {
+      reached.resolve();
+      return parentRead.promise;
+    });
+
+    const pending = socket._trigger('thread:join', 'thread-cancelled');
+    await reached.promise;
+    await socket._trigger('thread:leave', 'thread-cancelled');
+    parentRead.resolve({ _id: 'ch-1', serverId: 'srv-1' });
+    await pending;
+
+    expect(socket._rooms.has('thread:thread-cancelled')).toBe(false);
+    expect(socket._emitted).toEqual([]);
+  });
+
   it('socket thread odasına katılır', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tjoin-1');

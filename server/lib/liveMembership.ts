@@ -4,6 +4,7 @@ import { PERMS, canViewChannel, hasPermission, resolvePermissions } from './perm
 import { isMemberTimedOut } from './memberTimeout';
 import { newRequestId, runWithRequestContext } from './requestContext';
 import logger from './logger';
+import { logRoutineMediaInfo } from './routineMediaLog';
 
 // `watch` was ADDED in Final21 Phase 16. Phase 15 introduced `watch:<channelId>`
 // rooms for unread activity and did NOT add them here: a member who was kicked
@@ -265,6 +266,7 @@ export async function evictSocketsWithoutChannelAccess(
   io: SocketIOServer | null | undefined,
   serverId: string,
   channelId?: string | null,
+  opts: { channelGone?: boolean } = {},
 ): Promise<number> {
   if (!io || !serverId) return 0;
 
@@ -313,7 +315,9 @@ export async function evictSocketsWithoutChannelAccess(
     // One request scope per socket so repeated permission resolution is memoized.
     await runWithRequestContext({ requestId: newRequestId(), userId, socketId: socket.id, memo: new Map() }, async () => {
       for (const [cid, rooms] of roomsByChannel) {
-        if (await canViewChannel(userId, serverId, cid)) {
+        // P7 D2: an expired channel's row can outlive the claim while its graph
+        // drains, so permissions still resolve; `channelGone` evicts everyone.
+        if (!opts.channelGone && await canViewChannel(userId, serverId, cid)) {
           if (!rooms.includes(`voice:${cid}`)) continue;
           const access = await liveVoiceAccess(userId, serverId, cid);
           const key = `${userId}:${cid}`;
@@ -329,13 +333,11 @@ export async function evictSocketsWithoutChannelAccess(
               voiceSocket.currentVoiceChannel = undefined;
               voiceSocket.currentVoiceServer = undefined;
             }
-            logger.info({ userId, serverId, channelId: cid, event: 'socket.voice_access_evicted' },
-              'Voice connect permission revoked; live voice session evicted.');
+            logRoutineMediaInfo({ event: 'socket.voice_access_evicted' });
           } else if (access === 'listen' && !publishRevoked.has(key)) {
             publishRevoked.add(key);
             await revokeVoicePublishingEverywhere(io, userId, cid);
-            logger.info({ userId, serverId, channelId: cid, event: 'socket.voice_publish_revoked' },
-              'Voice speak permission revoked; live producers closed.');
+            logRoutineMediaInfo({ event: 'socket.voice_publish_revoked' });
           }
           continue;
         }
@@ -356,10 +358,7 @@ export async function evictSocketsWithoutChannelAccess(
           mutable.currentVoiceServer = undefined;
         }
         socket.emit('channel:access-revoked', { serverId, channelId: cid });
-        logger.info(
-          { userId, serverId, channelId: cid, rooms: rooms.length, event: 'socket.channel_access_evicted' },
-          'Channel access revoked; live rooms evicted.',
-        );
+        logRoutineMediaInfo({ rooms: rooms.length, event: 'socket.channel_access_evicted' });
       }
     });
   }
@@ -371,9 +370,10 @@ export async function evictSocketsWithoutChannelAccessBestEffort(
   io: SocketIOServer | null | undefined,
   serverId: string,
   channelId?: string | null,
+  opts: { channelGone?: boolean } = {},
 ): Promise<void> {
   try {
-    await evictSocketsWithoutChannelAccess(io, serverId, channelId);
+    await evictSocketsWithoutChannelAccess(io, serverId, channelId, opts);
   } catch (err) {
     logger.error(
       { err, serverId, channelId, event: 'socket.channel_access_evict.failed' },

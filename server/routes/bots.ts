@@ -17,6 +17,7 @@ import { replyToInvocation } from '../lib/botInteractionReply';
 import { machineContentRefused } from '../lib/messageContentPolicy';
 import type { HandlerServer } from '../socket/handler-contracts';
 import { broadcastPersistedMessage, publishPersistedMessage } from '../lib/channelActivity';
+import { channelAvailabilityErrors } from '../lib/channelLiveReadSet';
 function generateBotToken(_serverId: string, _botId: string): string {
   // The database stores only SHA-256(token), so a structured/HMAC token buys
   // nothing and historically introduced a dangerous known-secret fallback.
@@ -69,7 +70,9 @@ router.post('/interactions/:messageId/reply', botAuthMiddleware, limits.bots(), 
   const result = await replyToInvocation(bot, String(req.params.messageId ?? ''), body.content, Date.now(), io);
   if (!result.ok) return void res.status(result.status).json({ error: result.error });
   // replyToInvocation already invalidated the history cache.
-  broadcastPersistedMessage(io, result.message);
+  if (!await broadcastPersistedMessage(io, result.message)) {
+    return void res.status(404).json({ error: 'Channel not found' });
+  }
   res.json({ ok: true, message: result.message });
 });
 
@@ -498,6 +501,8 @@ router.post('/:webhookId', (req, _res, next) => {
   if (/\/webhooks$/.test(req.baseUrl)) next();
   else next('router');
 }, limits.bots(), receiveWebhook);
+
+router.use(channelAvailabilityErrors);
 
 export default router;
 

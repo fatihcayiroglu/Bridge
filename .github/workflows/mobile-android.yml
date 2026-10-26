@@ -67,12 +67,16 @@ jobs:
       - name: Mobile native bridge tests (no packaged-shell skips)
         run: npx jest --config jest.mobile.config.js --runInBand
       - name: Android failure exit parser unit contracts (#209)
-        run: node --test e2e/android/exit-diagnostics.test.mjs
+        run: node --test e2e/android/*.test.mjs
       - name: Packaged web root (www/) for the emulator server address
         env:
           # The emulator reaches the host server through `adb reverse tcp:3000 tcp:3000`.
           BRIDGE_API_URL: http://localhost:3000
         run: node mobile/scripts/setup.js
+      - name: Install EX01 pre-boot navigation probe (emulator test APK only)
+        env:
+          BRIDGE_NAV_PROBE_TEST_APK: '1'
+        run: node e2e/android/install-navigation-storage-probe.mjs
       - name: Generate the Android project and apply the curated native layer
         run: |
           npx cap add android

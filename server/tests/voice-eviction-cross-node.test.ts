@@ -22,7 +22,9 @@ jest.mock('../db/repositories', () => {
   const actual = jest.requireActual('../db/repositories');
   return {
     ...actual,
-    Channels: { ...actual.Channels, findIdsByServer: (...a: unknown[]) => mockFindIdsByServer(...a) },
+    // A spread copies no prototype methods: keep the real lookup the D2 liveness check uses.
+    Channels: { ...actual.Channels, findById: (id: string) => actual.Channels.findById(id),
+      findIdsByServer: (...a: unknown[]) => mockFindIdsByServer(...a) },
     Threads: { ...actual.Threads, findById: jest.fn(async () => null) },
   };
 });
@@ -32,6 +34,7 @@ import {
   evictUserFromServerRooms,
   registerLocalVoiceEvictor,
 } from '../lib/liveMembership';
+import logger from '../lib/logger';
 import { evictLocalVoiceSessions, revokeLocalVoicePublishing } from '../socket/voiceEviction';
 import { registerVoiceHandlers, __setVoiceRoomForTest, __getVoiceRoomForTest } from '../socket/handlers/voice';
 import { sfuPeers, sfuRooms, _resetRoomsForTest } from '../socket/handlers/mediasoup/rooms';
@@ -77,6 +80,8 @@ function fakeIo(localSockets: Array<ReturnType<typeof localSocket>>, remoteSocke
 
 const user = (id: string) => ({ _id: id, displayName: id, avatarColor: '#000' } as never);
 
+beforeEach(() => { jest.mocked(logger.info).mockClear(); });
+
 afterEach(() => {
   registerLocalVoiceEvictor(null);
   delete process.env.REDIS_URL;
@@ -92,7 +97,12 @@ describe('P2P voice handlers require real voice-room membership', () => {
       { socketId: 'sock-kicked', userId: 'u-kicked', displayName: 'k', avatarColor: '#000' },
       { socketId: 'sock-peer', userId: 'u-peer', displayName: 'p', avatarColor: '#000' },
     ]);
+    // As every join path does (voice:join, sfu:join): the room, its server and
+    // a live channel record (P7 D2 relays re-check channel liveness).
+    await (require('../db/loader').default as { channels: { insert(r: unknown): Promise<unknown> } })
+      .channels.insert({ _id: 'vc1', serverId: 's1', name: 'vc1', type: 'voice', createdAt: 1 });
     s.currentVoiceChannel = 'vc1';
+    (s as { currentVoiceServer?: string }).currentVoiceServer = 's1';
     s.join('voice:vc1');
 
     // Positive control: while the socket holds the room, state reaches peers.
@@ -108,6 +118,24 @@ describe('P2P voice handlers require real voice-room membership', () => {
     await s.trigger('webrtc:offer', { targetSocketId: 'sock-peer', offer: { type: 'offer', sdp: 'v=0' }, channelId: 'vc1' });
     expect(s.toRoom).toEqual([]);
     expect(io.broadcasts.filter(b => b.event === 'webrtc:offer')).toEqual([]);
+  });
+});
+
+describe('group-DM voice rooms have no channel lifecycle', () => {
+  it('a group call (SFU room with no server) keeps relaying state and activity; the channel expiry check does not evict it', async () => {
+    const s = localSocket('sock-group', 'u-group');
+    const io = fakeIo([s]);
+    registerVoiceHandlers(s as never, io as never, user('u-group'));
+    // As sfu:group-join leaves it: in `voice:<groupId>`, no server id.
+    s.currentVoiceChannel = 'gdm-1';
+    s.currentVoiceServer = null;
+    s.join('voice:gdm-1');
+
+    await s.trigger('voice:state-update', { channelId: 'gdm-1', muted: true, deafened: false, screensharing: false, video: false });
+    await s.trigger('voice:activity', { channelId: 'gdm-1', speaking: true });
+    expect(s.toRoom.map(e => e.event)).toEqual(['voice:peer-state', 'voice:activity']);
+    expect(s.rooms.has('voice:gdm-1')).toBe(true);
+    expect(s.currentVoiceChannel).toBe('gdm-1');
   });
 });
 
@@ -127,6 +155,7 @@ describe('local voice eviction (the node that holds the socket)', () => {
     expect(s.currentVoiceChannel).toBeNull();
     expect(s.rooms.has('voice:vc1')).toBe(false);
     expect(s.toRoom).toContainEqual(expect.objectContaining({ room: 'voice:vc1', event: 'voice:peer-left' }));
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_evicted', sfu: false }, expect.any(String));
     expect(io.broadcasts).toContainEqual(expect.objectContaining({ event: 'voice:room-update', data: expect.objectContaining({ channelId: 'vc1' }) }));
   });
 
@@ -151,6 +180,7 @@ describe('local voice eviction (the node that holds the socket)', () => {
     expect(closed.sort()).toEqual(['consumer', 'producer', 'recv', 'send']);
     // The evicted client is told, so it ends the call instead of showing it live.
     expect(s.emit).toHaveBeenCalledWith('voice:evicted', { channelId: 'vc1' });
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_evicted', sfu: true }, expect.any(String));
     expect(io.broadcasts).toContainEqual(expect.objectContaining({ event: 'sfu:peer-left' }));
     expect(s.currentVoiceChannel).toBeNull();
   });
@@ -163,6 +193,7 @@ describe('local voice eviction (the node that holds the socket)', () => {
     await evictLocalVoiceSessions(io as never, 'u1', ['vc1']);
     expect(s.currentVoiceChannel).toBe('vc-other');
     expect((await __getVoiceRoomForTest('vc-other'))).toHaveLength(1);
+    expect(logger.info).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'socket.voice_evicted' }), expect.any(String));
   });
 });
 
@@ -233,6 +264,7 @@ describe('speak revocation on the node that owns the room (P2 media lab)', () =>
     expect(other.producers.size).toBe(1);
     expect(sfuPeers.has('sock-sfu')).toBe(true);           // still listening
     expect(mine.recvTransport.close).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_publish_revoked', producers: 2 }, expect.any(String));
     expect(s.currentVoiceChannel).toBe('vc1');
   });
 
@@ -249,5 +281,6 @@ describe('speak revocation on the node that owns the room (P2 media lab)', () =>
 
     expect((await __getVoiceRoomForTest('vc1')).map(p => p.socketId)).toEqual(['sock-b']);
     expect(s.currentVoiceChannel).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_evicted' }, expect.any(String));
   });
 });

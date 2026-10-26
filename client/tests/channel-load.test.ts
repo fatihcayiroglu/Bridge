@@ -48,6 +48,7 @@ vi.mock('../js/core/logger.js', () => ({
 import ChannelListManager from '../js/core/ChannelListManager.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { rememberTextChannel } from '../js/core/navigation-selection.ts';
+import { CHANNELS_CHANGED_COALESCE_MS, CHANNELS_CHANGED_JITTER_MS } from '../js/core/channel-list/access-revocation.ts';
 
 type Channel = { _id: string; name: string; type?: string; serverId?: string };
 
@@ -928,5 +929,86 @@ describe('ChannelListManager — deep navigation failure and teardown contracts'
     expect(await BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'c1', 'message-direct')).toBe(true);
     expect(jump).toHaveBeenCalledWith('message-direct');
     expect(recordNavigation).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'c1', messageId: 'message-direct' }));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// P7 D2: Android/iOS lifecycle — a suspended WebView or an offline window can
+// miss `channel:expired`; resume and reconnect refetch the authorized list.
+// ════════════════════════════════════════════════════════════════════════════
+describe('P7 D2: refetch the channel list after a background or offline window', () => {
+  const channelCalls = () => requestedPaths().filter(p => p.endsWith('/channels')).length;
+  const setVisibility = (state: 'hidden' | 'visible') => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+  async function loaded(channels: Channel[]) {
+    mockApiFetch.mockImplementation(async (url: string) => (String(url).endsWith('/categories') ? okResponse([]) : okResponse(channels)));
+    await requestLoad('srv-1');
+    await drainPending();
+  }
+
+  it('native app resume (Capacitor appStateChange) refetches and drops a channel that expired meanwhile', async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    await loaded([{ _id: 'live', name: 'live' }, { _id: 'eph', name: 'eph' }]);
+    expect(currentServerChannels.map(c => c._id)).toEqual(['live', 'eph']);
+    const before = channelCalls();
+
+    mockApiFetch.mockImplementation(async (url: string) => (String(url).endsWith('/categories') ? okResponse([]) : okResponse([{ _id: 'live', name: 'live' }])));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: false } }));
+    await drainPending();
+    expect(channelCalls()).toBe(before);          // going to background does nothing
+    now += 60_000;
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await drainPending();
+    expect(channelCalls()).toBe(before + 1);
+    expect(currentServerChannels.map(c => c._id)).toEqual(['live']);
+
+    // The browser lifecycle event of the same resume coalesces with the native one.
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await drainPending();
+    expect(channelCalls()).toBe(before + 1);
+  });
+
+  it('coalesces a socket reconnect burst and refetches within the bounded list-refresh window', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let now = 2_000_000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      await loaded([{ _id: 'live', name: 'live' }]);
+      const before = channelCalls();
+      now += 10_000;
+      document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+      document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+      expect(channelCalls()).toBe(before);
+      await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS + 10);
+      await drainPending();
+      expect(channelCalls()).toBe(before + 1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a briefly hidden tab does not refetch; a long hidden period (WebView suspension) does', async () => {
+    let now = 3_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    await loaded([{ _id: 'live', name: 'live' }]);
+    const before = channelCalls();
+    setVisibility('hidden');
+    now += 5_000;
+    setVisibility('visible');
+    await drainPending();
+    expect(channelCalls()).toBe(before);
+    setVisibility('hidden');
+    now += 120_000;
+    setVisibility('visible');
+    await drainPending();
+    expect(channelCalls()).toBe(before + 1);
+  });
+
+  it('does nothing before any server is open', async () => {
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    await drainPending();
+    expect(mockApiFetch).not.toHaveBeenCalled();
   });
 });

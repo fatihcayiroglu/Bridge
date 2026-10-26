@@ -1,7 +1,13 @@
 import {
-  CHANNEL_READ_EXPIRY_SQL, channelLiveForMessageRead,
+  CHANNEL_READ_EXPIRY_SQL, channelLiveForMessageRead, channelLiveWindowForRead,
   type ChannelReadQuery,
 } from '../lib/channelReadExpiryGuard';
+import { performance } from 'node:perf_hooks';
+
+// These policy fixtures have no query latency. Delay/deadline behavior is
+// covered separately with advancing monotonic time and real PostgreSQL.
+beforeEach(() => jest.spyOn(performance, 'now').mockReturnValue(100));
+afterEach(() => jest.restoreAllMocks());
 
 const NOW = 1_800_000_000_000;
 const base = {
@@ -61,5 +67,44 @@ describe('P7 D2 authoritative channel-message read preflight', () => {
     const unavailable: ChannelReadQuery = { query: async () => { throw new Error('db unavailable'); } };
     await expect(channelLiveForMessageRead(unavailable, 'channel-one', 'tenant-one'))
       .rejects.toThrow('db unavailable');
+  });
+});
+
+describe('P7 D2 live window: how long a positive answer may be reused', () => {
+  it('a permanent channel is live with no expiry window', async () => {
+    expect(await channelLiveWindowForRead(fixture().pool, 'channel-one', 'tenant-one'))
+      .toEqual({ live: true, remainingMs: null });
+  });
+
+  it('with no query latency, an expiring channel reports exactly expiresAt minus the DATABASE clock', async () => {
+    const { pool, calls } = fixture([{ ...base, expiresAt: String(NOW + 1_234), expiryVersion: '1' }]);
+    expect(await channelLiveWindowForRead(pool, 'channel-one', 'tenant-one')).toEqual({ live: true, remainingMs: 1_234 });
+    expect(calls).toEqual([{ sql: CHANNEL_READ_EXPIRY_SQL, params: ['channel-one', 'tenant-one'] }]);
+  });
+
+  it.each([
+    ['at expiry', [{ ...base, expiresAt: String(NOW), expiryVersion: '1' }]],
+    ['past expiry', [{ ...base, expiresAt: String(NOW - 1), expiryVersion: '1' }]],
+    ['tombstoned', [{ ...base, hasTombstone: true }]],
+    ['another tenant', [{ ...base, serverId: 'tenant-two' }]],
+    ['no row', []],
+    ['an unparseable database clock', [{ ...base, nowMs: 'soon' }]],
+    ['an expiry without version evidence', [{ ...base, expiresAt: String(NOW + 1), expiryVersion: '0' }]],
+  ])('%s: closed, with no reuse window', async (_label, rows) => {
+    expect(await channelLiveWindowForRead(fixture(rows).pool, 'channel-one', 'tenant-one'))
+      .toEqual({ live: false, remainingMs: 0 });
+  });
+
+  it('rejects malformed identifiers without querying', async () => {
+    const { pool, calls } = fixture();
+    for (const [c, s] of [['', 'tenant-one'], ['channel-one', ''], ['x'.repeat(257), 'tenant-one']]) {
+      expect(await channelLiveWindowForRead(pool, c, s)).toEqual({ live: false, remainingMs: 0 });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('a database failure propagates (callers fail closed), as for the boolean read', async () => {
+    const pool: ChannelReadQuery = { query: async () => { throw new Error('connection reset'); } };
+    await expect(channelLiveWindowForRead(pool, 'channel-one', 'tenant-one')).rejects.toThrow('connection reset');
   });
 });

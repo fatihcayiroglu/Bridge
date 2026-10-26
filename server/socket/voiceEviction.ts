@@ -8,7 +8,7 @@
 // `voice:room-update` so every remaining peer drops the evicted participant.
 
 import type { Server as SocketIOServer } from 'socket.io';
-import logger from '../lib/logger';
+import { logRoutineMediaInfo } from '../lib/routineMediaLog';
 import { leaveVoice } from './handlers/voice';
 import { cleanupPeer, revokeStagePublishers, sfuPeers } from './handlers/mediasoup/rooms';
 
@@ -42,8 +42,7 @@ export async function evictLocalVoiceSessions(
     // Tell the evicted client: without this it only noticed through an ICE
     // failure (if ever) and kept showing a live call (P2 media lab, AZ-03).
     (socket as unknown as { emit?: (event: string, data: unknown) => void }).emit?.('voice:evicted', { channelId });
-    logger.info({ userId, channelId, sfu: Boolean(sfuChannel), event: 'socket.voice_evicted' },
-      'Voice session evicted after access revocation.');
+    logRoutineMediaInfo({ sfu: Boolean(sfuChannel), event: 'socket.voice_evicted' });
   }
 }
 
@@ -66,10 +65,9 @@ export async function revokeLocalVoicePublishing(
     const socket = remote as unknown as VoiceSocket;
     if (sfuPeers.has(socket.id) || socket.currentVoiceChannel !== channelId) continue;
     await leaveVoice(socket, channelId, socket.currentVoiceServer ?? undefined, io);
-    logger.info({ userId, channelId, event: 'socket.voice_evicted' }, 'P2P voice session ended after speak revocation.');
+    logRoutineMediaInfo({ event: 'socket.voice_evicted' });
   }
   if (closed) {
-    logger.info({ userId, channelId, producers: closed, event: 'socket.voice_publish_revoked' },
-      'Voice producers closed after speak revocation.');
+    logRoutineMediaInfo({ producers: closed, event: 'socket.voice_publish_revoked' });
   }
 }

@@ -255,6 +255,7 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
       return socket.disconnect(true);
     }
     if (!user) return socket.disconnect(true);
+    if (!socket.connected) return;
 
     const safeUser = sanitizeUser(user);
     const socketUser = {
@@ -267,6 +268,25 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
       avatarUrl: user.avatarUrl ?? '',
     };
     socketUsers.set(socket.id, socketUser);
+
+    async function cleanupSocket(
+      reason: string,
+      tokenCheckTimer: ReturnType<typeof setInterval> | null = null,
+      tokenExpiryTimer: ReturnType<typeof setTimeout> | null = null,
+    ): Promise<void> {
+      socket.removeAllListeners();
+      try {
+        await handleDisconnect(socket, socketUser, {
+          socketUsers, typingTimers, _socketRateStore,
+          leaveVoice, voiceActivity, tokenCheckTimer, tokenExpiryTimer, io,
+        });
+      } catch (err) {
+        logger.error({ err, userId: socketUser._id, event: 'socket.disconnect_cleanup_failed' }, 'Socket disconnect cleanup failed.');
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        logger.debug({ userId: socketUser._id, reason, remainingSockets: socketUsers.size, event: 'socket.disconnect' }, 'Socket disconnected.');
+      }
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // KISISEL ODA, HAZIR SINYALINDEN ONCE
@@ -300,16 +320,27 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
     try {
       await trackSocket(user._id, socket.id, presenceVisible);
     } catch (err) {
-      socketUsers.delete(socket.id);
       logger.error({ err, userId: user._id, event: 'socket.presence_registration_failed' },
         'Authoritative presence registration failed; disconnecting fail-closed.');
-      return socket.disconnect(true);
+      socket.disconnect(true);
+      await cleanupSocket('bootstrap_presence_failed');
+      return;
+    }
+    // Bootstrap awaits can finish after transport closure, before the normal
+    // disconnect listener exists. Release ownership and stop initialization.
+    if (!socket.connected) {
+      await cleanupSocket('bootstrap_disconnected');
+      return;
     }
     const preferredStatus = normalizePresenceStatus((user as unknown as { presenceStatus?: unknown }).presenceStatus);
     const connectedStatus = presenceVisible ? preferredStatus : 'offline';
     // `presenceStatus` is the durable user preference. `status` is only the
     // effective live state and may be forced offline by privacy/disconnect.
     try { await Users.update(user._id, { status: connectedStatus }); } catch {}
+    if (!socket.connected) {
+      await cleanupSocket('bootstrap_disconnected');
+      return;
+    }
     if (connectedStatus === 'offline') {
       try { await markOffline(user._id); } catch (err) {
         logger.warn({ err, userId: user._id, event: 'socket.presence_manual_offline_failed' },
@@ -317,8 +348,17 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
       }
     }
 
+    if (!socket.connected) {
+      await cleanupSocket('bootstrap_disconnected');
+      return;
+    }
+
     // Sprint 108: membership mantığı handlers/members.ts'e taşındı
     const { memberships, refreshMemberships } = await setupMemberships(socket, user);
+    if (!socket.connected) {
+      await cleanupSocket('bootstrap_disconnected');
+      return;
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // TEK YAYIN, ÇOK ODA (Final21 Faz 16)
@@ -440,20 +480,7 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
     tokenExpiryTimer?.unref?.();
 
     // DISCONNECT
-    socket.on('disconnect', async (reason) => {
-      socket.removeAllListeners();
-      try {
-        await handleDisconnect(socket, socketUser, {
-          socketUsers, typingTimers, _socketRateStore,
-          leaveVoice, voiceActivity, tokenCheckTimer, tokenExpiryTimer, io,
-        });
-      } catch (err) {
-        logger.error({ err, userId: user._id, event: 'socket.disconnect_cleanup_failed' }, 'Socket disconnect cleanup failed.');
-      }
-      if (process.env.NODE_ENV !== 'production') {
-        logger.debug({ userId: user._id, reason, remainingSockets: socketUsers.size, event: 'socket.disconnect' }, 'Socket disconnected.');
-      }
-    });
+    socket.on('disconnect', reason => cleanupSocket(reason, tokenCheckTimer, tokenExpiryTimer));
   });
 
   return { voiceRooms };
