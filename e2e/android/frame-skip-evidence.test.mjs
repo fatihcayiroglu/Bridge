@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseChoreographerSkips, summarizeStartupSkips } from './frame-skip-evidence.mjs';
+import {
+  parseChoreographerSkips, summarizeStartupSkips, parseStallProbeTimeline, attributeStallPhases, summarizeStallPhases,
+} from './frame-skip-evidence.mjs';
 
 const line = (pid, frames) =>
   `I/Choreographer( ${pid}): Skipped ${frames} frames!  The application may be doing too much work on its main thread.`;
@@ -106,4 +108,60 @@ test('#209 CS00 records the same non-asserting stall evidence per control kind',
   assert.match(cs00, /mainThreadStalls: parseStallProbe\(await startupLog\('BridgeStallProbe'\), firstPid\)/);
   assert.match(cs00, /stallsByKind: byKind/);
   assert.doesNotMatch(cs00, /assert\([^)]*(skippedFrames|mainThreadStalls)/);
+});
+
+const epochLine = (sec, ms, pid, message) =>
+  `${sec}.${String(ms).padStart(3, '0')}  ${pid}  ${pid} I BridgeStallProbe: ${message}`;
+const stallMsg = (ms, where) => `event=stall ms=${ms} msg=frame where=${where} via=none samples=3`;
+
+test('#209 stall timeline keeps only this PID, categories and times', () => {
+  const raw = [
+    epochLine(1793052300, 0, 4321, 'event=installed windowMs=90000 reportMs=250'),
+    epochLine(1793052301, 500, 4321, stallMsg(500, 'render')),
+    epochLine(1793052302, 0, 999, stallMsg(900, 'render')),
+    epochLine(1793052303, 0, 4321, 'event=stall ms=300 msg=frame where=SomeClass via=none samples=1'),
+    'BridgeStallProbe garbage',
+  ].join('\n');
+  const timeline = parseStallProbeTimeline(raw, 4321);
+  assert.equal(timeline.available, true);
+  assert.equal(timeline.malformed, 2);
+  assert.deepEqual(timeline.stalls, [{ startEpochMs: 1793052301000, endEpochMs: 1793052301500, ms: 500,
+    msg: 'frame', where: 'render' }]);
+  assert.equal(parseStallProbeTimeline(undefined, 4321).available, false);
+});
+
+test('#209 stalls are attributed to the phase their dispatch began in', () => {
+  const t0 = 1793052300000;
+  const raw = [
+    epochLine(1793052300, 400, 4321, stallMsg(300, 'classload')), // starts t0+100: before displayed
+    epochLine(1793052306, 0, 4321, stallMsg(5000, 'render')), // starts t0+1000: displayed->attached, ends after attached
+    epochLine(1793052309, 0, 4321, stallMsg(400, 'render')), // starts t0+8600: attached->visible
+    epochLine(1793052311, 0, 4321, stallMsg(300, 'binder')), // starts t0+10700: after visible
+  ].join('\n');
+  const marks = { displayed: t0 + 500, attached: t0 + 3000, visible: t0 + 10000 };
+  const result = attributeStallPhases(parseStallProbeTimeline(raw, 4321), marks, 'ms');
+  assert.equal(result.available, true);
+  assert.deepEqual(Object.fromEntries(Object.entries(result.phases).map(([k, v]) => [k, v.stalls])),
+    { 'before-displayed': 1, 'displayed-to-attached': 1, 'attached-to-visible': 1, 'after-visible': 1 });
+  assert.equal(result.phases['displayed-to-attached'].maxMs, 5000);
+  assert.equal(result.straddling, 1);
+  assert.deepEqual(result.phaseMs, { displayedToAttached: 2500, attachedToVisible: 7000 });
+  assert.equal(attributeStallPhases(parseStallProbeTimeline(raw, 4321),
+    { displayed: t0 + 3000, attached: t0 + 500, visible: t0 + 10000 }, 'ms').available, false);
+
+  const summary = summarizeStallPhases([{ stallPhases: result }, { stallPhases: result }, { stallPhases: null }]);
+  assert.equal(summary.measured, 2);
+  assert.deepEqual(summary.precisions, ['ms']);
+  assert.equal(summary.straddling, 2);
+  assert.deepEqual(summary.phases['displayed-to-attached'], { stalls: 2, totalMs: 10000, maxMs: 5000, byWhere: { render: 2 } });
+});
+
+test('#209 CS01 records phase attribution without asserting on it; SF02 reports it', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const cs01 = source.slice(source.indexOf('const startupStallPhases ='), source.indexOf("await measure('SF01'"));
+  assert.match(cs01, /stallPhases: await startupStallPhases\(initialPid, origin, hostMarks\)/);
+  assert.match(cs01, /hostMarks\.attached = Date\.now\(\)/);
+  assert.match(cs01, /hostMarks\.visible = Date\.now\(\)/);
+  assert.doesNotMatch(cs01, /assert\([^)]*(stallPhases|hostMarks)/);
+  assert.match(source, /phases: summarizeStallPhases\(facts\.androidColdStartSamples\)/);
 });

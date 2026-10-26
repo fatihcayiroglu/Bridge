@@ -106,3 +106,75 @@ export function summarizeStartupStallProbe(samples) {
     malformed: rows.reduce((n, r) => n + r.malformed, 0),
   };
 }
+
+// `logcat -v epoch` line: "<sec>.<ms> <pid> <tid> <prio> BridgeStallProbe: <message>".
+const EPOCH_PROBE_LINE = /^\s*([0-9]{9,11})\.([0-9]{3})\s+([0-9]{1,8})\s+[0-9]{1,8}\s+[VDIWEF]\s+BridgeStallProbe\s*:\s(.*)$/;
+const MAX_TIMELINE = 200;
+
+/**
+ * #209 phase attribution: the probe's stall reports with their device log
+ * time (logged when the dispatch ENDS). Categories and numbers only.
+ */
+export function parseStallProbeTimeline(raw, pid) {
+  const appPid = /^[0-9]{1,8}$/.test(String(pid)) ? String(pid) : null;
+  const result = { available: typeof raw === 'string' && appPid !== null, stalls: [], malformed: 0, truncated: false };
+  if (!result.available) return result;
+  for (const line of raw.split(/\r?\n/).slice(0, 5000)) {
+    if (!line.includes('BridgeStallProbe')) continue;
+    const match = EPOCH_PROBE_LINE.exec(line.trimEnd());
+    if (!match) { result.malformed++; continue; }
+    if (match[3] !== appPid || !match[4].startsWith('event=stall ')) continue;
+    const stall = STALL.exec(match[4]);
+    if (!stall || !MSG.has(stall[2]) || !WHERE.has(stall[3])) { result.malformed++; continue; }
+    if (result.stalls.length >= MAX_TIMELINE) { result.truncated = true; break; }
+    const endEpochMs = Number(match[1]) * 1000 + Number(match[2]);
+    const ms = Number(stall[1]);
+    result.stalls.push({ startEpochMs: endEpochMs - ms, endEpochMs, ms, msg: stall[2], where: stall[3] });
+  }
+  return result;
+}
+
+export const STALL_PHASES = ['before-displayed', 'displayed-to-attached', 'attached-to-visible', 'after-visible'];
+
+/**
+ * Assigns each stall to the cold-start phase its dispatch BEGAN in. marks are
+ * device-epoch ms: { displayed (am start -W returned), attached (WebView page
+ * reachable over CDP), visible (auth or app UI visible) }. Marks come from a
+ * host clock mapped onto the device clock, so `precision` is carried through.
+ */
+export function attributeStallPhases(timeline, marks, precision) {
+  const empty = () => ({ stalls: 0, totalMs: 0, maxMs: 0, byWhere: {} });
+  const ordered = ['displayed', 'attached', 'visible'].every(k => Number.isFinite(marks?.[k]))
+    && marks.displayed <= marks.attached && marks.attached <= marks.visible;
+  const result = { available: Boolean(timeline?.available && ordered), precision: precision ?? null,
+    phases: Object.fromEntries(STALL_PHASES.map(p => [p, empty()])), straddling: 0,
+    phaseMs: ordered ? { displayedToAttached: marks.attached - marks.displayed,
+      attachedToVisible: marks.visible - marks.attached } : null };
+  if (!result.available) return result;
+  const bounds = [marks.displayed, marks.attached, marks.visible];
+  const phaseOf = t => STALL_PHASES[bounds.filter(b => t >= b).length];
+  for (const stall of timeline.stalls) {
+    const phase = result.phases[phaseOf(stall.startEpochMs)];
+    phase.stalls++;
+    phase.totalMs += stall.ms;
+    phase.maxMs = Math.max(phase.maxMs, stall.ms);
+    phase.byWhere[stall.where] = (phase.byWhere[stall.where] ?? 0) + 1;
+    if (phaseOf(stall.startEpochMs) !== phaseOf(stall.endEpochMs)) result.straddling++;
+  }
+  return result;
+}
+
+/** MEASURED aggregate of attributeStallPhases over CS01's cold starts. */
+export function summarizeStallPhases(samples) {
+  const rows = (Array.isArray(samples) ? samples : []).map(s => s?.stallPhases ?? null).filter(r => r?.available);
+  const phases = Object.fromEntries(STALL_PHASES.map(name => {
+    const own = rows.map(r => r.phases[name]);
+    const byWhere = {};
+    for (const p of own) for (const [k, n] of Object.entries(p.byWhere)) byWhere[k] = (byWhere[k] ?? 0) + n;
+    return [name, { stalls: own.reduce((n, p) => n + p.stalls, 0), totalMs: own.reduce((n, p) => n + p.totalMs, 0),
+      maxMs: own.reduce((m, p) => Math.max(m, p.maxMs), 0), byWhere }];
+  }));
+  return { measured: rows.length, precisions: [...new Set(rows.map(r => r.precision))],
+    straddling: rows.reduce((n, r) => n + r.straddling, 0), phases,
+    attribution: 'by dispatch start; marks are host instants mapped to the device clock' };
+}
