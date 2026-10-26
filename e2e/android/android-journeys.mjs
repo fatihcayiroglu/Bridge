@@ -24,6 +24,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers } from './exit-diagnostics.mjs';
+import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -454,7 +455,12 @@ async function devToolsHttpProbe(appPid) {
   }
 }
 
-async function webViewAttachEvidence() {
+async function readAttachCrashClock() {
+  if (MODE !== 'android') return null;
+  return readAndroidCrashClock(androidFailureShell);
+}
+
+async function webViewAttachEvidence(crashWindowStart = null) {
   // All outputs below are held only in memory. Do NOT write raw dumpsys,
   // process records, Unix sockets, crash lines or arbitrary Playwright errors
   // to CI logs/artifacts: they can contain private identities and paths.
@@ -463,7 +469,7 @@ async function webViewAttachEvidence() {
     activity: 'dumpsys activity activities',
     processes: 'dumpsys activity processes',
     sockets: 'cat /proc/net/unix',
-    crash: 'logcat -d -b crash -t 100',
+    crash: 'logcat -d -b crash -v epoch -t 200',
   };
   const inputs = {};
   const probeAvailable = {};
@@ -477,17 +483,20 @@ async function webViewAttachEvidence() {
     }
   }));
   const os = summarizeWebViewAttachEvidence(inputs, PKG);
+  const appCrash = await collectAndroidJavaCrashEvidence(androidFailureShell, PKG,
+    crashWindowStart, inputs.crash);
   const devtoolsHttp = await devToolsHttpProbe(inputs.pid);
   return {
     probeAvailable,
     ...os,
+    appCrash,
     devtoolsHttp,
     // A reachable /json/list is NOT proof that Playwright attached to a page.
     // Keep original L03 FAIL; no retries or timeout extension.
   };
 }
 
-async function attachPage({ timeout = 60_000 } = {}) {
+async function attachPage({ timeout = 60_000, crashWindowStart = null } = {}) {
   if (MODE === 'dryrun') return page;
   try {
     const webview = await device.webView({ pkg: PKG }, { timeout });
@@ -496,7 +505,7 @@ async function attachPage({ timeout = 60_000 } = {}) {
     page = p;
     return p;
   } catch (err) {
-    const evidence = await webViewAttachEvidence();
+    const evidence = await webViewAttachEvidence(crashWindowStart);
     // Only fixed categories leave this diagnostic boundary. The original
     // Playwright message can contain device or URL paths and must not leak.
     const category = /Timeout/.test(String(err?.name ?? '')) ? 'timeout' : 'attach-failed';
@@ -2108,11 +2117,15 @@ async function main() {
   });
 
   await check('DL02', 'cold deep link bridge://channel/<id> opens that channel after session restore', async () => {
+    // Same-device clock BEFORE launch: an immediate startup crash must not
+    // be excluded by starting observation only once CDP attachment begins.
+    // A failed clock probe does not change this journey's strict verdict.
+    const crashWindowStart = await readAttachCrashClock();
     await platform.deepLink(`bridge://channel/${otherId}`, { cold: true });
-    await attachPage();
+    await attachPage({ crashWindowStart });
     await until(() => appVisible(), { timeout: 45_000, message: 'app after cold deep link' });
     await until(() => activeChannel().then((c) => c === otherId), { timeout: 30_000, message: 'cold deep-linked channel active' });
-    return {};
+    return { crashClockAvailable: crashWindowStart !== null };
   });
 
   await check('DL03', 'deep link to a channel the user cannot access does not reveal it', async () => {

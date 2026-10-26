@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 
 const SUITE_HEADINGS = {
   product: 'Android product journeys (mandatory Bridge reliability suite)',
@@ -45,10 +46,30 @@ export function formatSuiteSummary(evidence) {
   return lines.join('\n');
 }
 
+/** Separate calibration verdict; stale/missing/foreign evidence never passes. */
+export function formatCrashControlSummary(product, control) {
+  const valid = product?.suite === 'product' && typeof product.commit === 'string' &&
+    /^[a-f0-9]{40}$/.test(product.commit) && control?.commit === product.commit &&
+    control.case === 'CR00' && control.evidenceCategory === 'AUTOMATED / EMULATOR' && control.status === 'PASS';
+  const status = valid ? 'PASS' : 'FAIL';
+  return { status, markdown: '\n## CR00 Java crash diagnostic calibration\n\n**' + status + '**\n\n' +
+    'This separate, post-product calibration is excluded from product journey totals. ' +
+    'Missing, invalid or stale evidence fails this gate. See java-crash-control.json.\n' };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   let evidence = null;
   try {
     evidence = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   } catch { /* reported as a missing run below */ }
   process.stdout.write(formatSuiteSummary(evidence));
+  if (evidence?.suite === 'product') {
+    let control = null;
+    try {
+      control = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'java-crash-control.json'), 'utf8'));
+    } catch { /* explicitly fails the calibration summary below */ }
+    const summary = formatCrashControlSummary(evidence, control);
+    process.stdout.write(summary.markdown);
+    if (summary.status !== 'PASS') process.exitCode = 1;
+  }
 }

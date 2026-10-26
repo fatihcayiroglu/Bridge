@@ -23,6 +23,14 @@ cd e2e
 set +e
 node android/android-journeys.mjs
 status=$?
+# Calibrate diagnostics only AFTER the product process and evidence are done:
+# do not warm startup, alter an ANR window or mix the expected crash into the
+# product exit ledger. Both results remain independently visible and gating.
+if [[ "${ANDROID_JOURNEY_SUITE:-product}" != "upstream-webview-controls" ]]; then
+  node android/java-crash-control.mjs
+  control_status=$?
+  if [[ "$status" -eq 0 && "$control_status" -ne 0 ]]; then status=$control_status; fi
+fi
 set -e
 # Never archive unfiltered device-wide logs: they can contain user data,
 # credentials, intent extras and unrelated app activity. The journey runner
