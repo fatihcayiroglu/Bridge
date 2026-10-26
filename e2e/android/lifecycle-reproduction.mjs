@@ -31,6 +31,48 @@ export async function boundedLifecycleAction(action, budgetMs) {
   } finally { clearTimeout(timer); }
 }
 
+// Android 14 `dumpsys window` (WindowManagerService.doDump, no arguments)
+// prints "WINDOW MANAGER LAST ANR (dumpsys window lastanr)" FIRST, then
+// "... POLICY STATE (dumpsys window policy)", ..., "... DISPLAY CONTENTS
+// (dumpsys window displays)", ..., "... WINDOWS (dumpsys window windows)".
+// After ANY app's ANR, the last-ANR section replays a full snapshot for two
+// hours (saveANRStateLocked, LAST_ANR_LIFETIME_DURATION_MSECS): window list,
+// mTopFocusedDisplayId and, after "Last ANR continued", its own DISPLAY
+// CONTENTS with a stale mCurrentFocus. Whole-dump parsing therefore read
+// stale focus AHEAD of the live one. Live state starts at the first policy
+// header after the last-ANR header; it must hold exactly one displays and one
+// windows section. Anything else is reported, never guessed.
+const WM_HEADER = /^WINDOW MANAGER [A-Z ]{1,60} \(dumpsys window ([a-z]{1,20})\)[ \t]*$/gm;
+const FOCUS_RE = /\bmCurrentFocus=Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\}/g;
+
+/**
+ * Pure. `sectioned=false` for headerless (synthetic/legacy) text: callers
+ * keep their unscoped rules. Otherwise `displays`/`windows` are the LIVE
+ * section bodies, or null when absent or ambiguous. Counts/booleans only.
+ */
+export function scopeWindowDump(dump) {
+  const text = String(dump ?? '');
+  const heads = [...text.matchAll(WM_HEADER)].slice(0, 64);
+  if (!heads.length) return { sectioned: false, displays: null, windows: null, lastAnrSnapshot: null, staleFocusEntries: 0 };
+  const lastAnr = heads.findIndex(h => h[1] === 'lastanr');
+  const liveFrom = lastAnr < 0 ? 0 : heads.findIndex((h, i) => i > lastAnr && h[1] === 'policy');
+  const stale = lastAnr < 0 ? '' : text.slice(heads[lastAnr].index, liveFrom < 0 ? text.length : heads[liveFrom].index);
+  const scope = {
+    sectioned: true, displays: null, windows: null,
+    lastAnrSnapshot: lastAnr < 0 ? null : !stale.includes('<no ANR has occurred since boot>'),
+    staleFocusEntries: Math.min([...stale.matchAll(FOCUS_RE)].length, 99),
+  };
+  if (liveFrom < 0) return scope;
+  const live = heads.slice(liveFrom);
+  for (const name of ['displays', 'windows']) {
+    const at = live.filter(h => h[1] === name);
+    if (at.length !== 1) continue;
+    const next = heads.find(h => h.index > at[0].index);
+    scope[name] = text.slice(at[0].index + at[0][0].length, next ? next.index : text.length);
+  }
+  return scope;
+}
+
 // Same event/dialog parsers as ANR03/AN00, with a short device-clock window.
 // A readable empty buffer is only observed-only coverage, never completeness.
 export async function observeLifecycleWindow(shell, pkg, start) {
@@ -48,24 +90,32 @@ export async function observeLifecycleWindow(shell, pkg, start) {
     const timeline = parseAnrEventTimeline(raw.slice(0, 262_144), pkg,
       start.epochMs, 64, end.epochMs - start.epochMs);
     const boundedWindows = windows.slice(0, 1_000_000);
+    // Real sectioned dumps: focus from the LIVE display contents only, top
+    // display and dialogs from the LIVE windows section only. A missing or
+    // duplicated live section yields no focus and fails closed below.
+    const scope = scopeWindowDump(boundedWindows);
+    const focusText = scope.sectioned ? scope.displays ?? '' : boundedWindows;
+    const topText = scope.sectioned ? scope.windows ?? '' : boundedWindows;
     // Bounded, privacy-safe focus ownership evidence. Keep the original
     // strict FIRST-focus equality gate; secondary displays do not turn FAIL
     // into PASS. Never expose a raw component/package/window string.
-    const focusEntries = [...boundedWindows.matchAll(/\bmCurrentFocus=Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\}/g)].slice(0, 9);
+    const focusEntries = [...focusText.matchAll(FOCUS_RE)].slice(0, 9);
     const focus = focusEntries[0] ?? null;
     const expectedMain = pkg + '/com.bridge.app.MainActivity';
     // AOSP dumps one mCurrentFocus per DisplayContent. Record which display
     // emitted each focus and the explicitly reported top-focused display.
     // Select ONLY the explicitly top-focused display when multiple windows exist.
     // An absent/ambiguous mapping cannot turn any secondary app window into PASS.
-    const displayHeaders = [...boundedWindows.matchAll(/^\s*Display: mDisplayId=(0|[1-9]\d{0,4})\b/gm)].slice(0, 24);
+    const displayHeaders = [...focusText.matchAll(/^\s*Display: mDisplayId=(0|[1-9]\d{0,4})\b/gm)].slice(0, 24);
     const focusDisplayIds = focusEntries.map(entry => {
       for (let i = displayHeaders.length - 1; i >= 0; i--) {
         if (displayHeaders[i].index < entry.index) return Number(displayHeaders[i][1]);
       }
       return null;
     });
-    const topDisplayMatch = boundedWindows.match(/\bmTopFocusedDisplayId=(0|[1-9]\d{0,4})\b/);
+    const topDisplayMatches = [...topText.matchAll(/\bmTopFocusedDisplayId=(0|[1-9]\d{0,4})\b/g)];
+    // Two live values cannot both be current: treat as unknown (fails closed).
+    const topDisplayMatch = topDisplayMatches.length === 1 ? topDisplayMatches[0] : null;
     const topFocusedDisplayId = topDisplayMatch ? Number(topDisplayMatch[1]) : null;
     const topFocusIndex = topFocusedDisplayId === null ? -1
       : focusDisplayIds.findIndex(id => id === topFocusedDisplayId);
@@ -105,7 +155,14 @@ export async function observeLifecycleWindow(shell, pkg, start) {
       focusDisplayMappingComplete,
       topFocusedWindowIsMain: resolvedTopFocusIndex < 0 ? null : focusEntries[resolvedTopFocusIndex][1] === expectedMain,
       defaultDisplayWindowIsMain: defaultFocusIndex < 0 ? null : focusEntries[defaultFocusIndex][1] === expectedMain,
-      dialogs: inspectAnrDialogWindows(boundedWindows, pkg) };
+      // #209: which dump part decided focus, and whether a stale last-ANR
+      // snapshot (another app's ANR, up to 2 h old) was present and excluded.
+      focusScope: scope.sectioned ? (scope.displays === null ? 'live-displays-missing' : 'live-displays') : 'unsectioned',
+      lastAnrSnapshot: scope.lastAnrSnapshot,
+      staleFocusEntries: scope.staleFocusEntries,
+      topFocusedDisplayValues: Math.min(topDisplayMatches.length, 9),
+      dialogs: inspectAnrDialogWindows(scope.sectioned
+        ? [scope.windows ?? '', scope.displays ?? ''].join('\n') : boundedWindows, pkg) };
   } catch { return none; }
 }
 

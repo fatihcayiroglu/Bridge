@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { runLifecycleReproduction, observeLifecycleWindow, LIFECYCLE_PHASES } from './lifecycle-reproduction.mjs';
+import { runLifecycleReproduction, observeLifecycleWindow, lifecycleObservationPasses, LIFECYCLE_PHASES } from './lifecycle-reproduction.mjs';
 import { collectKernelPressure } from './pressure-evidence.mjs';
 import { formatLifecycleExperimentSummary } from './suite-summary.mjs';
 
@@ -239,4 +239,85 @@ test('EX01 classifies foreign/system/own focus without leaking components or wea
   assert.equal(many.focusOwner, 'other');
   assert.equal(many.ownMainInSecondaryEntry, true);
   assert.equal(many.nativeWindowFocused, false);
+});
+
+// #209: shaped like Android 14 WindowManagerService.doDump (no arguments).
+const H = name => ({
+  lastanr: 'WINDOW MANAGER LAST ANR (dumpsys window lastanr)',
+  policy: 'WINDOW MANAGER POLICY STATE (dumpsys window policy)',
+  displays: 'WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)',
+  windows: 'WINDOW MANAGER WINDOWS (dumpsys window windows)',
+}[name]);
+const focusOf = component => `  mCurrentFocus=Window{f00 u0 ${component}}`;
+const LAUNCHER = 'com.android.launcher3/com.android.launcher3.uioverrides.QuickstepLauncher';
+const MAIN = `${pkg}/com.bridge.app.MainActivity`;
+const staleAnr = ({ focus, top = 0, dialog = false } = {}) => [
+  H('lastanr'), '  ANR time: 26 Oct 2026 18:01:02', '  Application at fault: private.example/.Busy',
+  '  Reason: Input dispatching timed out', '',
+  ...(dialog ? [`  Window #3 Window{d1a u0 Application Not Responding: ${pkg}}:`] : []),
+  `  mTopFocusedDisplayId=${top}`, '', 'Last ANR continued',
+  H('displays'), 'Display: mDisplayId=0', focusOf(focus ?? LAUNCHER),
+];
+const liveDump = ({ stale = null, focus = MAIN, top = 0, extra = [] } = {}) => [
+  ...(stale ?? [H('lastanr'), '  <no ANR has occurred since boot>']),
+  H('policy'), '  mSafeMode=false',
+  H('displays'), 'Display: mDisplayId=0', focusOf(focus),
+  H('windows'), `  Window #0 Window{a1 u0 ${focus}}:`, `  mTopFocusedDisplayId=${top}`,
+  ...extra,
+].join('\n');
+
+test('#209 EX01 ignores a stale last-ANR focus snapshot that precedes the live display contents', async () => {
+  // The failing #491 run's shape: launcher first, Bridge second, both on display 0.
+  const row = await observeLifecycleWindow(shell('', liveDump({ stale: staleAnr() })), pkg, start);
+  assert.equal(row.nativeWindowFocused, true);
+  assert.equal(row.focusDecisionSource, 'top-display');
+  assert.equal(row.focusEntries, 1);
+  assert.equal(row.focusScope, 'live-displays');
+  assert.equal(row.lastAnrSnapshot, true);
+  assert.equal(row.staleFocusEntries, 1);
+  assert.doesNotMatch(JSON.stringify(row), /Launcher|private\.example|MainActivity|Busy|ANR time/);
+  const clean = await observeLifecycleWindow(shell('', liveDump()), pkg, start);
+  assert.equal(clean.nativeWindowFocused, true);
+  assert.equal(clean.lastAnrSnapshot, false);
+  assert.equal(clean.staleFocusEntries, 0);
+});
+
+test('#209 EX01 never turns a stale Bridge snapshot into PASS when the live focus is foreign', async () => {
+  const row = await observeLifecycleWindow(shell('', liveDump({ stale: staleAnr({ focus: MAIN }), focus: LAUNCHER })), pkg, start);
+  assert.equal(row.nativeWindowFocused, false);
+  assert.equal(row.focusOwner, 'launcher');
+  assert.equal(row.ownMainInSecondaryEntry, false);
+  // A stale top display must not select a live display either.
+  const staleTop = await observeLifecycleWindow(shell('', liveDump({ stale: staleAnr({ top: 0 }), top: 1 })), pkg, start);
+  assert.equal(staleTop.topFocusedDisplayId, 1);
+  assert.equal(staleTop.nativeWindowFocused, false);
+  assert.equal(staleTop.focusDecisionSource, 'unresolved');
+});
+
+test('#209 EX01 fails closed on missing, duplicated or truncated live sections and conflicting top displays', async () => {
+  const cases = {
+    truncatedAfterLastAnr: staleAnr().join('\n'),
+    noLiveDisplays: liveDump().replace(H('displays'), 'not a header'),
+    duplicateLiveDisplays: liveDump({ extra: [H('displays'), 'Display: mDisplayId=0', focusOf(MAIN)] }),
+    noLiveWindows: liveDump().replace(H('windows'), 'not a header'),
+    twoLiveTops: liveDump({ extra: ['  mTopFocusedDisplayId=1'] }),
+  };
+  for (const [name, dump] of Object.entries(cases)) {
+    const row = await observeLifecycleWindow(shell('', dump), pkg, start);
+    assert.notEqual(row.nativeWindowFocused, true, name);
+    assert.equal(lifecycleObservationPasses('cold-start',
+      { pidStable: true, uiVisible: true, channelMatched: true, focused: true, launchState: 'COLD' }, row), false, name);
+  }
+  const conflicting = await observeLifecycleWindow(shell('', cases.twoLiveTops), pkg, start);
+  assert.equal(conflicting.topFocusedDisplayValues, 2);
+  assert.equal(conflicting.topFocusedDisplayId, null);
+  assert.equal((await observeLifecycleWindow(shell('', cases.noLiveDisplays), pkg, start)).focusScope, 'live-displays-missing');
+});
+
+test('#209 EX01 counts only live ANR dialogs, not a stale snapshot of one', async () => {
+  const stale = await observeLifecycleWindow(shell('', liveDump({ stale: staleAnr({ dialog: true }) })), pkg, start);
+  assert.equal(stale.dialogs.anrDialogs, 0);
+  const live = await observeLifecycleWindow(shell('', liveDump({
+    extra: [`  Window #1 Window{d1b u0 Application Not Responding: ${pkg}}:`] })), pkg, start);
+  assert.equal(live.dialogs.anrDialogs, 1);
 });
