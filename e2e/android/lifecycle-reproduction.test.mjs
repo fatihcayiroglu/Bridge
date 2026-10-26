@@ -160,3 +160,12 @@ test('EX01 is after all product checkpoints, separate from totals, with original
   const workflow = readFileSync(new URL('../../.github/workflows/mobile-android.yml', import.meta.url), 'utf8');
   assert.match(workflow, /node --test e2e\/android\/\*\.test\.mjs/);
 });
+
+test('EX01 records pre-force-stop preference and channel equality before cold start', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const coldBranch = source.indexOf("} else if (phase === 'cold-start') {");
+  const preStop = source.indexOf('facts.ex01ColdStartPreStop =', coldBranch);
+  const forceStop = source.indexOf("platform.coldLaunch('', { shell })", coldBranch);
+  assert.ok(coldBranch >= 0 && preStop > coldBranch && forceStop > preStop);
+  assert.ok(source.includes('preStop: facts.ex01ColdStartPreStop ?? { available: false }'));
+});
