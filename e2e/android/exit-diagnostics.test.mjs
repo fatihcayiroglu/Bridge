@@ -2298,7 +2298,15 @@ test('job summary keeps CR00 separate and fails missing, stale or non-emulator c
   const { join } = await import('node:path');
   const { spawnSync } = await import('node:child_process');
   const commit = 'a'.repeat(40);
-  const product = { suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR', results: [] };
+  const { runLifecycleReproduction } = await import('./lifecycle-reproduction.mjs');
+  const experiment = await runLifecycleReproduction({ prepare: async () => {}, clock: async () => ({}),
+    run: async phase => ({ beforePid: '123', afterPid: '123', uiVisible: true, channelMatched: true,
+      focused: true, launchState: phase === 'hot-resume' ? 'HOT' : 'COLD' }),
+    observe: async () => ({ available: true, coverage: 'observed-only', anrCount: 0,
+      nativeWindowFocused: true, dialogs: { available: true, anrDialogs: 0 } }),
+    failureEvidence: async () => null });
+  const product = { suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR', results: [],
+    facts: { androidLifecycleExperiment: experiment } };
   const control = { case: 'CR00', commit, status: 'PASS', evidenceCategory: 'AUTOMATED / EMULATOR',
     error: 'private owner@example.com token secret' };
   const root = mkdtempSync(join(tmpdir(), 'bridge-crash-summary-'));

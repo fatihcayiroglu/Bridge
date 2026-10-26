@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { LIFECYCLE_PHASES, lifecycleObservationPasses } from './lifecycle-reproduction.mjs';
 import path from 'node:path';
 
 const SUITE_HEADINGS = {
@@ -57,6 +58,21 @@ export function formatCrashControlSummary(product, control) {
     'Missing, invalid or stale evidence fails this gate. See java-crash-control.json.\n' };
 }
 
+export function formatLifecycleExperimentSummary(evidence) {
+  const experiment = evidence?.facts?.androidLifecycleExperiment;
+  const valid = experiment?.case === 'EX01' && experiment.status === 'PASS' &&
+    experiment.preparation === 'PASS' && experiment.expectedPhases === 9 && experiment.cycles === 3 &&
+    Array.isArray(experiment.phases) && experiment.phases.length === 9 &&
+    experiment.phases.every((row, index) => row.status === 'PASS' && row.stage === 'complete' &&
+      row.cycle === Math.floor(index / 3) + 1 && row.phase === LIFECYCLE_PHASES[index % 3] &&
+      row.clockAvailable === true && lifecycleObservationPasses(row.phase, row.observation, row.events));
+  const status = valid ? 'PASS' : 'FAIL';
+  return { status, markdown: '\n## EX01 controlled lifecycle reproduction\n\n**' + status + '**\n\n' +
+    'Three cold-start / 20-second HOT-resume / cold-deep-link cycles, after product journeys. ' +
+    'Separate from product PASS counts; missing or failed experiment evidence fails this gate. ' +
+    'A passing experiment is nonreproduction, not proof of root-cause resolution.\n' };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   let evidence = null;
   try {
@@ -71,5 +87,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     const summary = formatCrashControlSummary(evidence, control);
     process.stdout.write(summary.markdown);
     if (summary.status !== 'PASS') process.exitCode = 1;
+    const experiment = formatLifecycleExperimentSummary(evidence);
+    process.stdout.write(experiment.markdown);
+    if (experiment.status !== 'PASS') process.exitCode = 1;
   }
 }
