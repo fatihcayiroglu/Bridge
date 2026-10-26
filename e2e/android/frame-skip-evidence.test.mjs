@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   parseChoreographerSkips, summarizeStartupSkips, parseStallProbeTimeline, attributeStallPhases, summarizeStallPhases,
+  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap,
 } from './frame-skip-evidence.mjs';
 
 const line = (pid, frames) =>
@@ -158,10 +159,77 @@ test('#209 stalls are attributed to the phase their dispatch began in', () => {
 
 test('#209 CS01 records phase attribution without asserting on it; SF02 reports it', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const cs01 = source.slice(source.indexOf('const startupStallPhases ='), source.indexOf("await measure('SF01'"));
-  assert.match(cs01, /stallPhases: await startupStallPhases\(initialPid, origin, hostMarks\)/);
+  const cs01 = source.slice(source.indexOf('const startupStallTimeline ='), source.indexOf("await measure('SF01'"));
+  assert.match(cs01, /stallPhases = startupStallPhases\(stallTimeline, origin, hostMarks\)/);
   assert.match(cs01, /hostMarks\.attached = Date\.now\(\)/);
   assert.match(cs01, /hostMarks\.visible = Date\.now\(\)/);
   assert.doesNotMatch(cs01, /assert\([^)]*(stallPhases|hostMarks)/);
   assert.match(source, /phases: summarizeStallPhases\(facts\.androidColdStartSamples\)/);
+});
+
+test('#209 page timing leaves the page as numbers only, from buffered observers', async () => {
+  const saved = { performance: globalThis.performance, PerformanceObserver: globalThis.PerformanceObserver };
+  const entries = {
+    longtask: [{ startTime: 100, duration: 80.4, name: 'self', attribution: [{ containerSrc: 'https://secret.example/x' }] }],
+    'long-animation-frame': [{ startTime: 90, duration: 120, blockingDuration: 70, styleAndLayoutStart: 190,
+      scripts: [{ duration: 60, sourceURL: 'https://secret.example/app.js', invoker: 'secret' }] }],
+  };
+  class FakeObserver {
+    static supportedEntryTypes = ['longtask', 'long-animation-frame', 'paint'];
+    constructor(callback) { this.callback = callback; }
+    observe({ type, buffered }) { assert.equal(buffered, true); queueMicrotask(() => this.callback({ getEntries: () => entries[type] })); }
+    disconnect() {}
+  }
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: {
+    timeOrigin: 1793052300000.5,
+    getEntriesByType: type => type === 'navigation'
+      ? [{ name: 'https://secret.example/', responseEnd: 50, domContentLoadedEventEnd: 400, loadEventEnd: 900 }]
+      : type === 'paint' ? [{ name: 'first-paint', startTime: 300 }, { name: 'first-contentful-paint', startTime: 350 }] : [],
+  } });
+  globalThis.PerformanceObserver = FakeObserver;
+  try {
+    const timing = await collectPageTiming();
+    assert.doesNotMatch(JSON.stringify(timing), /secret|https?:/);
+    assert.deepEqual(timing.longTasks, [{ startEpochMs: 1793052300101, ms: 80 }]);
+    assert.deepEqual(timing.longAnimationFrames, [{ startEpochMs: 1793052300091, ms: 120, blockingMs: 70, scriptMs: 60,
+      styleLayoutMs: 20 }]);
+    assert.equal(timing.firstContentfulPaintEpochMs, 1793052300351);
+    assert.deepEqual(compactPageTiming(timing).longAnimationFrames,
+      { count: 1, totalMs: 120, maxMs: 120, scriptMs: 60, styleLayoutMs: 20, blockingMs: 70 });
+  } finally {
+    Object.defineProperty(globalThis, 'performance', { configurable: true, value: saved.performance });
+    globalThis.PerformanceObserver = saved.PerformanceObserver;
+  }
+});
+
+test('#209 renderer overlap separates busy-page stalls from idle-page stalls', () => {
+  const t0 = 1793052300000;
+  const timeline = { available: true, stalls: [
+    { startEpochMs: t0, endEpochMs: t0 + 1000, ms: 1000, msg: 'frame', where: 'render' }, // page busy 800 ms
+    { startEpochMs: t0 + 5000, endEpochMs: t0 + 6000, ms: 1000, msg: 'frame', where: 'render' }, // page idle
+  ] };
+  const pageTiming = { available: true, supported: { longtask: true, longAnimationFrame: false },
+    firstContentfulPaintEpochMs: t0 + 2000,
+    longTasks: [{ startEpochMs: t0 + 100, ms: 500 }, { startEpochMs: t0 + 700, ms: 1000 }], longAnimationFrames: [] };
+  const overlap = rendererOverlap(timeline, pageTiming);
+  assert.deepEqual(overlap, { available: true, stalls: 2, stallMs: 2000, rendererBusyMs: 800, longFrameMs: null,
+    stallsMostlyBusy: 1, stallsMostlyIdle: 1, beforeFirstContentfulPaint: 1 });
+  assert.equal(rendererOverlap(timeline, { ...pageTiming, supported: { longtask: false } }).available, false);
+  const summary = summarizeRendererOverlap([
+    { rendererOverlap: overlap, pageTiming: compactPageTiming(pageTiming) },
+    { rendererOverlap: null, pageTiming: null },
+  ]);
+  assert.equal(summary.measured, 1);
+  assert.equal(summary.rendererBusyMs, 800);
+  assert.equal(summary.longFrameMs, null);
+  assert.deepEqual(summary.longTasks, { count: 2, totalMs: 1500, maxMs: 1000 });
+});
+
+test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const cs01 = source.slice(source.indexOf('const startupStallTimeline ='), source.indexOf("await measure('SF01'"));
+  assert.match(cs01, /page\.evaluate\(collectPageTiming\)/);
+  assert.match(cs01, /rendererOverlap = rendererOverlap\(stallTimeline, pageTiming\)/);
+  assert.doesNotMatch(cs01, /assert\([^)]*(pageTiming|rendererOverlap)/);
+  assert.match(source, /renderer: summarizeRendererOverlap\(facts\.androidColdStartSamples\)/);
 });

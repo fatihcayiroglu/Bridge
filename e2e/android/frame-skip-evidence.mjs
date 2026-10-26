@@ -178,3 +178,113 @@ export function summarizeStallPhases(samples) {
     straddling: rows.reduce((n, r) => n + r.straddling, 0), phases,
     attribution: 'by dispatch start; marks are host instants mapped to the device clock' };
 }
+
+/**
+ * #209: runs IN the page (page.evaluate). Renderer-side timing as numbers
+ * only: no URLs, names or script attribution leave the page. Long tasks and
+ * long animation frames are read through buffered PerformanceObservers, so
+ * entries from before the harness attached are included (the browser keeps
+ * up to 200 of each).
+ */
+export async function collectPageTiming() {
+  const supported = (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+  const origin = performance.timeOrigin;
+  const epoch = t => Math.round(origin + t);
+  const buffered = type => new Promise(resolve => {
+    if (!supported.includes(type)) { resolve(null); return; }
+    const entries = [];
+    let observer;
+    try {
+      observer = new PerformanceObserver(list => { entries.push(...list.getEntries()); });
+      observer.observe({ type, buffered: true });
+    } catch { resolve(null); return; }
+    setTimeout(() => { observer.disconnect(); resolve(entries); }, 300);
+  });
+  const nav = performance.getEntriesByType('navigation')[0];
+  const paint = Object.fromEntries(performance.getEntriesByType('paint').map(e => [e.name, epoch(e.startTime)]));
+  const longTasks = await buffered('longtask');
+  const frames = await buffered('long-animation-frame');
+  return {
+    available: Number.isFinite(origin),
+    supported: { longtask: longTasks !== null, longAnimationFrame: frames !== null },
+    timeOriginEpochMs: Math.round(origin),
+    navigation: nav ? { responseEndEpochMs: epoch(nav.responseEnd), domContentLoadedEpochMs: epoch(nav.domContentLoadedEventEnd),
+      loadEpochMs: epoch(nav.loadEventEnd) } : null,
+    firstPaintEpochMs: paint['first-paint'] ?? null,
+    firstContentfulPaintEpochMs: paint['first-contentful-paint'] ?? null,
+    longTasks: (longTasks ?? []).slice(0, 200).map(e => ({ startEpochMs: epoch(e.startTime), ms: Math.round(e.duration) })),
+    longAnimationFrames: (frames ?? []).slice(0, 200).map(e => ({
+      startEpochMs: epoch(e.startTime), ms: Math.round(e.duration),
+      // Where the frame's time went, renderer side; numbers only.
+      blockingMs: Math.round(e.blockingDuration ?? 0),
+      scriptMs: Math.round((e.scripts ?? []).reduce((n, s) => n + (s.duration ?? 0), 0)),
+      styleLayoutMs: Math.round(e.styleAndLayoutStart ? (e.startTime + e.duration) - e.styleAndLayoutStart : 0),
+    })),
+  };
+}
+
+const overlapMs = (a0, a1, intervals) => intervals.reduce((n, [b0, b1]) => n + Math.max(0, Math.min(a1, b1) - Math.max(a0, b0)), 0);
+
+/**
+ * For each Android main-thread stall: how much of it the renderer's main
+ * thread was itself busy in a long task. High overlap points at page work
+ * (JS / style / layout); low overlap at compositing / rasterisation or
+ * native work while the page was idle.
+ */
+export function rendererOverlap(timeline, pageTiming) {
+  const result = { available: Boolean(timeline?.available && pageTiming?.available && pageTiming.supported?.longtask),
+    stalls: 0, stallMs: 0, rendererBusyMs: 0, longFrameMs: null, stallsMostlyBusy: 0, stallsMostlyIdle: 0,
+    beforeFirstContentfulPaint: 0 };
+  if (!result.available) return result;
+  const busy = pageTiming.longTasks.map(t => [t.startEpochMs, t.startEpochMs + t.ms]);
+  const frames = pageTiming.supported.longAnimationFrame
+    ? pageTiming.longAnimationFrames.map(f => [f.startEpochMs, f.startEpochMs + f.ms]) : null;
+  if (frames) result.longFrameMs = 0;
+  for (const stall of timeline.stalls) {
+    const ms = overlapMs(stall.startEpochMs, stall.endEpochMs, busy);
+    result.stalls++;
+    result.stallMs += stall.ms;
+    result.rendererBusyMs += ms;
+    if (frames) result.longFrameMs += overlapMs(stall.startEpochMs, stall.endEpochMs, frames);
+    if (ms >= stall.ms / 2) result.stallsMostlyBusy++; else result.stallsMostlyIdle++;
+    if (Number.isFinite(pageTiming.firstContentfulPaintEpochMs) && stall.startEpochMs < pageTiming.firstContentfulPaintEpochMs) {
+      result.beforeFirstContentfulPaint++;
+    }
+  }
+  return result;
+}
+
+/** The per-sample record keeps aggregates, not the entry lists. */
+export function compactPageTiming(pageTiming) {
+  if (!pageTiming?.available) return pageTiming ?? null;
+  const { longTasks, longAnimationFrames, ...rest } = pageTiming;
+  const total = (list, key) => list.reduce((n, e) => n + (e[key] ?? 0), 0);
+  return { ...rest,
+    longTasks: { count: longTasks.length, totalMs: total(longTasks, 'ms'), maxMs: Math.max(0, ...longTasks.map(e => e.ms)) },
+    longAnimationFrames: { count: longAnimationFrames.length, totalMs: total(longAnimationFrames, 'ms'),
+      maxMs: Math.max(0, ...longAnimationFrames.map(e => e.ms)), scriptMs: total(longAnimationFrames, 'scriptMs'),
+      styleLayoutMs: total(longAnimationFrames, 'styleLayoutMs'), blockingMs: total(longAnimationFrames, 'blockingMs') } };
+}
+
+/** MEASURED aggregate of rendererOverlap over CS01's cold starts. */
+export function summarizeRendererOverlap(samples) {
+  const list = Array.isArray(samples) ? samples : [];
+  const rows = list.map(s => s?.rendererOverlap ?? null).filter(r => r?.available);
+  const sum = key => rows.reduce((n, r) => n + r[key], 0);
+  const timing = list.map(s => s?.pageTiming ?? null).filter(t => t?.available);
+  const frameRows = rows.filter(r => r.longFrameMs !== null);
+  const sumTiming = (group, key) => timing.reduce((n, t) => n + t[group][key], 0);
+  return { measured: rows.length, stalls: sum('stalls'), stallMs: sum('stallMs'), rendererBusyMs: sum('rendererBusyMs'),
+    longFrameMs: frameRows.length ? frameRows.reduce((n, r) => n + r.longFrameMs, 0) : null,
+    stallsMostlyBusy: sum('stallsMostlyBusy'), stallsMostlyIdle: sum('stallsMostlyIdle'),
+    beforeFirstContentfulPaint: sum('beforeFirstContentfulPaint'),
+    pageTimingRead: timing.length,
+    longTaskSupported: timing.filter(t => t.supported.longtask).length,
+    longAnimationFrameSupported: timing.filter(t => t.supported.longAnimationFrame).length,
+    longTasks: { count: sumTiming('longTasks', 'count'), totalMs: sumTiming('longTasks', 'totalMs'),
+      maxMs: timing.reduce((m, t) => Math.max(m, t.longTasks.maxMs), 0) },
+    longAnimationFrames: { count: sumTiming('longAnimationFrames', 'count'), totalMs: sumTiming('longAnimationFrames', 'totalMs'),
+      maxMs: timing.reduce((m, t) => Math.max(m, t.longAnimationFrames.maxMs), 0),
+      scriptMs: sumTiming('longAnimationFrames', 'scriptMs'), styleLayoutMs: sumTiming('longAnimationFrames', 'styleLayoutMs') },
+    clock: 'device wall clock on both sides (performance.timeOrigin, logcat -v epoch)' };
+}

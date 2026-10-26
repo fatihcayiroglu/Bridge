@@ -32,6 +32,7 @@ import { collectKernelPressure } from './pressure-evidence.mjs';
 import {
   parseChoreographerSkips, summarizeStartupSkips, parseStallProbe, stallProbeCalibrated, summarizeStartupStallProbe,
   parseStallProbeTimeline, attributeStallPhases, summarizeStallPhases,
+  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap,
 } from './frame-skip-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
@@ -1707,14 +1708,22 @@ async function main() {
     };
     // #209 phase attribution: host instants mapped onto the device clock, then
     // each probe stall is assigned to the phase its dispatch began in.
-    const startupStallPhases = async (appPid, origin, hostMarks) => {
+    const startupStallTimeline = async appPid => {
       try {
-        if (!origin) return null;
-        const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
-        const marks = Object.fromEntries(Object.entries(hostMarks).map(([k, v]) => [k, toDevice(v)]));
-        return attributeStallPhases(parseStallProbeTimeline(await androidFailureShell(
-          "logcat -d -v epoch --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid), marks, origin.precision);
+        return parseStallProbeTimeline(await androidFailureShell(
+          "logcat -d -v epoch --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
       } catch { return null; }
+    };
+    const startupStallPhases = (timeline, origin, hostMarks) => {
+      if (!origin || !timeline) return null;
+      const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+      const marks = Object.fromEntries(Object.entries(hostMarks).map(([k, v]) => [k, toDevice(v)]));
+      return attributeStallPhases(timeline, marks, origin.precision);
+    };
+    // Renderer-side timing (numbers only) read after the UI is visible; both
+    // sides use the device wall clock, so no host mapping is involved.
+    const startupPageTiming = async () => {
+      try { return await page.evaluate(collectPageTiming); } catch { return null; }
     };
     const samples = [];
     // Fixed and small on purpose; stress must not consume the entire emulator
@@ -1733,6 +1742,7 @@ async function main() {
         message: `visible UI after repeated cold start ${attempt}`,
       });
       hostMarks.visible = Date.now();
+      const pageTiming = await startupPageTiming();
       // Catch the delayed process death that earlier cold-launch-only checks
       // missed: a 2 s OS-observation window is part of the assertion.
       await sleep(2000);
@@ -1745,8 +1755,11 @@ async function main() {
         anrCount: newAnrs,
         skippedFrames: await startupSkips(initialPid),
         mainThreadStalls: await startupStalls(initialPid),
-        stallPhases: await startupStallPhases(initialPid, origin, hostMarks),
       });
+      const stallTimeline = await startupStallTimeline(initialPid);
+      samples.at(-1).stallPhases = startupStallPhases(stallTimeline, origin, hostMarks);
+      samples.at(-1).pageTiming = compactPageTiming(pageTiming);
+      samples.at(-1).rendererOverlap = rendererOverlap(stallTimeline, pageTiming);
       facts.androidColdStartSamples = samples;
       assert(finalPid === initialPid,
         `cold start ${attempt}: Android replaced the app process after UI render`);
@@ -2605,7 +2618,8 @@ async function main() {
     if (MODE !== 'android') throw new Skip('debug stall probe requires the native app');
     return { calibratedInRun: false, calibration: 'upstream-webview-controls AN00/AN00-L',
       coldStarts: summarizeStartupStallProbe(facts.androidColdStartSamples),
-      phases: summarizeStallPhases(facts.androidColdStartSamples) };
+      phases: summarizeStallPhases(facts.androidColdStartSamples),
+      renderer: summarizeRendererOverlap(facts.androidColdStartSamples) };
   });
 
   // EX01 runs AFTER every product verdict and ANR/exit checkpoint. It cannot
