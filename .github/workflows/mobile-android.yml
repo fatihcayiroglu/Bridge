@@ -7,7 +7,8 @@ name: Mobile Android
 
 on:
   pull_request:
-    branches: [main, develop]
+    # Diagnostic stack target: retain the exact same Android gates on #476.
+    branches: [main, develop, 'codex/p7-d2-expiry-read-deadline-20261026']
     paths:
       - 'mobile/**'
       - 'client/**'
