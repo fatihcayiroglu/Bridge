@@ -34,13 +34,17 @@ export function createDebuggerStoragePause(session) {
     async release({ step }, targetClosed = false) {
       if (disposed) return;
       try {
-        if (enabled && !targetClosed) {
+        // A proven force-stop has destroyed the debugger's original renderer.
+        // Its pending Runtime.evaluate may never settle and protocol resume is no
+        // longer possible. Do not contact or await that dead, owned target.
+        if (targetClosed) return;
+        if (enabled) {
           if (paused) await step('resume', () => session.send('Debugger.resume'));
           // Also cancels a pending pause request when no event was observed.
           await step('debugger-disable', () => session.send('Debugger.disable'));
         }
         const settled = await step('pause-trigger-settled', () => triggerSettled);
-        if (!settled && !targetClosed) throw new Error('pause trigger unavailable');
+        if (!settled) throw new Error('pause trigger unavailable');
       } finally {
         disposed = true;
         paused = false;
