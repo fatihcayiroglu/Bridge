@@ -44,6 +44,9 @@ public class MainActivity extends BridgeActivity {
         // No compile-time emoji2 dependency or runtime font lookup is added.
         logEmojiStartup("before-super");
         registerPlugin(BridgePushSupportPlugin.class);
+        // #490: acknowledged, durable navigation preferences (WebView
+        // localStorage was rolled back after force-stop).
+        registerPlugin(BridgeNavigationStorePlugin.class);
         super.onCreate(savedInstanceState);
         logEmojiStartup("after-super");
         // #209: WebView builds without the upstream fix (M117 branch below

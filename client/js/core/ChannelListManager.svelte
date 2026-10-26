@@ -30,7 +30,10 @@
   import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, channelsChangedDelay, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
   import { channelExpiresAt, formatChannelExpiry } from './channel-list/channel-expiry.ts';
-  import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
+  import {
+    navigationOwner, lastTextChannel, rememberTextChannel, navigationPreferencesReady, noteNavigationRestoration,
+  } from './navigation-selection.js';
+  import { noteAutoSelection, noteNavigateBranch, notePendingOutcome, type PendingOutcome } from './navigation-intent-diagnostics.js';
   const log = createLogger('ChannelListManager');
 
   let { children }: { children?: Snippet } = $props();
@@ -136,8 +139,9 @@
     return result;
   }
 
-  function finishPendingNavigation(intent: PendingNavigation, success: boolean): void {
+  function finishPendingNavigation(intent: PendingNavigation, success: boolean, outcome: PendingOutcome): void {
     clearTimeout(intent.timeoutId);
+    notePendingOutcome(outcome);
     if (pendingNavigation === intent) pendingNavigation = null;
     intent.resolve(success);
   }
@@ -293,10 +297,10 @@
         if (target) {
           selectChannel(target, intent.messageId);
           if (intent.messageId) BridgeRegistry.call('jumpToMessage', intent.messageId);
-          finishPendingNavigation(intent, true);
+          finishPendingNavigation(intent, true, 'selected');
           selectedByPendingNavigation = true;
         } else {
-          finishPendingNavigation(intent, false);
+          finishPendingNavigation(intent, false, 'missing');
           BridgeRegistry.call('toast', t("gdm_gone", "Bu konuşma artık kullanılamıyor."), 'warning');
         }
       }
@@ -307,6 +311,12 @@
       // remembered ID is accepted ONLY when the fresh, authorized API list
       // contains it. Voice/stage is not restored automatically (no implicit
       // microphone/camera access).
+      // #490: on Android the remembered ID comes from the acknowledged
+      // native store (WebView localStorage can roll back on force-stop).
+      // Bounded and never rejects; the list may change meanwhile, so the
+      // request and the user's own selection are re-checked afterwards.
+      await navigationPreferencesReady();
+      if (seq !== requestSeq || destroyed) return;
       const first = channels.find(c => (c.type ?? 'text') === 'text');
       const owner = navigationOwner(BridgeRegistry.call('getMe'));
       const rememberedId = owner ? lastTextChannel(owner, targetServerId) : null;
@@ -314,7 +324,9 @@
         c._id === rememberedId && (c.type ?? 'text') === 'text');
       if (!activeChannelId && !selectedByPendingNavigation && (remembered || first)) {
         selectChannel((remembered || first)!);
+        noteAutoSelection();
         provisionalPreAuthSelection = owner === null;
+        noteNavigationRestoration('channel', remembered ? 'restored' : rememberedId ? 'refused' : 'none');
       }
 
       // Apply optional presentation metadata only if this request is still the
@@ -337,7 +349,7 @@
       log.error('Kanal listesi yüklenemedi', error);
       loadError = t('error_generic', 'Bir hata oluştu. Lütfen tekrar dene.');
       if (pendingNavigation?.serverId === targetServerId) {
-        finishPendingNavigation(pendingNavigation, false);
+        finishPendingNavigation(pendingNavigation, false, 'load-failed');
       }
     } finally {
       if (seq === requestSeq) isLoading = false;
@@ -446,7 +458,7 @@
   function onLogout(): void {
     requestSeq += 1;
     provisionalPreAuthSelection = false;
-    if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
+    if (pendingNavigation) finishPendingNavigation(pendingNavigation, false, 'logout');
     channels = [];
     categories = [];
     serverId = null;
@@ -458,15 +470,19 @@
     void renderView();
   }
 
-  function onAuthSuccess(): void {
+  async function onAuthSuccess(): Promise<void> {
     if (!provisionalPreAuthSelection || !serverId) return;
+    await navigationPreferencesReady();
+    // A user selection or server switch during the read supersedes it.
+    if (destroyed || !provisionalPreAuthSelection || !serverId) return;
     const owner = navigationOwner(BridgeRegistry.call('getMe'));
     if (!owner) return;
     provisionalPreAuthSelection = false;
     const remembered = lastTextChannel(owner, serverId);
     const authorized = channels.find(c =>
       c._id === remembered && (c.type ?? 'text') === 'text');
-    if (authorized && authorized._id !== activeChannelId) selectChannel(authorized);
+    if (authorized && authorized._id !== activeChannelId) { selectChannel(authorized); noteAutoSelection(); }
+    noteNavigationRestoration('channel', authorized ? 'restored' : remembered ? 'refused' : 'none');
   }
 
   // ── ERİŞİM DEĞİŞİKLİKLERİ (Final21 Faz 16) ─────────────────────────────────
@@ -616,7 +632,8 @@
       // was read as "no such channel" → "not available" toast, then the first text channel was
       // auto-selected. The intent now waits for that authorized list and is decided there.
       if (isLoading && serverId && (targetServerId ?? serverId) === serverId) {
-        if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
+        noteNavigateBranch('pending-same-server');
+        if (pendingNavigation) finishPendingNavigation(pendingNavigation, false, 'superseded');
         return new Promise<boolean>(resolve => {
           const intent: PendingNavigation = {
             serverId: serverId as string,
@@ -625,7 +642,7 @@
             resolve,
             timeoutId: setTimeout(() => {
               if (pendingNavigation !== intent) return;
-              finishPendingNavigation(intent, false);
+              finishPendingNavigation(intent, false, 'timeout');
               BridgeRegistry.call('toast', t("gdm_gone", "Bu konuşma artık kullanılamıyor."), 'warning');
             }, 10_000),
           };
@@ -633,8 +650,9 @@
         });
       }
       if (targetServerId && targetServerId !== serverId) {
-        if (!BridgeRegistry.has('selectServer')) return false;
-        if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
+        if (!BridgeRegistry.has('selectServer')) { noteNavigateBranch('rejected'); return false; }
+        noteNavigateBranch('pending-switch');
+        if (pendingNavigation) finishPendingNavigation(pendingNavigation, false, 'superseded');
         return new Promise<boolean>(resolve => {
           const intent: PendingNavigation = {
             serverId: targetServerId,
@@ -643,7 +661,7 @@
             resolve,
             timeoutId: setTimeout(() => {
               if (pendingNavigation !== intent) return;
-              finishPendingNavigation(intent, false);
+              finishPendingNavigation(intent, false, 'timeout');
               BridgeRegistry.call('toast', t("gdm_gone", "Bu konuşma artık kullanılamıyor."), 'warning');
             }, 10_000),
           };
@@ -651,10 +669,12 @@
           BridgeRegistry.call('selectServer', targetServer);
         });
       } else {
+        noteNavigateBranch('unavailable');
         BridgeRegistry.call('toast', t("gdm_gone", "Bu konuşma artık kullanılamıyor."), 'warning');
       }
       return false;
     }
+    noteNavigateBranch('direct');
     selectChannel(target, messageId);
     // Mesaj kimligi verildiyse liste sahibine iletilir (varsa) — burada
     // kaydirma mantigi TEKRARLANMAZ.
@@ -692,7 +712,7 @@
     BridgeRegistry.unregister('loadChannels');
     BridgeRegistry.unregister('selectChannel');
     BridgeRegistry.unregister('navigateToChannel');
-    if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
+    if (pendingNavigation) finishPendingNavigation(pendingNavigation, false, 'superseded');
     BridgeRegistry.unregister('createChannel');
     unmountChannelList();
   });
