@@ -240,7 +240,13 @@ test('#209 SF03 reduced-motion A/B always restores the setting and never asserts
   assert.ok(source.indexOf("await measure('SF03'") > source.indexOf("await measure('SF01'"));
   assert.ok(source.indexOf("await measure('SF03'") < source.indexOf("await check('A02'"));
   assert.match(sf03, /settings put global animator_duration_scale 0/);
-  assert.match(sf03, /\} finally \{\s+await sh\([^]*settings delete global animator_duration_scale/);
+  const restore = sf03.slice(sf03.indexOf('} finally {'));
+  assert.match(restore, /step\('restore-setting'[^]*settings delete global animator_duration_scale/);
+  // Later checks get a fresh normal-motion process, not the reduced-motion one.
+  assert.ok(restore.indexOf("step('relaunch-normal'") > restore.indexOf("step('restore-setting'"));
+  assert.match(restore, /step\('reattach-normal', \(\) => attachPage\(\)/);
+  // Every device/page wait is time-bounded (the first run hung for 55 min).
+  assert.doesNotMatch(sf03, /await (platform\.coldLaunch|attachPage|page\.evaluate|until|sh)\(/);
   assert.match(sf03, /matchMedia\('\(prefers-reduced-motion: reduce\)'\)/);
   assert.match(sf03, /reducedMotionSeen/);
   assert.doesNotMatch(sf03, /assert\(/);

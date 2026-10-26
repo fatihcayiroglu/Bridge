@@ -1791,25 +1791,37 @@ async function main() {
   // recorded per start. The setting is always restored. Measurement only.
   await measure('SF03', 'cold-start main-thread stalls with reduced motion (animator scale 0; measurement)', async () => {
     if (MODE !== 'android') throw new Skip('actual Android settings and stall probe required');
-    const original = String(await sh('settings get global animator_duration_scale')).trim();
+    // Every step is time-bounded and logged by fixed stage name: the first
+    // run (1dc534ef, 40415173707) hung silently inside SF03 until the job's
+    // 60 min limit. A stage that overruns fails SF03 naming that stage.
+    const step = async (name, work, ms) => {
+      log('SF03 stage', name);
+      let timer;
+      try {
+        return await Promise.race([work(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`SF03 stage ${name} exceeded ${ms} ms`)), ms);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    const original = String(await step('read-setting', () => sh('settings get global animator_duration_scale'), 20_000)).trim();
     const samples = [];
     try {
-      await sh('settings put global animator_duration_scale 0');
+      await step('reduce-motion', () => sh('settings put global animator_duration_scale 0'), 20_000);
       for (let attempt = 1; attempt <= 3; attempt++) {
-        const origin = await deviceClockOrigin().catch(() => null);
-        await platform.coldLaunch();
+        const origin = await step(`clock-${attempt}`, () => deviceClockOrigin(), 20_000).catch(() => null);
+        await step(`launch-${attempt}`, () => platform.coldLaunch(), 60_000);
         const hostMarks = { displayed: Date.now() };
-        const appPid = await pid();
-        await attachPage();
+        const appPid = await step(`pid-${attempt}`, () => pid(), 20_000);
+        await step(`attach-${attempt}`, () => attachPage(), 75_000);
         hostMarks.attached = Date.now();
-        await until(async () => (await authVisible()) || (await appVisible()), {
+        await step(`visible-${attempt}`, () => until(async () => (await authVisible()) || (await appVisible()), {
           timeout: 45_000,
           message: `visible UI after reduced-motion cold start ${attempt}`,
-        });
+        }), 60_000);
         hostMarks.visible = Date.now();
-        const reducedMotion = await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
-          .catch(() => null);
-        const pageTiming = await startupPageTiming();
+        const reducedMotion = await step(`media-${attempt}`,
+          () => page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), 10_000).catch(() => null);
+        const pageTiming = await step(`page-timing-${attempt}`, () => startupPageTiming(), 15_000).catch(() => null);
         await sleep(2000);
         const stallTimeline = await startupStallTimeline(appPid);
         samples.push({ attempt, reducedMotion,
@@ -1820,9 +1832,13 @@ async function main() {
           rendererOverlap: rendererOverlap(stallTimeline, pageTiming) });
       }
     } finally {
-      await sh(/^[0-9]{1,3}(\.[0-9]{1,3})?$/.test(original)
+      await step('restore-setting', () => sh(/^[0-9]{1,3}(\.[0-9]{1,3})?$/.test(original)
         ? `settings put global animator_duration_scale ${original}`
-        : 'settings delete global animator_duration_scale').catch(() => {});
+        : 'settings delete global animator_duration_scale'), 20_000).catch(() => {});
+      // Later checks must not inherit a process started under reduced motion:
+      // hand them a fresh normal-motion cold start, as CS01 leaves it.
+      await step('relaunch-normal', () => platform.coldLaunch(), 60_000).catch(() => {});
+      await step('reattach-normal', () => attachPage(), 75_000).catch(() => {});
     }
     return { coldStarts: samples.length, reducedMotionSeen: samples.filter(row => row.reducedMotion === true).length,
       baseline: 'CS01 / SF01 / SF02 in this run (normal motion)',
