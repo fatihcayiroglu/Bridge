@@ -47,6 +47,15 @@ test('probe exports only bounded booleans/counts, no stored IDs or values', () =
   assert.doesNotMatch(JSON.stringify(result), /private|user-1|server-1|secret/);
   assert.equal(p.inspect('', 'server-1', 'private-channel').available, false);
 });
+test('a preference created after boot is reported as changed, not unchanged', () => {
+  const s = storage();
+  const p = boot(s);
+  s.setItem(preference, 'expected');
+  const result = p.inspect('user-1', 'server-1', 'expected');
+  assert.equal(result.keyAtBoot, false);
+  assert.equal(result.expectedNow, true);
+  assert.equal(result.changedSinceBoot, true);
+});
 test('probe fails closed for blocked, unknown or oversized localStorage', () => {
   assert.equal(boot({ get length() { throw Error('private'); } }).inspect('user','server','c').available, false);
   assert.equal(boot({ length: 513, key() { throw Error('unexpected'); } }).inspect('user','server','c').available, false);

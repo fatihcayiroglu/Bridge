@@ -15,7 +15,7 @@ export function lifecycleObservationPasses(phase, observation, events) {
     events.nativeWindowFocused === true && events.dialogs?.available === true && events.dialogs.anrDialogs === 0;
 }
 
-async function bounded(action, budgetMs) {
+export async function boundedLifecycleAction(action, budgetMs) {
   const abort = new AbortController();
   let timer;
   const step = async (stage, fn) => {
@@ -80,7 +80,7 @@ export async function runLifecycleReproduction({ prepare, clock, run, observe, f
   try {
     preparationStart = await clock();
     if (!preparationStart) throw new Error('clock unavailable');
-    await bounded(prepare, budgetMs); result.preparation = 'PASS';
+    await boundedLifecycleAction(prepare, budgetMs); result.preparation = 'PASS';
   } catch {
     try { result.preparationEvidence = await failureEvidence(preparationStart); } catch { /* unknown */ }
     return result;
@@ -98,7 +98,7 @@ export async function runLifecycleReproduction({ prepare, clock, run, observe, f
         // An experiment without a calibrated window cannot test attribution.
         if (!start) throw new Error('clock unavailable');
         row.stage = 'run';
-        const raw = await bounded(async ({ signal, step }) => run(phase, cycle, {
+        const raw = await boundedLifecycleAction(async ({ signal, step }) => run(phase, cycle, {
           signal, step: (stage, fn) => {
             signal.throwIfAborted();
             if (STAGES.has(stage)) row.stage = stage;

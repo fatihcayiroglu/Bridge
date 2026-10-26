@@ -31,7 +31,7 @@
         expectedAtBoot: keyAtBoot && before === expected,
         keyNow: now !== null,
         expectedNow: now === expected,
-        changedSinceBoot: keyAtBoot && before !== now,
+        changedSinceBoot: keyAtBoot ? before !== now : now !== null,
         navigationKeysAtBoot: Math.min(boot.size, LIMIT),
       };
     } catch { return { available: false }; }
