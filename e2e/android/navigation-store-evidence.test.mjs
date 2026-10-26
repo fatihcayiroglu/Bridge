@@ -57,3 +57,13 @@ test('#490 EX01 requires a native commit acknowledgment before every force-stop 
   // EX01's own channel acceptance is unchanged: the visible restored channel must match.
   assert.match(source, /await step\('channel', \(\) => until\(async \(\) => \(await activeChannel\(\)\) === expectedChannel,/);
 });
+
+test('#491 voice journeys tap a rendered channel row instead of a silent no-op click', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /\.ch-open`\)\?\.click\(\); \}, voiceId\)/);
+  for (const id of ['P01', 'P03']) {
+    const start = source.indexOf(`await check('${id}'`);
+    const end = source.indexOf('await check(', start + 10);
+    assert.ok(start > 0 && source.slice(start, end).includes('await tapChannelRow(voiceId);'), id);
+  }
+});

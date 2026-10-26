@@ -84,9 +84,6 @@
       }
 
       const data = await response.json() as unknown;
-      // #490: remembered server from the acknowledged native store on
-      // Android. Bounded, never rejects; the staleness check below covers it.
-      await navigationPreferencesReady();
       // Token refresh can rotate the JWT for the SAME account; do not drop
       // a good response solely because its token string changed. A concurrent
       // logout/account switch still invalidates the old response.
@@ -95,7 +92,17 @@
       servers = Array.isArray(data) ? data as RailServer[] : [];
       log.info(`${servers.length} sunucu yüklendi`);
 
-      const owner = navigationOwner(BridgeRegistry.call('getMe'));
+      let owner = navigationOwner(BridgeRegistry.call('getMe'));
+      if (owner && restoredOwner !== owner && !explicitlySelected) {
+        // #490: the remembered server comes from the acknowledged native store
+        // on Android. The rail is already rendered; only the restore decision
+        // waits (bounded, never rejects, normally already done at boot).
+        await navigationPreferencesReady();
+        // A click, logout or account switch during the read wins.
+        if (readToken() !== token &&
+            (requestedOwner === null || requestedOwner !== navigationOwner(BridgeRegistry.call('getMe')))) return;
+        owner = navigationOwner(BridgeRegistry.call('getMe'));
+      }
       if (owner && restoredOwner !== owner && !explicitlySelected) {
         restoredOwner = owner;
         const remembered = lastServer(owner);
@@ -217,6 +224,9 @@
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────
+  // #490: start the one native boot read now, in parallel with the server
+  // fetch, so restoring never adds a native round-trip to first render.
+  void navigationPreferencesReady();
   function onAuthSuccess(): void { void loadServers(); }
   document.addEventListener('bridge:auth-success', onAuthSuccess);
 

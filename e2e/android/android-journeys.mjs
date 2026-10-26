@@ -825,6 +825,22 @@ async function awaitDurableChannel(user, server, expected, timeout = 10_000) {
   }
 }
 
+/**
+ * Taps a channel row the way a user can: only once it is rendered. A silent
+ * `?.click()` on a row that is not there yet does nothing, and the journey
+ * then failed later with an unrelated media timeout (#491 P03). A row that
+ * never appears now fails here, attributed to the list, not to media.
+ */
+async function tapChannelRow(channelId) {
+  await until(() => page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`), channelId),
+    { message: 'channel row rendered before tap' });
+  const tapped = await page.evaluate((cid) => {
+    const row = document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`);
+    row?.click();
+    return Boolean(row);
+  }, channelId);
+  assert(tapped, 'channel row disappeared before tap');
+}
 async function activeChannel() {
   return page.evaluate(() => document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null).catch(() => null);
 }
@@ -2132,7 +2148,7 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app after permission revoke' });
     await openServer(serverId);
-    await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
+    await tapChannelRow(voiceId);
     const sheet = await permissionSheet();
     facts.micPermissionSheet = sheet;
     if (sheet.shown) await tapPermissionButton('deny');
@@ -2152,7 +2168,7 @@ async function main() {
     await page.reload();
     await until(() => appVisible(), { timeout: 45_000, message: 'app after grant' });
     await openServer(serverId);
-    await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
+    await tapChannelRow(voiceId);
     const flow = await until(async () => { const a = await outboundAudio(); return a.packetsSent > 20 ? a : null; }, { timeout: 45_000, message: 'outbound audio RTP' });
     facts.voice = { joinedWithOutboundAudio: flow };
     return flow;

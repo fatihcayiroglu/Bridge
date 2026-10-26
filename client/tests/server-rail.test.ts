@@ -261,6 +261,7 @@ describe('P7 Android WebView reload selection integrity', () => {
 describe('#490 Android: server restoration from the acknowledged native store', () => {
   const key = (u: string) => `bridge:last-navigation:v1:server:${u}`;
   let disk: Map<string, string>;
+  let readGate: Promise<void>;
   beforeEach(() => {
     resetNavigationSelectionForTests();
     disk = new Map();
@@ -272,10 +273,11 @@ describe('#490 Android: server restoration from the acknowledged native store', 
           if (value === null) disk.delete(k); else disk.set(k, value);
           return { committed: true };
         },
-        readAll: async () => ({ entries: Object.fromEntries(disk), processFirstRead: true }),
+        readAll: async () => { await readGate; return { entries: Object.fromEntries(disk), processFirstRead: true }; },
         forgetOwner: async () => ({ committed: true }),
       } },
     };
+    readGate = Promise.resolve();
     BridgeRegistry.register('getMe', (() => ({ _id: 'user-a' })) as never);
     serverTruth = [
       { _id: 'first', name: 'Default' },
@@ -303,6 +305,33 @@ describe('#490 Android: server restoration from the acknowledged native store', 
     await settle(); flushSync();
     expect(host.querySelector('[data-id="first"]')?.getAttribute('aria-current')).toBe('true');
     expect(navigationDurabilityStatus().restoration.server).toBe('refused');
+  });
+
+  it('renders the rail while the native read is still pending (#491 P03 timing)', async () => {
+    let open!: () => void;
+    disk.set(key('user-a'), 'durable');
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    await mountRail();
+    await settle(); flushSync();
+    // Servers are visible and tappable before restoration is decided.
+    expect(railTips()).toEqual(expect.arrayContaining(['Default', 'Durable', 'Stale']));
+    open();
+    await settle(); await settle(); flushSync();
+    expect(host.querySelector('[data-id="durable"]')?.getAttribute('aria-current')).toBe('true');
+  });
+
+  it('a click during the native read wins over the later restore', async () => {
+    let open!: () => void;
+    disk.set(key('user-a'), 'durable');
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    await mountRail();
+    await settle(); flushSync();
+    (host.querySelector('[data-id="stale"]') as HTMLButtonElement).click();
+    flushSync();
+    open();
+    await settle(); await settle(); flushSync();
+    expect(host.querySelector('[data-id="stale"]')?.getAttribute('aria-current')).toBe('true');
+    expect(host.querySelector('[data-id="durable"]')?.getAttribute('aria-current')).toBeNull();
   });
 
   it('an explicit server click is mirrored to native storage and acknowledged', async () => {
