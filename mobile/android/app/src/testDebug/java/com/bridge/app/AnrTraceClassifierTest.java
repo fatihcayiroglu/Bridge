@@ -203,6 +203,119 @@ public class AnrTraceClassifierTest {
     }
 
     @Test
+    public void hardwareRendererJavaOperationsAreNotLostAsOther() {
+        String[][] methods = {
+            { "nCreateRootRenderNode", "renderer-init" },
+            { "nCreateProxy", "renderer-init" },
+            { "nSetSurface", "surface-setup" },
+            { "nSetSurfaceControl", "surface-setup" },
+            { "nAllocateBuffers", "buffer-allocate" },
+            { "nSyncAndDrawFrame", "frame-sync" }
+        };
+        for (String[] method : methods) {
+            AnrTraceClassifier.Result r = AnrTraceClassifier.classify(trace(
+                    "\"main\" prio=5 tid=1 Native",
+                    "  at android.graphics.HardwareRenderer." + method[0] + "(Native method)",
+                    "  at android.view.ThreadedRenderer.initialize(ThreadedRenderer.java:1)"));
+            assertEquals(method[0], method[1], r.topOperation);
+            assertEquals("framework-only", r.subsystem);
+            assertEquals("none", r.ownerOperation);
+        }
+    }
+
+    @Test
+    public void sameTraceKeepsMainProxyAndRenderContextOperationsSeparate() {
+        // Synthetic ART-format fixture, not a claim about the retained ANR.
+        String raw = "\"main\" prio=5 tid=1 Native\n"
+                + "  native: #00 pc 00001000 /apex/bionic/libc.so (__futex_wait+8)\n"
+                + "  native: #01 pc 00002000 /system/lib64/libhwui.so (android::uirenderer::renderthread::RenderProxy::setSurface(ANativeWindow*, bool)+80)\n"
+                + "  at android.graphics.HardwareRenderer.nSetSurface(Native method)\n\n"
+                + "\"RenderThread\" daemon prio=7 tid=14 Native\n"
+                + "  native: #00 pc 00001000 /apex/bionic/libc.so (__futex_wait+8)\n"
+                + "  native: #01 pc 00003000 /system/lib64/libhwui.so (android::uirenderer::renderthread::RenderThread::requireGlContext()+12)\n\n"
+                + "\"private-worker\" prio=5 tid=99 Native\n"
+                + "  native: #00 pc 00004000 /private/libhwui.so (android::uirenderer::renderthread::RenderProxy::syncAndDrawFrame()+4)\n";
+        AnrTraceClassifier.Result main = AnrTraceClassifier.classify(raw);
+        AnrTraceClassifier.Result render = AnrTraceClassifier.classifyRenderThread(raw);
+        assertEquals("surface-setup", main.topOperation);
+        assertEquals("none", main.ownerOperation);
+        assertEquals("unknown", render.top); // No Java frame: never infer Java work or idle.
+        assertEquals("mainNativeOperation=surface-setup renderState=Native renderNativeHint=graphics renderNativeOperation=context-init",
+                main.graphicsMarker(render));
+    }
+
+    @Test
+    public void nativeOperationNeedsExactLibraryAndDemangledMethodBoundary() {
+        for (String frame : new String[] {
+                "/private/libhwui.so.evil (android::uirenderer::renderthread::RenderProxy::setSurface()+8)",
+                "/private/libwebviewchromium.so (android::uirenderer::renderthread::RenderProxy::setSurface()+8)",
+                "/private/libhwui.so (evil::android::uirenderer::renderthread::RenderProxy::setSurface()+8)",
+                "/private/libhwui.so (android::uirenderer::renderthread::RenderProxy::setSurfaceSecret()+8)",
+                "/private/libhwui.so (secret(android::uirenderer::renderthread::RenderProxy::setSurface()+8))",
+                "/private/libhwui.so (android::uirenderer::renderthread::RenderProxy::setSurface<Secret>()+8)",
+                "/private/libhwui.so (private-customer@example.test+8)"
+        }) {
+            AnrTraceClassifier.Result r = AnrTraceClassifier.classify(trace(
+                    "\"main\" prio=5 tid=1 Native", "  native: #01 pc 00001000 " + frame));
+            assertEquals(frame, "graphics".equals(r.nativeHint) ? "other" : "none", r.nativeOperation);
+            String marker = r.graphicsMarker(AnrTraceClassifier.classifyRenderThread(null));
+            assertFalse(marker.contains("private") || marker.contains("Secret") || marker.contains("android::"));
+        }
+    }
+
+    @Test
+    public void nativeOperationsDoNotEscapeTheFrameOrThreadScanLimits() {
+        StringBuilder raw = new StringBuilder("\"main\" prio=5 tid=1 Native\n");
+        for (int i = 0; i < 24; i++) raw.append("  native: #00 pc 00001000 /apex/bionic/libc.so (__futex_wait+8)\n");
+        String operation = "  native: #24 pc 00002000 /system/lib64/libhwui.so (android::uirenderer::renderthread::RenderProxy::syncAndDrawFrame()+8)\n";
+        assertEquals("none", AnrTraceClassifier.classify(raw + operation).nativeOperation);
+        String atLimit = raw.substring(0, raw.lastIndexOf("  native:")) + operation;
+        assertEquals("frame-sync", AnrTraceClassifier.classify(atLimit).nativeOperation);
+        assertEquals("none", AnrTraceClassifier.classify(raw + "\n\"RenderThread\" prio=7 tid=14 Native\n" + operation).nativeOperation);
+        assertEquals("frame-sync", AnrTraceClassifier.classifyRenderThread(raw + "\n\"RenderThread\" prio=7 tid=14 Native\n" + operation).nativeOperation);
+    }
+
+    @Test
+    public void rendererDiagnosticsRequireItsExactThreadAndPreserveMissing() {
+        for (String header : new String[] { "\"RenderThread-2\" prio=7 tid=14 Native",
+                "\"OtherRenderThread\" prio=7 tid=14 Native", "\"main\" prio=5 tid=1 Native" }) {
+            AnrTraceClassifier.Result r = AnrTraceClassifier.classifyRenderThread(trace(header,
+                    "  native: #01 pc 00002000 /system/lib64/libhwui.so (android::uirenderer::renderthread::EglManager::swapBuffers()+8)"));
+            // The shared trace fixture has a later real RenderThread, but no native frame in it.
+            assertEquals("none", r.nativeOperation);
+            assertEquals("none", r.nativeHint);
+        }
+        AnrTraceClassifier.Result missing = AnrTraceClassifier.classifyRenderThread(null);
+        assertEquals("mainNativeOperation=none renderState=missing renderNativeHint=none renderNativeOperation=none",
+                AnrTraceClassifier.classify(null).graphicsMarker(missing));
+        assertEquals("missing", AnrTraceClassifier.classifyRenderThread("\"RenderThread-2\" prio=7 tid=14 Native\n").mainState);
+    }
+
+    @Test
+    public void nativeContextSwapAndFenceAreContextNotProofOfBlockedTopFrame() {
+        String[][] cases = {
+            { "renderthread::RenderThread::requireVkContext", "context-init" },
+            { "renderthread::EglManager::swapBuffers", "buffer-swap" },
+            { "skiapipeline::SkiaVulkanPipeline::swapBuffers", "buffer-swap" },
+            { "renderthread::EglManager::fenceWait", "fence-wait" },
+            { "skiapipeline::SkiaOpenGLPipeline::draw", "frame-draw" },
+            { "ThreadBase::threadLoop", "render-loop" }
+        };
+        for (String[] operation : cases) {
+            String raw = "\"RenderThread\" prio=7 tid=14 Native\n"
+                    + "  native: #00 pc 00001000 /apex/bionic/libc.so (__futex_wait+8)\n"
+                    + "  native: #01 pc 00002000 /system/lib64/libhwui.so (android::uirenderer::" + operation[0] + "()+8)\n"
+                    + "  native: #02 pc 00003000 /system/lib64/libhwui.so (android::uirenderer::renderthread::RenderProxy::syncAndDrawFrame()+8)\n";
+            AnrTraceClassifier.Result r = AnrTraceClassifier.classifyRenderThread(raw);
+            assertEquals(operation[0], operation[1], r.nativeOperation);
+            assertEquals("unknown", r.top);
+            assertEquals("none", r.topOperation);
+        }
+        assertEquals("other", AnrTraceClassifier.classify(trace("\"main\" prio=5 tid=1 Native",
+                "  at android.graphics.HardwareRenderer.nSetSurfaceSecret(Native method)")).topOperation);
+    }
+
+    @Test
     public void staticInitializersAndUnknownConstructorsStayFixedCategories() {
         AnrTraceClassifier.Result initializer = AnrTraceClassifier.classify(trace(
                 "\"main\" prio=5 tid=1 Runnable",
