@@ -63,7 +63,8 @@ public final class AnrTraceProbeActivity extends android.app.Activity {
                 }
                 AnrTraceClassifier.Result result = AnrTraceClassifier.classify(trace);
                 android.util.Log.i(TAG, "stage=exit traceAvailable=" + (trace != null)
-                        + " " + result.marker() + " " + result.operationMarker());
+                        + " " + result.marker() + " " + result.operationMarker()
+                        + " " + result.graphicsMarker(AnrTraceClassifier.classifyRenderThread(trace)));
             }
         } catch (RuntimeException e) {
             android.util.Log.i(TAG, "stage=done supported=true error=true anrExits=" + anrs

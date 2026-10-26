@@ -1090,7 +1090,10 @@ const ANR_NATIVE_HINTS = new Set(['art', 'libc', 'webview', 'binder', 'graphics'
 const ANR_OPERATIONS = new Set(['looper', 'binder', 'sleep', 'monitor-wait',
   'class-load', 'reflection', 'asset-read', 'webview-init', 'webview-load', 'webview-focus',
   'capacitor-build', 'capacitor-plugins', 'capacitor-script', 'capacitor-lifecycle',
-  'capacitor-message', 'bridge-lifecycle', 'constructor', 'class-init', 'other', 'none']);
+  'capacitor-message', 'bridge-lifecycle', 'constructor', 'class-init',
+  'renderer-init', 'surface-setup', 'buffer-allocate', 'frame-sync', 'other', 'none']);
+const ANR_NATIVE_OPERATIONS = new Set(['renderer-init', 'surface-setup', 'buffer-allocate',
+  'frame-sync', 'context-init', 'buffer-swap', 'fence-wait', 'frame-draw', 'render-loop', 'other', 'none']);
 
 /**
  * #209 ANR02: parse the debug AnrTraceProbeActivity's fixed markers from the
@@ -1109,14 +1112,18 @@ export function parseAnrTraceProbeMarkers(raw, appPid) {
     const body = m[2];
     // Historical markers have no operation fields. Preserve them as-is, not
     // as operation=none: absent diagnostics cannot establish an idle thread.
-    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24}) nativeHint=([a-z-]{1,24})(?: topOperation=([a-z-]{1,24}) ownerOperation=([a-z-]{1,24}))?$/.exec(body);
+    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24}) nativeHint=([a-z-]{1,24})(?: topOperation=([a-z-]{1,24}) ownerOperation=([a-z-]{1,24})(?: mainNativeOperation=([a-z-]{1,24}) renderState=([A-Za-z-]{1,24}) renderNativeHint=([a-z-]{1,24}) renderNativeOperation=([a-z-]{1,24}))?)?$/.exec(body);
     if (exit && ANR_MAIN_STATES.has(exit[2]) && ANR_TOPS.has(exit[3]) &&
         ANR_SUBSYSTEMS.has(exit[4]) && ANR_NATIVE_HINTS.has(exit[5]) &&
         (exit[6] === undefined || (ANR_OPERATIONS.has(exit[6]) && ANR_OPERATIONS.has(exit[7]))) &&
+        (exit[8] === undefined || (ANR_NATIVE_OPERATIONS.has(exit[8]) && ANR_MAIN_STATES.has(exit[9]) &&
+          ANR_NATIVE_HINTS.has(exit[10]) && ANR_NATIVE_OPERATIONS.has(exit[11]))) &&
         result.traces.length < 5) {
       result.traces.push({ traceAvailable: exit[1] === 'true', mainState: exit[2],
         top: exit[3], subsystem: exit[4], nativeHint: exit[5],
-        ...(exit[6] === undefined ? {} : { topOperation: exit[6], ownerOperation: exit[7] }) });
+        ...(exit[6] === undefined ? {} : { topOperation: exit[6], ownerOperation: exit[7] }),
+        ...(exit[8] === undefined ? {} : { mainNativeOperation: exit[8], renderState: exit[9],
+          renderNativeHint: exit[10], renderNativeOperation: exit[11] }) });
       continue;
     }
     const done = /^stage=done supported=(true|false)(?: error=(true|false))? anrExits=([0-9]{1,3})(?: records=([0-9]{1,4}) oldestBeforeStart=(true|false) capacity=(-1|[0-9]{1,4}))?$/.exec(body);

@@ -4,11 +4,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Android #209: DEBUG-only reduction of an ART ANR trace's "main" thread to
+ * Android #209: DEBUG-only reduction of an ART ANR trace's exact "main" and
+ * "RenderThread" threads to
  * fixed categories: idle in its Looper, inside a binder call, waiting for a
  * lock, or running Bridge / Capacitor / WebView code. These describe the
  * sampled stack, not the cause or duration of an ANR.
- * No frame, class, argument, path or user data is ever returned.
+ * No frame, class, argument, path or user data is ever returned. RenderThread
+ * context is sampled from the same trace, not joined across historical exits.
  */
 final class AnrTraceClassifier {
     static final class Result {
@@ -18,15 +20,17 @@ final class AnrTraceClassifier {
         final String nativeHint;
         final String topOperation;
         final String ownerOperation;
+        final String nativeOperation;
 
         Result(String mainState, String top, String subsystem, String nativeHint,
-                String topOperation, String ownerOperation) {
+                String topOperation, String ownerOperation, String nativeOperation) {
             this.mainState = mainState;
             this.top = top;
             this.subsystem = subsystem;
             this.nativeHint = nativeHint;
             this.topOperation = topOperation;
             this.ownerOperation = ownerOperation;
+            this.nativeOperation = nativeOperation;
         }
 
         String marker() {
@@ -37,10 +41,23 @@ final class AnrTraceClassifier {
         String operationMarker() {
             return "topOperation=" + topOperation + " ownerOperation=" + ownerOperation;
         }
+
+        String graphicsMarker(Result renderThread) {
+            return "mainNativeOperation=" + nativeOperation + " renderState=" + renderThread.mainState
+                    + " renderNativeHint=" + renderThread.nativeHint
+                    + " renderNativeOperation=" + renderThread.nativeOperation;
+        }
     }
 
     private static final Pattern MAIN_HEADER =
             Pattern.compile("^\"main\" (?:daemon )?prio=\\d+ tid=\\d+ ([A-Za-z]+)");
+    private static final Pattern RENDER_HEADER =
+            Pattern.compile("^\"RenderThread\" (?:daemon )?prio=\\d+ tid=\\d+ ([A-Za-z]+)");
+    // Require a real ART native frame, the exact library basename and a
+    // demangled symbol's method boundary. Unknown/mangled symbols stay other.
+    private static final Pattern HWUI_SYMBOL = Pattern.compile(
+            "^\\s*(?:native: )?#\\d{2}\\s+pc\\s+[0-9a-fA-F]+\\s+(?:\\S*/)?libhwui\\.so\\s+\\("
+                    + "(android::uirenderer::[A-Za-z:]+)\\(");
     // ART uses <init>/<clinit> for constructors/static initializers. Skipping
     // those frames can falsely attribute their work to a deeper caller.
     private static final Pattern FRAME = Pattern.compile(
@@ -51,12 +68,20 @@ final class AnrTraceClassifier {
     private AnrTraceClassifier() {}
 
     static Result classify(String trace) {
+        return classifyThread(trace, MAIN_HEADER);
+    }
+
+    static Result classifyRenderThread(String trace) {
+        return classifyThread(trace, RENDER_HEADER);
+    }
+
+    private static Result classifyThread(String trace, Pattern header) {
         if (trace == null) return missing();
         String[] lines = trace.split("\r?\n", -1);
         int start = -1;
         String state = null;
         for (int i = 0; i < lines.length; i++) {
-            Matcher m = MAIN_HEADER.matcher(lines[i]);
+            Matcher m = header.matcher(lines[i]);
             if (m.find()) {
                 start = i + 1;
                 state = m.group(1);
@@ -73,21 +98,26 @@ final class AnrTraceClassifier {
         int frames = 0;
         int nativeFrames = 0;
         String nativeHint = "none";
+        String nativeOperation = "none";
         for (int i = start; i < lines.length && frames < MAX_FRAMES; i++) {
             String line = lines[i];
-            // A blank line or the next thread header ends the "main" block.
+            // A blank line or the next thread header ends this exact thread.
             if (line.isEmpty() || line.startsWith("\"")) break;
             if (line.trim().startsWith("- waiting to lock")) waitingToLock = true;
             // ART writes native #nn frames before Java `at` frames. Reduce
             // library basenames to fixed categories, never log the original
             // path, symbol, offset, method or line (any may carry user data).
             // The first recognized non-libc library is a *hint*, not proof
-            // that it caused the ANR. Only inspect this main-thread block.
+            // that it caused the ANR. Only inspect this thread's block.
             if (nativeFrames < MAX_NATIVE_FRAMES && line.matches("^\\s*(?:native: )?#\\d{2}\\s+.*")) {
                 nativeFrames++;
                 String category = nativeLibraryHint(line);
                 if (!"none".equals(category) && ("none".equals(nativeHint)
                         || "libc".equals(nativeHint))) nativeHint = category;
+                if ("graphics".equals(category)
+                        && ("none".equals(nativeOperation) || "other".equals(nativeOperation))) {
+                    nativeOperation = nativeGraphicsOperation(line);
+                }
             }
             Matcher f = FRAME.matcher(line);
             if (!f.find()) continue;
@@ -111,11 +141,11 @@ final class AnrTraceClassifier {
         else top = "running-code";
         return new Result(stateOf(state), top,
                 subsystem != null ? subsystem : anyFrame ? "framework-only" : "none",
-                nativeHint, operationOf(firstFrame), ownerOperation);
+                nativeHint, operationOf(firstFrame), ownerOperation, nativeOperation);
     }
 
     private static Result missing() {
-        return new Result("missing", "unknown", "none", "none", "none", "none");
+        return new Result("missing", "unknown", "none", "none", "none", "none", "none");
     }
 
     /**
@@ -145,6 +175,12 @@ final class AnrTraceClassifier {
             case "android.content.res.AssetManager.open":
             case "android.content.res.AssetManager.openNonAsset":
             case "android.content.res.AssetManager$AssetInputStream.read": return "asset-read";
+            case "android.graphics.HardwareRenderer.nCreateRootRenderNode":
+            case "android.graphics.HardwareRenderer.nCreateProxy": return "renderer-init";
+            case "android.graphics.HardwareRenderer.nSetSurface":
+            case "android.graphics.HardwareRenderer.nSetSurfaceControl": return "surface-setup";
+            case "android.graphics.HardwareRenderer.nAllocateBuffers": return "buffer-allocate";
+            case "android.graphics.HardwareRenderer.nSyncAndDrawFrame": return "frame-sync";
             case "android.webkit.WebView.<init>":
             case "android.webkit.WebView.ensureProviderCreated":
             case "android.webkit.WebView.getFactory":
@@ -211,6 +247,40 @@ final class AnrTraceClassifier {
         if (line.matches(".*[/ ]libandroid_runtime\\.so(?:\\s|\\().*")) return "android-runtime";
         if (line.matches(".*[/ ]libc\\.so(?:\\s|\\().*")) return "libc";
         return "none";
+    }
+
+    /**
+     * First allowlisted HWUI operation within the existing native-frame cap.
+     * This may be an ancestor, not the blocked frame. Symbols checked against
+     * AOSP android-14.0.0_r1; never infer an operation from libc or a substring.
+     */
+    private static String nativeGraphicsOperation(String line) {
+        Matcher symbol = HWUI_SYMBOL.matcher(line);
+        if (!symbol.find()) return "other";
+        switch (symbol.group(1)) {
+            case "android::uirenderer::renderthread::RenderProxy::RenderProxy": return "renderer-init";
+            case "android::uirenderer::renderthread::RenderProxy::setSurface":
+            case "android::uirenderer::renderthread::RenderProxy::setSurfaceControl":
+            case "android::uirenderer::renderthread::EglManager::createSurface":
+            case "android::uirenderer::renderthread::EglManager::makeCurrent": return "surface-setup";
+            case "android::uirenderer::renderthread::RenderProxy::allocateBuffers": return "buffer-allocate";
+            case "android::uirenderer::renderthread::RenderProxy::syncAndDrawFrame": return "frame-sync";
+            case "android::uirenderer::renderthread::RenderThread::requireGlContext":
+            case "android::uirenderer::renderthread::RenderThread::requireVkContext":
+            case "android::uirenderer::renderthread::EglManager::initialize":
+            case "android::uirenderer::renderthread::EglManager::createContext":
+            case "android::uirenderer::renderthread::VulkanManager::initialize": return "context-init";
+            case "android::uirenderer::renderthread::EglManager::swapBuffers":
+            case "android::uirenderer::skiapipeline::SkiaOpenGLPipeline::swapBuffers":
+            case "android::uirenderer::skiapipeline::SkiaVulkanPipeline::swapBuffers": return "buffer-swap";
+            case "android::uirenderer::renderthread::RenderProxy::fence":
+            case "android::uirenderer::renderthread::EglManager::fenceWait": return "fence-wait";
+            case "android::uirenderer::skiapipeline::SkiaOpenGLPipeline::draw":
+            case "android::uirenderer::skiapipeline::SkiaVulkanPipeline::draw": return "frame-draw";
+            case "android::uirenderer::renderthread::RenderThread::threadLoop":
+            case "android::uirenderer::ThreadBase::threadLoop": return "render-loop";
+            default: return "other";
+        }
     }
 
     private static String stateOf(String state) {

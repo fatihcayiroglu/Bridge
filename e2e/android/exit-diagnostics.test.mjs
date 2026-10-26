@@ -1341,6 +1341,53 @@ test('ANR02 bounds operation records and keeps unknown operations explicit', () 
   assert.deepEqual(parseAnrTraceProbeMarkers(marker + '\n' + Array(200).fill('irrelevant').join('\n'), 77).traces, []);
 });
 
+test('ANR02 binds graphics and RenderThread context to the same exit and exact probe PID', () => {
+  const marker = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=graphics topOperation=surface-setup ownerOperation=none mainNativeOperation=surface-setup renderState=Native renderNativeHint=graphics renderNativeOperation=context-init';
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker, 77).traces, [{
+    traceAvailable: true, mainState: 'Native', top: 'running-code', subsystem: 'framework-only',
+    nativeHint: 'graphics', topOperation: 'surface-setup', ownerOperation: 'none',
+    mainNativeOperation: 'surface-setup', renderState: 'Native', renderNativeHint: 'graphics',
+    renderNativeOperation: 'context-init',
+  }]);
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker, 78).traces, []);
+  const parsed = parseAnrTraceProbeMarkers(Array(8).fill(marker).join('\n'), 77);
+  assert.equal(parsed.traces.length, 5);
+  assert.equal(parsed.complete, false);
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker + '\n' + Array(200).fill('irrelevant').join('\n'), 77).traces, []);
+});
+
+test('ANR02 rejects partial, extended, spoofed or unbounded graphics diagnostics', () => {
+  const prefix = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=graphics topOperation=surface-setup ownerOperation=none';
+  const suffix = ' mainNativeOperation=surface-setup renderState=Native renderNativeHint=graphics renderNativeOperation=context-init';
+  for (const bad of [
+    suffix.replace('context-init', 'com.secret.Customer'),
+    suffix.replace('context-init', 'context-init-secret'),
+    suffix.replace('Native', 'Customer'),
+    suffix.replace('renderNativeHint=graphics', 'renderNativeHint=private'),
+    suffix.replace('mainNativeOperation=surface-setup', 'mainNativeOperation=looper'),
+    suffix.replace('renderNativeOperation=context-init', ''),
+    suffix.replace(' renderState=Native', ''),
+    suffix + ' token=private',
+    suffix + ' mainNativeOperation=surface-setup',
+    suffix.replace('context-init', 'a'.repeat(25)),
+  ]) assert.deepEqual(parseAnrTraceProbeMarkers(prefix + bad, 77).traces, []);
+  assert.deepEqual(parseAnrTraceProbeMarkers(prefix + '\n' + suffix, 77).traces, [{
+    traceAvailable: true, mainState: 'Native', top: 'running-code', subsystem: 'framework-only',
+    nativeHint: 'graphics', topOperation: 'surface-setup', ownerOperation: 'none',
+  }]); // A later line must never attach context to a historical exit.
+});
+
+test('ANR02 preserves absent historical graphics fields and explicit missing render thread', () => {
+  const prefix = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=graphics topOperation=frame-sync ownerOperation=none';
+  const historical = parseAnrTraceProbeMarkers(prefix, 77).traces[0];
+  assert.equal(Object.hasOwn(historical, 'mainNativeOperation'), false);
+  assert.equal(Object.hasOwn(historical, 'renderState'), false);
+  const current = parseAnrTraceProbeMarkers(prefix + ' mainNativeOperation=other renderState=missing renderNativeHint=none renderNativeOperation=none', 77).traces[0];
+  assert.equal(current.mainNativeOperation, 'other');
+  assert.equal(current.renderState, 'missing');
+  assert.doesNotMatch(JSON.stringify(current), /libhwui|android::|private|77/);
+});
+
 test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => {
   const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const anr01 = journeys.indexOf("await check('ANR01'");
