@@ -2,6 +2,12 @@ import {
   CHANNEL_READ_EXPIRY_SQL, channelLiveForMessageRead, channelLiveWindowForRead,
   type ChannelReadQuery,
 } from '../lib/channelReadExpiryGuard';
+import { performance } from 'node:perf_hooks';
+
+// These policy fixtures have no query latency. Delay/deadline behavior is
+// covered separately with advancing monotonic time and real PostgreSQL.
+beforeEach(() => jest.spyOn(performance, 'now').mockReturnValue(100));
+afterEach(() => jest.restoreAllMocks());
 
 const NOW = 1_800_000_000_000;
 const base = {
@@ -70,7 +76,7 @@ describe('P7 D2 live window: how long a positive answer may be reused', () => {
       .toEqual({ live: true, remainingMs: null });
   });
 
-  it('an expiring channel reports exactly expiresAt minus the DATABASE clock', async () => {
+  it('with no query latency, an expiring channel reports exactly expiresAt minus the DATABASE clock', async () => {
     const { pool, calls } = fixture([{ ...base, expiresAt: String(NOW + 1_234), expiryVersion: '1' }]);
     expect(await channelLiveWindowForRead(pool, 'channel-one', 'tenant-one')).toEqual({ live: true, remainingMs: 1_234 });
     expect(calls).toEqual([{ sql: CHANNEL_READ_EXPIRY_SQL, params: ['channel-one', 'tenant-one'] }]);
