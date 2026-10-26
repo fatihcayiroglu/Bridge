@@ -1466,11 +1466,18 @@ async function runUpstreamWebViewControls() {
           await sleep(2000);
           const finalPid = await pid();
           const count = await anrCount();
+          // #209: the same per-start stall evidence as CS01 (Choreographer +
+          // debug stall probe), so native-only, plain-WebView and Bridge cold
+          // starts are compared on identical infrastructure. Non-asserting.
+          const startupLog = tag => androidFailureShell(
+            'logcat -d -v brief --pid ' + firstPid + ' -s ' + tag + ":I '*:S'").catch(() => undefined);
           const record = {
             attempt, kind: control.kind, activityResumed,
             pidStable: firstPid === finalPid,
             pidPresentAfterObservation: /^[0-9]{1,8}$/.test(String(finalPid)),
             newlyRecordedAnrs: count - previousAnrs,
+            skippedFrames: parseChoreographerSkips(await startupLog('Choreographer'), firstPid),
+            mainThreadStalls: parseStallProbe(await startupLog('BridgeStallProbe'), firstPid),
           };
           samples.push(record);
           if (!record.pidStable) {
@@ -1507,7 +1514,12 @@ async function runUpstreamWebViewControls() {
         }
       }
       facts.androidControlColdStarts.complete = true;
-      return { complete: true, samples };
+      // #209: per-kind stall summary for comparison with CS01/SF01/SF02.
+      const byKind = Object.fromEntries(controls.map(({ kind }) => {
+        const rows = samples.filter(row => row.kind === kind);
+        return [kind, { frames: summarizeStartupSkips(rows), probe: summarizeStartupStallProbe(rows) }];
+      }));
+      return { complete: true, samples, stallsByKind: byKind };
     } finally {
       // The product launch A01 must start in a fresh Android app process.
       await sh('am force-stop ' + PKG).catch(() => {});

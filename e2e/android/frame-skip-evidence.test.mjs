@@ -98,3 +98,12 @@ test('#209 SF02 is product measurement only; the probe is calibrated by AN00 in 
   const mainManifest = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml', import.meta.url), 'utf8');
   assert.doesNotMatch(mainManifest, /StallProbe/);
 });
+
+test('#209 CS00 records the same non-asserting stall evidence per control kind', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const cs00 = source.slice(source.indexOf("await measure('CS00'"), source.indexOf('const measureAn00 ='));
+  assert.match(cs00, /skippedFrames: parseChoreographerSkips\(await startupLog\('Choreographer'\), firstPid\)/);
+  assert.match(cs00, /mainThreadStalls: parseStallProbe\(await startupLog\('BridgeStallProbe'\), firstPid\)/);
+  assert.match(cs00, /stallsByKind: byKind/);
+  assert.doesNotMatch(cs00, /assert\([^)]*(skippedFrames|mainThreadStalls)/);
+});
