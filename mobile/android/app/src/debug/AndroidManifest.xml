@@ -42,6 +42,13 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- #209 AN00: DEBUG-only deterministic ANR control (blocks its own main
+         thread once, bounded); no Bridge code, no WebView. -->
+    <activity
+      android:name="com.bridge.app.MainThreadStallControlActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- DEBUG-only AndroidX AppCompat Activity baseline: same provider
          probe without any WebView or Bridge application code. -->
     <activity

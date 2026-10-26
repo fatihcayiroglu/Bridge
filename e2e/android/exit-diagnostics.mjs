@@ -486,6 +486,195 @@ export function parseAnrCpuPressure(raw, expectedProcess, limit = 3) {
   return records;
 }
 
+/**
+ * Device wall clock from `date +%s.%N` (milliseconds) or `date +%s` (whole
+ * seconds), as { epochMs, precision }, or null. Toybox without %N support
+ * leaves a non-numeric suffix, which is rejected here (the caller then reads
+ * whole seconds).
+ */
+export function parseDeviceEpoch(text) {
+  const t = String(text ?? '').trim();
+  const ns = /^([0-9]{9,11})\.([0-9]{9})$/.exec(t);
+  if (ns) return { epochMs: Number(ns[1]) * 1000 + Math.floor(Number(ns[2]) / 1e6), precision: 'ms' };
+  const s = /^([0-9]{9,11})$/.exec(t);
+  return s ? { epochMs: Number(s[1]) * 1000, precision: 's' } : null;
+}
+
+/**
+ * #209 AN00: the debug MainThreadStallControlActivity's fixed markers from the
+ * EXACT control PID: whether its bounded stall began and ended.
+ */
+export function parseStallControlMarkers(raw, appPid) {
+  const none = { began: false, ended: false, stallMs: null };
+  if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
+  const target = String(Number(appPid));
+  let began = false;
+  let ended = false;
+  let stallMs = null;
+  for (const line of String(raw ?? '').split(/\r?\n/).slice(-200)) {
+    const m = /^[A-Z]\/BridgeStallControl\(\s*([0-9]{1,8})\):\s*stage=(?:stall-begin stallMs=([0-9]{4,5})|(stall-end))\s*$/.exec(line);
+    if (!m || String(Number(m[1])) !== target) continue;
+    if (m[2] !== undefined) { began = true; stallMs = Number(m[2]); }
+    else if (began) ended = true;
+  }
+  return { began, ended, stallMs };
+}
+
+/** Fixed classes of an ANR reason (ActivityManager or event-log text). */
+function anrReasonClass(text) {
+  const value = String(text ?? '');
+  if (/input dispatching timed out/i.test(value)) {
+    return /\bFocusEvent\b/.test(value) ? 'input-focus-event'
+      : /\bKeyEvent\b/.test(value) ? 'input-key-event'
+        : /\bMotionEvent\b/.test(value) ? 'input-motion-event' : 'input-other';
+  }
+  if (/broadcast/i.test(value)) return 'broadcast';
+  if (/executing service|service/i.test(value)) return 'service';
+  if (/content ?provider/i.test(value)) return 'provider';
+  return 'other';
+}
+
+/** Fixed classes of an am_kill reason (AOSP 14 ProcessRecord.killLocked callers). */
+function killReasonClass(text) {
+  const value = String(text ?? '').trim();
+  if (value === 'user request after error') return 'user-request-after-error';
+  if (value === 'bg anr') return 'background-anr';
+  if (/^anr\b/i.test(value)) return 'anr';
+  if (/^stop [A-Za-z0-9_.]+ due to /.test(value) || /force.?stop/i.test(value)) return 'force-stop';
+  if (/^remove task\b/.test(value)) return 'remove-task';
+  if (/^depends on provider /.test(value)) return 'provider-dependency';
+  if (/^crash\b/i.test(value)) return 'crash';
+  return 'other';
+}
+
+/**
+ * #209 FocusEvent ANRs: the system event log's own timeline for ONE process
+ * name (`logcat -b events -d -v epoch` lines for am_anr, am_kill,
+ * am_proc_died and am_proc_start). Times are device-clock milliseconds since
+ * `originEpochMs` (the device-clock journey start); process instances become
+ * ordinals (1, 2, ...) in order of appearance. No PID, reason text, window or
+ * component name crosses this boundary, only fixed classes.
+ *
+ * It answers what ApplicationExitInfo alone cannot: when an ANR was declared
+ * relative to the kill that ended that process, and the kill's own reason (an
+ * ANR dialog closed by HOME is "user request after error").
+ */
+export function parseAnrEventTimeline(raw, expectedProcess, originEpochMs, limit = 64, endOffsetMs = Infinity) {
+  const none = { available: false, events: [], anrs: [], unparsedLines: 0 };
+  if (!/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return none;
+  if (!Number.isFinite(originEpochMs)) return none;
+  if (endOffsetMs !== Infinity && (!Number.isFinite(endOffsetMs) || endOffsetMs < 0)) return none;
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(128, limit)) : 64;
+  const rows = [];
+  let unparsedLines = 0;
+  let preOriginEvents = 0;
+  let postWindowEvents = 0;
+  for (const line of String(raw ?? '').split(/\r?\n/)) {
+    const m = /^\s*([0-9]{9,11}\.[0-9]{3,9})\s+(?:[0-9]{1,6}\s+)?[0-9]{1,8}\s+[0-9]{1,8}\s+[A-Z]\s+(am_anr|am_kill|am_proc_died|am_proc_start)\s*:\s*\[(.*)\]\s*$/.exec(line);
+    if (!m) {
+      if (/\b(?:am_anr|am_kill|am_proc_died|am_proc_start)\b/.test(line)) unparsedLines++;
+      continue;
+    }
+    const fields = m[3].split(',');
+    const processName = m[2] === 'am_proc_start' ? fields[3] : fields[2];
+    if (processName !== expectedProcess) continue;
+    const pidText = fields[1];
+    if (!/^[0-9]{1,8}$/.test(String(pidText))) { unparsedLines++; continue; }
+    const atMs = Math.round(Number(m[1]) * 1000 - originEpochMs);
+    if (!Number.isFinite(atMs)) { unparsedLines++; continue; }
+    // logcat -d can include a previous run (including an earlier ANR).
+    // Such events are NOT evidence about this journey.
+    if (atMs < 0) { preOriginEvents++; continue; }
+    if (atMs > endOffsetMs) { postWindowEvents++; continue; }
+    const type = m[2];
+    const row = { type, atMs, pidText, sequence: rows.length };
+    if (type === 'am_anr') row.reasonClass = anrReasonClass(fields.slice(4).join(','));
+    if (type === 'am_kill') row.reasonClass = killReasonClass(fields.slice(4).join(','));
+    rows.push(row);
+  }
+  if (rows.length === 0) {
+    return { ...none, unparsedLines,
+      ...(preOriginEvents ? { preOriginEvents } : {}),
+      ...(postWindowEvents ? { postWindowEvents } : {}) };
+  }
+
+  // The Set of logcat snapshots may contain rows read at different times.
+  // Sort by the event's own clock before attributing a process incarnation.
+  rows.sort((a, b) => a.atMs - b.atMs || a.sequence - b.sequence);
+  const truncated = rows.length > max;
+  const activePids = new Map();
+  let nextProcess = 0;
+  let missingStarts = false;
+  const events = [];
+  for (const row of rows.slice(0, max)) {
+    let process;
+    if (row.type === 'am_proc_start') {
+      // The same numeric PID can be reused after an earlier process dies.
+      process = ++nextProcess;
+      activePids.set(row.pidText, process);
+    } else {
+      process = activePids.get(row.pidText);
+      if (process === undefined) {
+        // A missing start is an evidence gap, not proof of a complete lifetime.
+        missingStarts = true;
+        process = ++nextProcess;
+        activePids.set(row.pidText, process);
+      }
+    }
+    const event = { type: row.type, atMs: row.atMs, process };
+    if (row.reasonClass !== undefined) event.reasonClass = row.reasonClass;
+    events.push(event);
+    if (row.type === 'am_proc_died') activePids.delete(row.pidText);
+  }
+  // Never pair an ANR from an older process incarnation with a later kill
+  // on a reused PID. The published result contains ordinals, never raw PIDs.
+  const anrs = events.filter(e => e.type === 'am_anr').map(anr => {
+    const after = events.filter(e => e.process === anr.process && e.atMs >= anr.atMs);
+    const kill = after.find(e => e.type === 'am_kill') ?? null;
+    const died = after.find(e => e.type === 'am_proc_died') ?? null;
+    return { atMs: anr.atMs, process: anr.process, reasonClass: anr.reasonClass,
+      killAfterMs: kill ? kill.atMs - anr.atMs : null, killReasonClass: kill?.reasonClass ?? null,
+      diedAfterMs: died ? died.atMs - anr.atMs : null };
+  });
+  return { available: events.length > 0, events, anrs, unparsedLines,
+    preOriginEvents, postWindowEvents, truncated,
+    // 'observed-only' is not a claim that Android's ring buffer was complete.
+    coverage: truncated || missingStarts ? 'partial' : 'observed-only' };
+}
+/**
+ * The check that was running at device-clock offset `atMs`: the last step
+ * that started at or before it. `steps` are { id, atMs } in start order.
+ */
+export function stepAtOffset(steps, atMs) {
+  if (!Array.isArray(steps) || !Number.isFinite(atMs)) return null;
+  let current = null;
+  for (const step of steps) {
+    if (!step || !Number.isFinite(step.atMs) || step.atMs > atMs) break;
+    if (/^[A-Z][A-Z0-9-]{0,15}$/.test(String(step.id))) current = step.id;
+  }
+  return current;
+}
+
+/**
+ * Is an "Application Not Responding" dialog for `expectedProcess` on screen?
+ * From `dumpsys window windows`: AOSP titles the dialog window
+ * "Application Not Responding: <process>". Counts and booleans only.
+ */
+export function inspectAnrDialogWindows(raw, expectedProcess) {
+  const none = { available: false, anrDialogs: 0, focusedOnAnrDialog: null };
+  if (!/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return none;
+  const src = String(raw ?? '');
+  if (!/\bWindow #\d+ Window\{|\bmCurrentFocus=/.test(src)) return none;
+  const title = 'Application Not Responding: ' + expectedProcess;
+  const tokens = new Set();
+  for (const m of src.matchAll(/\bWindow #\d+ Window\{([0-9a-f]{1,16}) u\d+ ([^}\r\n]{1,200})\}/g)) {
+    if (m[2] === title) tokens.add(m[1]);
+  }
+  const focus = /\bmCurrentFocus=(?:Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\}|null)/.exec(src);
+  return { available: true, anrDialogs: tokens.size,
+    focusedOnAnrDialog: focus ? focus[1] === title : null };
+}
+
 // Android's devtools socket is a different capability from the Activity being
 // resumed. A running native PID with NO WebView devtools socket indicates a
 // WebView/renderer/inspection failure, not an assertion that Bridge is healthy.

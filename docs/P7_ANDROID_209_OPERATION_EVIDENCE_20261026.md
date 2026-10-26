@@ -105,8 +105,40 @@ fatal ANR does not exercise these postmortem categories on a real failure and
 does not resolve #209. Even a populated category is a single sampled Java
 stack, not a duration, native blocking operation or causal intervention.
 
-The next recurrence needs the new categories together with the existing
-ANR03 lifecycle timeline, ANR CPU and font-release/ART pause measurements.
+The next recurrence needs the new categories together with the ANR03 lifecycle
+timeline from unmerged #340/#342, ANR CPU and font-release/ART pause measurements.
+ANR03 is absent from the standalone operation-evidence head `cea773d3`; the
+separate timeline integration below adds it.
 If those still cannot identify a blocking operation, a controlled experiment
 must separate workload and scheduling pressure before changing product code.
 Physical-device acceptance remains unverified.
+
+## Reusing the unmerged timeline work
+
+The separate timeline integration reuses the diagnostic commits from #340 and
+the corrections from #342, with their authorship and original commit references
+preserved:
+
+- `2dfddd57`: ANR03 event timeline, dialog sampling and debug-only AN00 controls.
+- `80a508a3` / `ce8b6b22`: observation bounds, foreign/stale event rejection and
+  separate process incarnations when Android reuses a PID.
+- `254668a2` / `ca76c6c9`: read failures and coverage remain visible.
+- `aa503861`: observed evidence is never presented as complete history.
+
+Conflict resolution retains the current privacy-redaction imports/tests and
+the newer recurrence documentation. It retains the 71 operation/privacy/exit
+parser tests and adds the 11 existing timeline tests: **82/82 PASS, 0 skipped**
+locally. The production client build and mobile Jest **142/142, 0 skipped**
+also passed. Every pre-existing journey assertion remains. No client, server,
+production Android source, dependency or workflow changes are included.
+Three deliberate local parser mutations (accept a foreign process, accept a
+pre-journey ANR, reuse one process ordinal across new starts) each failed the
+relevant negative-control tests. The original source was restored and all 82
+tests passed afterward; the intentional failures are not product failures.
+
+The old SDK installer changes from #342 are not copied over the newer installer
+already in the candidate. This integration adds one MEASURED product result,
+ANR03, and makes the existing AN00 controls available only in the separate
+upstream diagnostic suite. Neither is a PASS or a waiver for a product failure.
+Its own exact-head CI must validate the combination before acceptance; the
+standalone operation-evidence run is not proof for the integrated head.
