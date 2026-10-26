@@ -54,6 +54,22 @@ export async function observeLifecycleWindow(shell, pkg, start) {
     const focusEntries = [...boundedWindows.matchAll(/\bmCurrentFocus=Window\{[0-9a-f]{1,16} u\d+ ([^}\r\n]{1,200})\}/g)].slice(0, 9);
     const focus = focusEntries[0] ?? null;
     const expectedMain = pkg + '/com.bridge.app.MainActivity';
+    // AOSP dumps one mCurrentFocus per DisplayContent. Record which display
+    // emitted each focus and the explicitly reported top-focused display.
+    // This is diagnostics only: the independent strict gate below is unchanged.
+    const displayHeaders = [...boundedWindows.matchAll(/^\s*Display: mDisplayId=(0|[1-9]\d{0,4})\b/gm)].slice(0, 24);
+    const focusDisplayIds = focusEntries.map(entry => {
+      for (let i = displayHeaders.length - 1; i >= 0; i--) {
+        if (displayHeaders[i].index < entry.index) return Number(displayHeaders[i][1]);
+      }
+      return null;
+    });
+    const topDisplayMatch = boundedWindows.match(/\bmTopFocusedDisplayId=(0|[1-9]\d{0,4})\b/);
+    const topFocusedDisplayId = topDisplayMatch ? Number(topDisplayMatch[1]) : null;
+    const topFocusIndex = topFocusedDisplayId === null ? -1
+      : focusDisplayIds.findIndex(id => id === topFocusedDisplayId);
+    const defaultFocusIndex = focusDisplayIds.findIndex(id => id === 0);
+    const ownMainIndex = focusEntries.findIndex(entry => entry[1] === expectedMain);
     const focusOwner = !focus ? 'unknown'
       : focus[1] === expectedMain ? 'bridge-main'
       : focus[1].startsWith(pkg + '/') ? 'bridge-other'
@@ -68,6 +84,12 @@ export async function observeLifecycleWindow(shell, pkg, start) {
       focusOwner, focusEntries: Math.min(focusEntries.length, 8),
       focusEntriesOverflow: focusEntries.length > 8,
       ownMainInSecondaryEntry: focusEntries.slice(1).some(entry => entry[1] === expectedMain),
+      topFocusedDisplayId, firstFocusDisplayId: focusDisplayIds[0] ?? null,
+      ownMainFocusDisplayId: ownMainIndex < 0 ? null : focusDisplayIds[ownMainIndex],
+      focusDisplayMappingComplete: topFocusedDisplayId !== null &&
+        focusEntries.length > 0 && focusEntries.length <= 8 && focusDisplayIds.every(id => id !== null),
+      topFocusedWindowIsMain: topFocusIndex < 0 ? null : focusEntries[topFocusIndex][1] === expectedMain,
+      defaultDisplayWindowIsMain: defaultFocusIndex < 0 ? null : focusEntries[defaultFocusIndex][1] === expectedMain,
       dialogs: inspectAnrDialogWindows(boundedWindows, pkg) };
   } catch { return none; }
 }

@@ -170,6 +170,35 @@ test('EX01 records pre-force-stop preference and channel equality before cold st
   assert.ok(source.includes('preStop: facts.ex01ColdStartPreStop ?? { available: false }'));
 });
 
+test('EX01 attributes multiple focus records to their display without relaxing strict first-entry gate', async () => {
+  const launcher = 'mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher}';
+  const dumpsys = top => [
+    'WINDOW MANAGER DISPLAY CONTENTS', `mTopFocusedDisplayId=${top}`,
+    ' Display: mDisplayId=1', `  ${launcher}`,
+    ' Display: mDisplayId=0', `  ${window}`,
+  ].join('\n');
+  const primary = await observeLifecycleWindow(shell('', dumpsys(0)), pkg, start);
+  assert.equal(primary.nativeWindowFocused, false); // Do not convert a secondary entry into PASS.
+  assert.equal(primary.focusOwner, 'launcher');
+  assert.equal(primary.focusEntries, 2);
+  assert.equal(primary.firstFocusDisplayId, 1);
+  assert.equal(primary.ownMainFocusDisplayId, 0);
+  assert.equal(primary.topFocusedDisplayId, 0);
+  assert.equal(primary.focusDisplayMappingComplete, true);
+  assert.equal(primary.topFocusedWindowIsMain, true);
+  assert.equal(primary.defaultDisplayWindowIsMain, true);
+  assert.doesNotMatch(JSON.stringify(primary), /Launcher|com.android|MainActivity|mCurrentFocus/);
+  const secondary = await observeLifecycleWindow(shell('', dumpsys(1)), pkg, start);
+  assert.equal(secondary.nativeWindowFocused, false);
+  assert.equal(secondary.topFocusedWindowIsMain, false);
+  assert.equal(secondary.defaultDisplayWindowIsMain, true);
+  const unscoped = await observeLifecycleWindow(shell('', [launcher, window].join('\n')), pkg, start);
+  assert.equal(unscoped.focusDisplayMappingComplete, false);
+  assert.equal(unscoped.topFocusedDisplayId, null);
+  assert.equal(unscoped.firstFocusDisplayId, null);
+  assert.equal(unscoped.topFocusedWindowIsMain, null);
+});
+
 test('EX01 classifies foreign/system/own focus without leaking components or weakening the focus gate', async () => {
   for (const [owner, windowText] of [
     ['bridge-main', window],
