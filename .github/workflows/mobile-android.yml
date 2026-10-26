@@ -73,6 +73,10 @@ jobs:
           # The emulator reaches the host server through `adb reverse tcp:3000 tcp:3000`.
           BRIDGE_API_URL: http://localhost:3000
         run: node mobile/scripts/setup.js
+      - name: Install EX01 pre-boot navigation probe (emulator test APK only)
+        env:
+          BRIDGE_NAV_PROBE_TEST_APK: '1'
+        run: node e2e/android/install-navigation-storage-probe.mjs
       - name: Generate the Android project and apply the curated native layer
         run: |
           npx cap add android
