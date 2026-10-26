@@ -44,6 +44,46 @@ test('EX02 refuses physical/production scope before any mutation', async () => {
   assert.equal(result.status, 'FAIL'); assert.equal(result.stage, 'guard'); assert.equal(calls, 0);
 });
 
+test('EX02 preserves the failed inner CDP step without exporting raw errors or unknown step names', async () => {
+  for (const name of ['session', 'storage-domain', 'freeze-listener', 'freeze', 'freeze-event', 'private owner@example.com']) {
+    let launches = 0;
+    const result = await runFrozenPreferenceControl({ ...fixture(),
+      freeze: async ({ step }) => step(name, async () => { throw new Error('private bearer secret'); }),
+      coldLaunch: async () => { launches++; },
+    });
+    assert.equal(result.status, 'FAIL');
+    assert.equal(result.stage, 'freeze');
+    assert.equal(result.substep, name.startsWith('private') ? 'other' : name);
+    assert.equal(result.deadlineExceeded, false);
+    assert.equal(result.cleanup, 'PASS');
+    assert.equal(launches, 0);
+    assert.doesNotMatch(JSON.stringify(result), /private|owner@|bearer|secret/);
+  }
+});
+
+test('EX02 reports a stalled CDP substep deadline and cannot advance after late completion', async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const result = await runFrozenPreferenceControl({ ...fixture(), budgetMs: 10,
+    freeze: async ({ step }) => {
+      await step('freeze', () => pending);
+      return step('freeze-event', async () => { calls.push('freeze-event'); return { eventObserved: true }; });
+    },
+    coldLaunch: async () => { calls.push('launch'); },
+  });
+  assert.equal(result.status, 'FAIL');
+  assert.equal(result.stage, 'freeze');
+  assert.equal(result.substep, 'freeze');
+  assert.equal(result.deadlineExceeded, true);
+  assert.equal(result.freezeEventObserved, null);
+  assert.equal(result.cleanup, 'PASS');
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, []);
+  assert.equal(result.substep, 'freeze');
+});
+
 test('EX02 stops at every first operation error, keeps a fixed stage and attempts cleanup once', async () => {
   const names = ['select', 'readBefore', 'freeze', 'readFrozen', 'coldLaunch', 'readBoot'];
   const stages = ['select', 'before-read', 'freeze', 'frozen-read', 'cold-launch', 'boot-read'];
