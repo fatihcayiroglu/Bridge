@@ -131,3 +131,37 @@ test('target teardown settles the trigger without resuming a dead target or expo
   assert.equal(control.isPaused(), false);
   assert.equal(session.listenerCount('Debugger.paused'), 0);
 });
+
+test('verified old-target stop does not await an indefinitely pending debugger evaluation', async () => {
+  const { session, calls } = transport();
+  const control = createDebuggerStoragePause(session);
+  await control.pause(context);
+  // Chromium may never settle Runtime.evaluate after Android force-stops
+  // its renderer. A confirmed dead target must not wait for that promise.
+  await control.release(context, true);
+  assert.equal(control.isPaused(), false);
+  assert.deepEqual(calls, ['Debugger.enable', 'Debugger.pause', 'Runtime.evaluate']);
+  assert.equal(session.listenerCount('Debugger.paused'), 0);
+  assert.equal(session.listenerCount('Debugger.resumed'), 0);
+});
+
+test('EX02 retains a measured different-boot result after verified old-target teardown', async () => {
+  const { session } = transport();
+  const control = createDebuggerStoragePause(session);
+  const result = await runPausedPreferenceControl({
+    emulatorDebug: true,
+    budgetMs: 1000,
+    select: async () => {},
+    readBefore: async () => ({ available: true, preferenceMatches: true, activeChannelMatches: true }),
+    pause: ctx => control.pause(ctx),
+    readPaused: async () => ({ available: control.isPaused(), preferencePresent: true, preferenceMatches: true }),
+    coldLaunch: async () => ({ status: 'ok', launchState: 'COLD' }),
+    readBoot: async () => ({ available: true, keyAtBoot: true, expectedAtBoot: false }),
+    cleanup: ctx => control.release(ctx, true),
+  });
+  assert.equal(result.status, 'MEASURED');
+  assert.equal(result.outcome, 'different');
+  assert.equal(result.cleanup, 'PASS');
+  assert.equal(result.pauseEventObserved, true);
+  assert.equal(session.listenerCount('Debugger.paused'), 0);
+});
