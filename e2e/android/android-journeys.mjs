@@ -2582,6 +2582,19 @@ async function main() {
           const launch = await step('resume', () => platform.foreground(shell));
           launchState = launch.launchState;
         } else if (phase === 'cold-start') {
+          // No waiting or storage writes: sample immediately BEFORE Android's
+          // force-stop, to distinguish a late in-process overwrite from
+          // a process-kill/WebView persistence rollback.
+          facts.ex01ColdStartPreStop = await page.evaluate(({ user, server, expected }) => {
+            const value = localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server);
+            return {
+              available: true,
+              preferencePresent: value !== null,
+              preferenceMatches: value === expected,
+              activeChannelMatches: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
+            };
+          }, { user: me.id, server: serverId, expected: expectedChannel })
+            .catch(() => ({ available: false }));
           const launch = await step('launch', () => platform.coldLaunch('', { shell }));
           launchState = launch.launchState;
           beforePid = await shell(`pidof ${PKG}`);
@@ -2606,6 +2619,7 @@ async function main() {
       },
       observe: start => observeLifecycleWindow(androidFailureShell, PKG, start),
       failureEvidence: async start => ({
+        preStop: facts.ex01ColdStartPreStop ?? { available: false },
         ui: await page.evaluate(({ expected, user, server }) => {
           const visible = id => {
             const element = document.getElementById(id);
