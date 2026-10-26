@@ -19,8 +19,11 @@ on:
       - 'scripts/build.js'
       - 'scripts/e2e-server.js'
       - '.github/workflows/mobile-android.yml'
+  # Opt-in exact-head native evidence for stacked P7 branches. Ordinary
+  # p7/** pushes keep their lightweight gate; only this deliberate prefix
+  # pays for a full APK + emulator run. Preserve every strict assertion.
   push:
-    branches: [main]
+    branches: [main, 'p7/android-verify/**']
     paths:
       - 'mobile/**'
       - 'client/**'
