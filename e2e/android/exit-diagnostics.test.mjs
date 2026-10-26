@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers, parseAndroidCrashClock, summarizeAndroidJavaCrashes } from './exit-diagnostics.mjs';
 
 test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit descriptions', () => {
   const raw = { available: true, exits: [
@@ -397,7 +397,7 @@ test('L03 failure evidence proves only OS state and redacts all free-text and de
 
 test('L03 WebView attach failure path cannot archive raw Android dump or transport exception', () => {
   const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const begin = code.indexOf('async function webViewAttachEvidence() {');
+  const begin = code.indexOf('async function webViewAttachEvidence(');
   const end = code.indexOf('\nasync function attachPage(', begin);
   assert.ok(begin >= 0 && end > begin);
   const actual = code.slice(begin, end);
@@ -429,7 +429,7 @@ test('DevTools HTTP targets are counted without leaking page titles, URLs or web
 test('failure-only CDP probing preserves strict L03 failures and removes ADB forwards', () => {
   const src = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const begin = src.indexOf('async function devToolsHttpProbe(');
-  const end = src.indexOf('\nasync function webViewAttachEvidence()', begin);
+  const end = src.indexOf('\nasync function readAttachCrashClock()', begin);
   assert.ok(begin >= 0 && end > begin);
   const fn = src.slice(begin, end);
   assert.ok(fn.includes("['-s', serial, 'forward', '--remove'"));
@@ -1970,4 +1970,207 @@ test('ANR03 and AN00 are measurements: wired at the checkpoints, before L01 HOME
   assert.match(control, /static final long MAX_STALL_MS = 30_000L;/);
   assert.match(control, /Log\.i\(LOG_TAG, "stage=stall-begin stallMs=" \+ stallMs\);/);
   assert.doesNotMatch(control, /new WebView|android\.webkit|getContentResolver|openFileDescriptor/);
+});
+
+// Synthetic AOSP logcat/ExitInfo records. Identity and messages stay private;
+// the public summary must contain only fixed categories and bounded counts.
+const crashBaseMs = Date.UTC(2026, 9, 26);
+const crashPackage = 'com.bridge.app.debug';
+function crashClock(delta = 0, offset = 0) {
+  const at = crashBaseMs + delta;
+  const abs = Math.abs(offset);
+  const zone = (offset < 0 ? '-' : '+') + String(Math.floor(abs / 60)).padStart(2, '0') + String(abs % 60).padStart(2, '0');
+  return parseAndroidCrashClock(Math.floor(at / 1000) + '.' + String(at % 1000).padStart(3, '0') +
+    '000000,' + new Date(at + offset * 60000).toISOString().slice(0, 19) + ',' + zone);
+}
+function crashRow(delta, pid, tid, text, tag = 'AndroidRuntime') {
+  return `${((crashBaseMs + delta) / 1000).toFixed(3)} ${pid} ${tid} E ${tag}: ${text}`;
+}
+function javaCrashLog({ pid = 5101, process = crashPackage, thread = 'main', delta = 0,
+  exception = 'java.lang.RuntimeException: Unable to start activity ComponentInfo{private/account?token=secret}',
+  causes = ['java.lang.IllegalStateException: owner@example.com private-token'] } = {}) {
+  return [crashRow(1000 + delta, pid, pid, `FATAL EXCEPTION: ${thread}`),
+    crashRow(1001 + delta, pid, pid, `Process: ${process}, PID: ${pid}`),
+    crashRow(1002 + delta, pid, pid, exception),
+    crashRow(1003 + delta, pid, pid, '  at com.secret.Customer.run(/private/path.java:123)'),
+    ...causes.map((c, i) => crashRow(1004 + delta + i, pid, pid, 'Caused by: ' + c))].join('\n');
+}
+function javaCrashExits({ pid = 5101, process = crashPackage, delta = 1500, offset = 0, reason = '4 (CRASH)' } = {}) {
+  const stamp = crashClock(delta, offset).localAt.replace('T', ' ');
+  return parseApplicationExits(`ApplicationExitInfo #0:\n timestamp=${stamp}\n pid=${pid} process=${process} reason=${reason}\n subreason=0 (UNKNOWN)\n description=private account owner@example.com`);
+}
+function crashSummary(raw = javaCrashLog(), exits = javaCrashExits(), start = crashClock(), end = crashClock(61000), pkg = crashPackage) {
+  return summarizeAndroidJavaCrashes(raw, pkg, start, end, exits);
+}
+
+test('DL02 crash clock correlates epoch and local ExitInfo clocks without host timezone assumptions', () => {
+  for (const offset of [0, 330, -420, 840]) {
+    const clock = crashClock(123, offset);
+    assert.equal(clock.epochMs, crashBaseMs + 123);
+    assert.equal(clock.offsetMinutes, offset);
+    assert.match(clock.localAt, /\.123$/);
+  }
+  for (const raw of [null, '', '1792972800.%N,2026-10-26T00:00:00,+0000',
+    '1792972800.000000000,2026-10-26T00:00:01,+0000',
+    '1792972800.000000000,2026-02-30T00:00:00,+0000',
+    '1792972800.000000000,2026-10-26T00:00:00,+0060',
+    '1792972800.000000000,2026-10-26T00:00:00,+1500']) assert.equal(parseAndroidCrashClock(raw), null);
+});
+
+test('DL02 retains bounded Java startup/cause categories only with a matching own OS crash', () => {
+  const result = crashSummary();
+  assert.deepEqual(result, { windowValid: true, exitInfoAvailable: true,
+    coverage: 'observed-only', truncated: false, crashes: [{ thread: 'main', exception: 'runtime',
+      context: 'activity-start', lastObservedCause: 'illegal-state', causeDepth: 1 }] });
+  assert.doesNotMatch(JSON.stringify(result), /5101|179297|bridge|secret|private|owner@|Customer|ComponentInfo|token|\.java/);
+  // A dead process need not have a current pidof result: OS exit corroboration
+  // is separate from the legacy live-process/socket observations.
+  assert.equal(summarizeWebViewAttachEvidence({ crash: javaCrashLog() }).appPidValid, false);
+  assert.deepEqual(crashSummary(javaCrashLog(), javaCrashExits({ offset: 330 }), crashClock(0, 330), crashClock(61000, 330)), result);
+});
+
+test('DL02 never attributes foreign, prefix-matching or subprocess fatal records to the app', () => {
+  for (const process of ['com.other.app', crashPackage + '.evil', crashPackage + ':remote']) {
+    const log = javaCrashLog({ process });
+    assert.equal(summarizeWebViewAttachEvidence({ crash: log }).crashBufferHasFatalMarker, true);
+    assert.deepEqual(crashSummary(log).crashes, []);
+    assert.equal(crashSummary(log).coverage, 'unknown');
+  }
+});
+
+test('DL02 requires matching emitter PID, identity PID and fresh OS PID', () => {
+  const raw = javaCrashLog();
+  assert.deepEqual(crashSummary(raw.replace('PID: 5101', 'PID: 5102')).crashes, []);
+  assert.deepEqual(crashSummary(raw.replace(/5101 5101 E AndroidRuntime: Process:/, '5102 5102 E AndroidRuntime: Process:')).crashes, []);
+  assert.deepEqual(crashSummary(raw.replace(/5101 5101 E AndroidRuntime: Process:/, '5101 5102 E AndroidRuntime: Process:')).crashes, []);
+  assert.deepEqual(crashSummary(raw, javaCrashExits({ pid: 5102 })).crashes, []);
+  assert.deepEqual(crashSummary(raw, javaCrashExits({ process: 'com.other.app' })).crashes, []);
+  assert.deepEqual(crashSummary(raw.replace('PID: 5101', 'PID: 5101 token=private')).crashes, []);
+});
+
+test('DL02 rejects stale/future fatal log records and exact-window OS exits', () => {
+  assert.deepEqual(crashSummary(javaCrashLog({ delta: -2000 })).crashes, []);
+  assert.deepEqual(crashSummary(javaCrashLog({ delta: 61000 })).crashes, []);
+  // The reused matcher has a legacy ±2 s grace. This diagnostic must narrow
+  // that grace, so a stale PID just one millisecond outside cannot qualify.
+  for (const delta of [-1, 61001]) assert.deepEqual(crashSummary(undefined, javaCrashExits({ delta })).crashes, []);
+});
+
+test('DL02 needs a reason-4 OS exit, not only a log header or a live process', () => {
+  for (const reason of ['5 (CRASH NATIVE)', '6 (ANR)', '10 (USER REQUESTED)', '4 (private)']) {
+    assert.deepEqual(crashSummary(undefined, javaCrashExits({ reason })).crashes, []);
+  }
+  assert.equal(crashSummary(undefined, javaCrashExits({ reason: '4 (APP CRASH(EXCEPTION))' })).crashes.length, 1);
+  for (const exits of [null, [], 'raw private text']) {
+    const result = crashSummary(undefined, exits);
+    assert.deepEqual(result.crashes, []);
+    assert.equal(result.coverage, 'unknown');
+    assert.equal(result.exitInfoAvailable, Array.isArray(exits));
+  }
+});
+
+test('DL02 keeps missing, inconsistent or unbounded device windows unknown', () => {
+  for (const [start, end] of [[null, crashClock(61000)], [crashClock(), null],
+    [crashClock(61000), crashClock()], [crashClock(), crashClock(120001)],
+    [crashClock(), crashClock(61000, 60)],
+    [{ ...crashClock(), epochMs: crashBaseMs + 1 }, crashClock(61000)]]) {
+    const result = crashSummary(undefined, undefined, start, end);
+    assert.equal(result.windowValid, false);
+    assert.equal(result.coverage, 'unknown');
+    assert.deepEqual(result.crashes, []);
+  }
+  assert.equal(crashSummary(undefined, undefined, undefined, undefined, 'bad process; rm').windowValid, false);
+});
+
+test('DL02 does not borrow a previous PID incarnation or an interleaved foreign cause', () => {
+  const stale = javaCrashLog({ delta: -2000 });
+  const reused = javaCrashLog();
+  assert.deepEqual(crashSummary(stale + '\n' + reused, javaCrashExits({ delta: -1 })).crashes, []);
+  const own = javaCrashLog();
+  const foreign = javaCrashLog({ pid: 5102, process: 'com.other.app', causes: ['java.lang.SecurityException: private'] });
+  const ownLines = own.split('\n');
+  assert.deepEqual(crashSummary([...ownLines.slice(0, 3), foreign, ...ownLines.slice(3)].join('\n')).crashes, crashSummary().crashes);
+  // A new FATAL on the same emitter must reset an incomplete prior identity.
+  const incomplete = ownLines.slice(0, 2).join('\n');
+  assert.deepEqual(crashSummary(incomplete + '\n' + javaCrashLog({ process: 'com.other.app' })).crashes, []);
+});
+
+test('DL02 unknown exceptions and misleading messages cannot gain a known class or context', () => {
+  for (const name of ['com.secret.CustomerException', 'java.lang.SecurityExceptionEvil', 'com.secret.java.lang.SecurityException']) {
+    const result = crashSummary(javaCrashLog({ exception: name + ': java.lang.SecurityException Unable to start activity private',
+      causes: ['com.secret.InnerException: java.lang.OutOfMemoryError secret'] }));
+    assert.deepEqual(result.crashes, [{ thread: 'main', exception: 'other', context: 'other', lastObservedCause: 'other', causeDepth: 1 }]);
+    assert.doesNotMatch(JSON.stringify(result), /secret|Customer|InnerException|OutOfMemoryError/);
+  }
+  assert.equal(crashSummary(javaCrashLog({ exception: 'java.lang.RuntimeException: not Unable to start activity private' })).crashes[0].context, 'other');
+});
+
+test('DL02 distinguishes class-loading and finalizer-watchdog failures without private messages', () => {
+  const loading = crashSummary(javaCrashLog({ exception: 'java.lang.RuntimeException: Unable to instantiate activity ComponentInfo{private}',
+    causes: ['java.lang.ClassNotFoundException: com.secret.Customer'] }));
+  assert.deepEqual(loading.crashes, [{ thread: 'main', exception: 'runtime', context: 'activity-create', lastObservedCause: 'class-not-found', causeDepth: 1 }]);
+  const watchdog = crashSummary(javaCrashLog({ thread: 'FinalizerWatchdogDaemon', exception: 'java.util.concurrent.TimeoutException: private finalizer timed out', causes: [] }));
+  assert.deepEqual(watchdog.crashes, [{ thread: 'finalizer-watchdog', exception: 'timeout', context: 'other', lastObservedCause: 'none', causeDepth: 0 }]);
+  assert.equal(crashSummary(javaCrashLog({ thread: 'private-owner@example.com' })).crashes[0].thread, 'other');
+});
+
+test('DL02 bounds records and cause chains without claiming the last sampled cause is the root', () => {
+  const logs = [5101, 5102, 5103, 5104].map(pid => javaCrashLog({ pid })).join('\n');
+  const exits = [5101, 5102, 5103, 5104].flatMap(pid => javaCrashExits({ pid }));
+  const many = crashSummary(logs, exits);
+  assert.equal(many.crashes.length, 3);
+  assert.equal(many.truncated, true);
+  assert.equal(many.coverage, 'partial');
+  const chain = crashSummary(javaCrashLog({ causes: [...Array(8).fill('java.lang.IllegalStateException: private'), 'java.lang.SecurityException: private'] }));
+  assert.equal(chain.crashes[0].causeDepth, 8);
+  assert.equal(chain.crashes[0].lastObservedCause, 'illegal-state');
+  assert.equal(chain.truncated, true);
+  assert.equal(chain.coverage, 'partial');
+});
+
+test('DL02 bounds characters/lines and keeps a complete 200-line record including final newline', () => {
+  for (const prefix of ['x'.repeat(262145) + '\n', Array(200).fill('unparsed').join('\n') + '\n']) {
+    const result = crashSummary(prefix + javaCrashLog());
+    assert.deepEqual(result.crashes, crashSummary().crashes);
+    assert.equal(result.truncated, true);
+    assert.equal(result.coverage, 'partial');
+  }
+  const raw = javaCrashLog();
+  const full = raw + '\n' + Array(200 - raw.split('\n').length).fill('unparsed').join('\n') + '\n';
+  const result = crashSummary(full);
+  assert.deepEqual(result.crashes, crashSummary().crashes);
+  assert.equal(result.truncated, false);
+  const huge = crashSummary('x'.repeat(262145));
+  assert.equal(huge.truncated, true);
+  assert.equal(huge.coverage, 'unknown');
+  assert.deepEqual(huge.crashes, []);
+});
+
+test('DL02 malformed/truncated records, foreign tags and native signals stay unknown', () => {
+  for (const raw of ['', null, javaCrashLog().replaceAll('AndroidRuntime:', 'System.err:'),
+    javaCrashLog().replace('FATAL EXCEPTION: main', 'Fatal signal 6 in private'),
+    javaCrashLog().split('\n').slice(0, 2).join('\n'),
+    javaCrashLog().replaceAll('5101 5101 E', '0 0 E'),
+    javaCrashLog().replace('Process: com.bridge.app.debug, PID: 5101', 'arbitrary private data')]) {
+    const result = crashSummary(raw);
+    assert.deepEqual(result.crashes, []);
+    assert.equal(result.coverage, 'unknown');
+  }
+});
+
+test('DL02 captures its own clock before cold launch and preserves strict original attach failure', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const dl02 = code.slice(code.indexOf("await check('DL02'"), code.indexOf("await check('DL03'"));
+  assert.ok(dl02.indexOf('const crashWindowStart = await readAttachCrashClock();') < dl02.indexOf('await platform.deepLink('));
+  assert.match(dl02, /await attachPage\(\{ crashWindowStart \}\);/);
+  assert.match(dl02, /timeout: 45_000/);
+  assert.match(dl02, /timeout: 30_000/);
+  const evidence = code.slice(code.indexOf('async function webViewAttachEvidence('), code.indexOf('async function pid()'));
+  assert.match(evidence, /logcat -d -b crash -v epoch -t 200/);
+  assert.match(evidence, /parseApplicationExits\(await androidFailureShell\(`dumpsys activity exit-info \$\{PKG\}`\), 32\)/);
+  assert.match(evidence, /const appCrash = summarizeAndroidJavaCrashes\(inputs.crash, PKG,/);
+  assert.doesNotMatch(evidence, /JSON\.stringify\((?:inputs|crashExits|crashWindowStart|crashWindowEnd)\)|log\((?:inputs|crashExits)/);
+  assert.match(evidence, /timeout = 60_000/);
+  assert.match(evidence, /throw new Error\(`Android WebView attach/);
+  assert.match(evidence, /\{ cause: err \}/);
 });

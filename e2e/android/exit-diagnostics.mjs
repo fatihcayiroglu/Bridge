@@ -734,6 +734,126 @@ export function summarizeWebViewAttachEvidence(
   };
 }
 
+/** One device `date` sample; local ExitInfo times and logcat epoch must agree. */
+export function parseAndroidCrashClock(raw) {
+  const m = /^(\d{9,11}\.\d{9}),(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}),([+-])(\d{2})(\d{2})$/.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  const epoch = parseDeviceEpoch(m[1]);
+  const offsetMinutes = (m[3] === '-' ? -1 : 1) * (Number(m[4]) * 60 + Number(m[5]));
+  if (!epoch || Number(m[5]) > 59 || Math.abs(offsetMinutes) > 840 ||
+      deviceClockMs(m[2]) !== Math.floor(epoch.epochMs / 1000) * 1000 + offsetMinutes * 60000) return null;
+  return { epochMs: epoch.epochMs,
+    localAt: m[2] + '.' + String(epoch.epochMs % 1000).padStart(3, '0'), offsetMinutes };
+}
+
+const JAVA_CRASH_CLASSES = new Map([
+  ['java.lang.RuntimeException', 'runtime'], ['java.lang.IllegalStateException', 'illegal-state'],
+  ['java.lang.IllegalArgumentException', 'illegal-argument'], ['java.lang.NullPointerException', 'null-pointer'],
+  ['java.lang.SecurityException', 'security'], ['java.lang.ClassCastException', 'class-cast'],
+  ['java.lang.ClassNotFoundException', 'class-not-found'], ['java.lang.NoClassDefFoundError', 'class-definition'],
+  ['java.lang.ExceptionInInitializerError', 'class-initializer'], ['java.lang.UnsatisfiedLinkError', 'native-link'],
+  ['java.lang.OutOfMemoryError', 'out-of-memory'], ['android.os.DeadObjectException', 'dead-binder'],
+  ['java.util.concurrent.TimeoutException', 'timeout'],
+  ['android.os.RemoteException', 'remote-binder'], ['android.view.InflateException', 'view-inflate'],
+  ['android.content.res.Resources$NotFoundException', 'resource-missing'],
+  ['android.webkit.WebViewFactory$MissingWebViewPackageException', 'webview-missing'],
+]);
+
+/**
+ * DL02: fixed categories from AndroidRuntime Java crash records, corroborated
+ * by this package's OWN fresh reason-4 ApplicationExitInfo row. A global fatal
+ * marker, a Process line or a recycled PID alone never establishes ownership.
+ * Only observed log categories leave; neither a complete history nor a causal
+ * root is inferred. No raw message, stack, name, PID or timestamp is returned.
+ */
+export function summarizeAndroidJavaCrashes(raw, pkg, start, end, exits) {
+  const unknown = { windowValid: false, exitInfoAvailable: Array.isArray(exits),
+    coverage: 'unknown', truncated: false, crashes: [] };
+  const validClock = c => c && Number.isSafeInteger(c.epochMs) && c.epochMs > 0 &&
+    Number.isInteger(c.offsetMinutes) && Math.abs(c.offsetMinutes) <= 840 &&
+    deviceClockMs(c.localAt) === c.epochMs + c.offsetMinutes * 60000;
+  if (!/^[A-Za-z][A-Za-z0-9_.]{0,119}$/.test(String(pkg)) || !validClock(start) || !validClock(end) ||
+      start.offsetMinutes !== end.offsetMinutes || start.epochMs > end.epochMs ||
+      end.epochMs - start.epochMs > 120000) return unknown;
+  const result = { ...unknown, windowValid: true };
+  if (typeof raw !== 'string' || !Array.isArray(exits)) return result;
+  // Match the bounded acquisition in the harness. Cropping a line cannot
+  // fabricate a header: discard any partial first line after character cap.
+  let src = raw;
+  if (src.length > 262144) {
+    src = src.slice(-262144);
+    src = src.includes('\n') ? src.slice(src.indexOf('\n') + 1) : '';
+    result.truncated = true;
+  }
+  const lines = src.replace(/\r?\n$/, '').split(/\r?\n/);
+  if (lines.length > 200) result.truncated = true;
+  const active = new Map();
+  const records = [];
+  for (const line of lines.slice(-200)) {
+    const m = /^\s*(\d{9,11})\.(\d{3,9})\s+(?:\d{1,6}\s+)?([1-9]\d{0,7})\s+([1-9]\d{0,7})\s+[EF]\s+AndroidRuntime\s*:\s?(.*)$/.exec(line);
+    if (!m) continue;
+    const at = Number(m[1]) * 1000 + Number((m[2] + '000').slice(0, 3));
+    const key = m[3] + ':' + m[4];
+    const text = m[5];
+    if (text.startsWith('FATAL EXCEPTION: ')) {
+      active.delete(key);
+      if (at < start.epochMs || at > end.epochMs) continue;
+      const record = { pid: Number(m[3]), phase: 'process',
+        thread: text === 'FATAL EXCEPTION: main' ? 'main'
+          : text === 'FATAL EXCEPTION: FinalizerWatchdogDaemon' ? 'finalizer-watchdog' : 'other',
+        exception: 'unknown', context: 'other', lastObservedCause: 'none', causeDepth: 0 };
+      active.set(key, record);
+      records.push(record);
+      continue;
+    }
+    const record = active.get(key);
+    if (!record) continue;
+    if (at < start.epochMs || at > end.epochMs) { active.delete(key); continue; }
+    if (record.phase === 'process') {
+      const identity = /^Process: ([A-Za-z][A-Za-z0-9_.:]{0,119}), PID: ([1-9]\d{0,7})$/.exec(text);
+      if (!identity || identity[1] !== pkg || Number(identity[2]) !== record.pid) {
+        active.delete(key);
+      } else record.phase = 'exception';
+      continue;
+    }
+    const cause = /^\s*Caused by: ([A-Za-z_$][A-Za-z0-9_$.]{0,199})(?::|$)/.exec(text);
+    if (cause && record.phase === 'frames') {
+      if (record.causeDepth >= 8) { result.truncated = true; continue; }
+      record.causeDepth++;
+      record.lastObservedCause = JAVA_CRASH_CLASSES.get(cause[1]) ?? 'other';
+      continue;
+    }
+    if (record.phase !== 'exception') continue;
+    const exception = /^([A-Za-z_$][A-Za-z0-9_$.]{0,199})(?::|$)/.exec(text);
+    if (!exception || !exception[1].includes('.')) { active.delete(key); continue; }
+    record.exception = JAVA_CRASH_CLASSES.get(exception[1]) ?? 'other';
+    record.phase = 'frames';
+    if (exception[1] === 'java.lang.RuntimeException') {
+      for (const [prefix, context] of [
+        ['Unable to start activity ', 'activity-start'], ['Unable to resume activity ', 'activity-resume'],
+        ['Unable to instantiate activity ', 'activity-create'], ['Unable to create application ', 'application-create'],
+      ]) {
+        if (text.startsWith('java.lang.RuntimeException: ' + prefix)) record.context = context;
+      }
+    }
+  }
+  for (const record of records) {
+    if (record.phase !== 'frames') continue;
+    // Reuse the existing PID/process/window matcher and reason parser, then
+    // narrow its legacy ±2 s allowance to this exact millisecond window.
+    const owned = freshAndroidExitRows(exits, record.pid, pkg, start.localAt, end.localAt)?.some(row =>
+      deviceClockMs(row.at) >= deviceClockMs(start.localAt) &&
+      deviceClockMs(row.at) <= deviceClockMs(end.localAt) &&
+      summarizeControlProcessExit([row], record.pid).reasonCode === 4);
+    if (!owned) continue;
+    if (result.crashes.length >= 3) { result.truncated = true; break; }
+    const { thread, exception, context, lastObservedCause, causeDepth } = record;
+    result.crashes.push({ thread, exception, context, lastObservedCause, causeDepth });
+  }
+  if (result.crashes.length) result.coverage = result.truncated ? 'partial' : 'observed-only';
+  return result;
+}
+
 
 /**
  * Summarize a localhost DevTools /json/list response. The raw response holds
