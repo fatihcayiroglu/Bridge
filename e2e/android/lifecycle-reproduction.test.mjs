@@ -102,7 +102,14 @@ const endClock = offset => `${(start.epochMs + offset) / 1000}.000000000,2026-10
 const window = `mCurrentFocus=Window{abc u0 ${pkg}/com.bridge.app.MainActivity}`;
 const event = (offset, name = pkg) => `${((start.epochMs + offset) / 1000).toFixed(3)} 123 123 I am_anr: [0,456,${name},0,FocusEvent private owner@example.com]`;
 const shell = (raw = '', windows = window, clock = endClock(10_000)) => async command =>
-  command.startsWith('logcat ') ? raw : command === 'dumpsys window windows' ? windows : clock;
+  command.startsWith('logcat ') ? raw : command === 'dumpsys window' || command === 'dumpsys window windows' ? windows : clock;
+
+test('EX01 reads display focus and window/dialog records from the full API34 window dump', async () => {
+  const io = async command => command === 'dumpsys window windows'
+    ? `Window #0 Window{abc u0 ${pkg}/com.bridge.app.MainActivity}`
+    : shell()(command);
+  assert.equal((await observeLifecycleWindow(io, pkg, start)).nativeWindowFocused, true);
+});
 
 test('EX01 reuses the actual ANR parser and scopes events to exact package and device-clock window', async () => {
   const result = await observeLifecycleWindow(shell([event(-1), event(5000, pkg + '.other'), event(8000), event(10_001)].join('\n')), pkg, start);

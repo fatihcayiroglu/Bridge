@@ -247,6 +247,13 @@
       }
 
       channels = sanitizeChannels(data);
+      // A newly created channel can be selected before its authorized list
+      // response arrives. Persist only after that response confirms it. Never
+      // overwrite a returning owner's preference with a pre-auth fallback.
+      if (!provisionalPreAuthSelection) {
+        const selected = channels.find(c => c._id === activeChannelId);
+        if (selected) rememberAuthorizedTextSelection(selected);
+      }
       // P7 D2: the authorized list is the truth for this server. Encrypted
       // history and queued sends of channels it no longer contains (expired,
       // deleted, access lost while offline) are purged, not kept for offline
@@ -338,12 +345,22 @@
   }
 
   // ── Kanal seçimi ───────────────────────────────────────────────────────────
+  function rememberAuthorizedTextSelection(channel: Channel): void {
+    const authorized = channels.find(c => c._id === channel._id);
+    if (authorized && (authorized.type ?? 'text') === 'text' && serverId) {
+      rememberTextChannel(navigationOwner(BridgeRegistry.call('getMe')), serverId, authorized._id);
+    }
+  }
+
   function selectChannel(channel: Channel, historyMessageId?: string): void {
     if (destroyed) return;
     provisionalPreAuthSelection = false;
     const safeChannel = sanitizeChannel(channel);
     if (!safeChannel) return;
     channel = safeChannel;
+    // Reselecting an already-visible fallback is still a user's durable
+    // navigation choice once authentication has identified its owner.
+    rememberAuthorizedTextSelection(channel);
     if (historyMessageId !== undefined && !nonEmptyString(historyMessageId)) historyMessageId = undefined;
     if (channel._id === activeChannelId) {
       // Aynı kanal içindeki arama/Inbox/Saved hedefi ayrı bir anlamlı konumdur.
@@ -379,9 +396,6 @@
 
     activeChannelId = channel._id;
     BridgeRegistry.call('setCurrentChannel', channel);
-    if ((channel.type ?? 'text') === 'text' && serverId) {
-      rememberTextChannel(navigationOwner(BridgeRegistry.call('getMe')), serverId, channel._id);
-    }
 
     // Kanal başlığı — legacy channel-list.ts:123-126 (DOM kopyalanmadı, davranış korundu)
     const iconEl  = document.getElementById('ch-h-icon');

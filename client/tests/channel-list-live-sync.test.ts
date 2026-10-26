@@ -31,6 +31,7 @@ vi.mock('../js/core/logger.js', () => ({
 import ChannelListManager from '../js/core/ChannelListManager.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { CHANNELS_CHANGED_COALESCE_MS, CHANNELS_CHANGED_JITTER_MS } from '../js/core/channel-list/access-revocation.ts';
+import { lastTextChannel } from '../js/core/navigation-selection.ts';
 
 const WINDOW = CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS + 10;
 
@@ -92,9 +93,66 @@ afterEach(() => {
   if (instance) unmount(instance);
   instance = null;
   host.remove();
-  for (const k of ['setCurrentServerChannels', 'getCurrentServer', 'setCurrentChannel', 'socket']) BridgeRegistry.unregister(k);
+  for (const k of ['setCurrentServerChannels', 'getCurrentServer', 'setCurrentChannel', 'socket', 'getMe']) BridgeRegistry.unregister(k);
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe('explicit text selection after pre-auth fallback', () => {
+  it('persists reselecting the current channel after authentication and restores it after a real component remount', async () => {
+    localStorage.clear();
+    let owner: { _id: string } | null = null;
+    BridgeRegistry.register('getMe', (() => owner) as AnyFn);
+    const selected = vi.fn();
+    BridgeRegistry.register('setCurrentChannel', selected as AnyFn);
+    serverChannels.s1 = [{ _id: 'general', name: 'general', type: 'text' }, { _id: 'other', name: 'other', type: 'text' }];
+    await openServer('s1');
+    expect(selected).toHaveBeenLastCalledWith(expect.objectContaining({ _id: 'general' }));
+    expect(lastTextChannel('known-user', 's1')).toBeNull();
+    owner = { _id: 'known-user' };
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    await settle();
+    expect(lastTextChannel('known-user', 's1')).toBeNull();
+    const before = selected.mock.calls.length;
+    BridgeRegistry.call('selectChannel', serverChannels.s1[0]);
+    expect(lastTextChannel('known-user', 's1')).toBe('general');
+    expect(selected).toHaveBeenCalledTimes(before); // no duplicate selection/join
+
+    unmount(instance!); instance = null;
+    serverChannels.s1 = [serverChannels.s1[1]!, serverChannels.s1[0]!];
+    mockApiFetch.mockClear(); selected.mockClear();
+    instance = mount(ChannelListManager, { target: host }); flushSync();
+    await openServer('s1');
+    expect(selected).toHaveBeenLastCalledWith(expect.objectContaining({ _id: 'general' }));
+    localStorage.clear();
+  });
+
+  it('does not persist an unknown principal or a channel outside the current authorized list', async () => {
+    localStorage.clear();
+    let owner: { _id: string } | null = null;
+    BridgeRegistry.register('getMe', (() => owner) as AnyFn);
+    await openServer('s1');
+    BridgeRegistry.call('selectChannel', serverChannels.s1[0]);
+    expect(localStorage.length).toBe(0);
+    owner = { _id: 'known-user' };
+    BridgeRegistry.call('selectChannel', { _id: 'private-other-server', name: 'private', type: 'text' });
+    expect(lastTextChannel('known-user', 's1')).toBeNull();
+  });
+
+  it('persists a newly created selection after the authorized API list confirms it', async () => {
+    localStorage.clear();
+    BridgeRegistry.register('getMe', (() => ({ _id: 'known-user' })) as AnyFn);
+    await openServer('s1');
+    const created = { _id: 'new-channel', name: 'new', type: 'text' };
+    BridgeRegistry.call('selectChannel', created);
+    expect(lastTextChannel('known-user', 's1')).toBe('general');
+    serverChannels.s1!.push(created);
+    emit('channels:changed', { serverId: 's1' });
+    await vi.advanceTimersByTimeAsync(WINDOW);
+    await settle();
+    expect(lastTextChannel('known-user', 's1')).toBe('new-channel');
+    localStorage.clear();
+  });
 });
 
 describe('channels:changed — live channel list sync', () => {
