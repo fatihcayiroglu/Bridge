@@ -25,7 +25,9 @@
   import { getAPI } from './globals.js';
   import { readToken } from './auth-compat.js';
   import { apiFetch } from './api-fetch.js';
-  import { navigationOwner, lastServer, rememberServer } from './navigation-selection.js';
+  import {
+    navigationOwner, lastServer, rememberServer, navigationPreferencesReady, noteNavigationRestoration,
+  } from './navigation-selection.js';
   const log = createLogger('ServerSwitcher');
 
   let { children }: { children?: Snippet } = $props();
@@ -82,6 +84,9 @@
       }
 
       const data = await response.json() as unknown;
+      // #490: remembered server from the acknowledged native store on
+      // Android. Bounded, never rejects; the staleness check below covers it.
+      await navigationPreferencesReady();
       // Token refresh can rotate the JWT for the SAME account; do not drop
       // a good response solely because its token string changed. A concurrent
       // logout/account switch still invalidates the old response.
@@ -95,6 +100,7 @@
         restoredOwner = owner;
         const remembered = lastServer(owner);
         const allowed = servers.find(s => s._id === remembered);
+        noteNavigationRestoration('server', allowed ? 'restored' : remembered ? 'refused' : 'none');
         if (allowed) {
           if (activeId !== allowed._id) selectServer(allowed, false);
           return;

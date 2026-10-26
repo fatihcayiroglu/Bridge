@@ -5,7 +5,7 @@ import { parseAnrEventTimeline, inspectAnrDialogWindows } from './exit-diagnosti
 
 export const LIFECYCLE_PHASES = Object.freeze(['cold-start', 'hot-resume', 'cold-deep-link']);
 const validPid = value => typeof value === 'string' && /^[0-9]{1,8}$/.test(value);
-const STAGES = new Set(['launch', 'background', 'resume', 'attach', 'restore', 'session', 'channel', 'settle', 'focus']);
+const STAGES = new Set(['launch', 'background', 'resume', 'attach', 'restore', 'durable', 'session', 'channel', 'settle', 'focus']);
 
 export function lifecycleObservationPasses(phase, observation, events) {
   return observation?.pidStable === true && observation.uiVisible === true &&

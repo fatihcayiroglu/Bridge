@@ -29,6 +29,7 @@ import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-re
 import { pausedPreferenceControlApplies, runPausedPreferenceControl, readPausedPreference } from './paused-preference-control.mjs';
 import { createDebuggerStoragePause } from './debugger-storage-pause.mjs';
 import { collectKernelPressure } from './pressure-evidence.mjs';
+import { navigationStoreVerdict, parseNavigationStoreLog } from './navigation-store-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -805,6 +806,25 @@ async function openChannel(channelId) {
   await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, channelId);
   await until(() => activeChannel().then((c) => c === channelId), { message: `channel ${channelId} active` });
 }
+/**
+ * #490: waits (bounded) until the app reports the native commit of this exact
+ * channel selection. Returns a fixed state string only: 'acknowledged', or the
+ * terminal 'failed'/'unavailable'/'missing', or 'timeout'. IDs stay in the page.
+ */
+async function awaitDurableChannel(user, server, expected, timeout = 10_000) {
+  const read = () => page.evaluate(({ user, server, expected }) =>
+    window.__bridgeNavigationDurabilityV1?.inspectChannel(user, server, expected) ?? 'missing',
+  { user, server, expected });
+  try {
+    return await until(async () => {
+      const state = await read();
+      return state === 'pending' || state === 'none' ? false : state;
+    }, { timeout, interval: 50, message: 'native navigation commit acknowledgment' });
+  } catch {
+    return 'timeout';
+  }
+}
+
 async function activeChannel() {
   return page.evaluate(() => document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null).catch(() => null);
 }
@@ -2565,6 +2585,13 @@ async function main() {
           facts.ex01PreferenceSavedBeforeColdLaunch = persisted === true;
           assert(persisted === true, 'EX01 channel preference missing before process restart');
         });
+        // #490: a returned setItem() is not durability. The selection counts
+        // as saved only after the native commit acknowledgment.
+        await step('durable', async () => {
+          const state = await awaitDurableChannel(me.id, serverId, channelId);
+          facts.ex01PreferenceDurableBeforeColdLaunch = state;
+          assert(state === 'acknowledged', `EX01 channel preference not durably acknowledged: ${state}`);
+        });
       },
       clock: readAttachCrashClock,
       pressure: () => collectKernelPressure(androidFailureShell),
@@ -2584,9 +2611,13 @@ async function main() {
           const launch = await step('resume', () => platform.foreground(shell));
           launchState = launch.launchState;
         } else if (phase === 'cold-start') {
-          // No waiting or storage writes: sample immediately BEFORE Android's
-          // force-stop, to distinguish a late in-process overwrite from
-          // a process-kill/WebView persistence rollback.
+          // #490: the hard kill follows the native commit acknowledgment of
+          // the current selection (never a fixed sleep); 'failed' and
+          // 'unavailable' end the wait at once and fail EX01 here.
+          const durable = await step('durable', () => awaitDurableChannel(me.id, serverId, expectedChannel));
+          // No further waiting or storage writes: sample immediately BEFORE
+          // Android's force-stop, to distinguish a late in-process overwrite
+          // from a process-kill/WebView persistence rollback.
           facts.ex01ColdStartPreStop = await page.evaluate(({ user, server, expected }) => {
             const value = localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server);
             return {
@@ -2597,6 +2628,8 @@ async function main() {
             };
           }, { user: me.id, server: serverId, expected: expectedChannel })
             .catch(() => ({ available: false }));
+          facts.ex01ColdStartPreStop.durable = durable;
+          assert(durable === 'acknowledged', `EX01 selection not durably acknowledged before force-stop: ${durable}`);
           const launch = await step('launch', () => platform.coldLaunch('', { shell }));
           launchState = launch.launchState;
           beforePid = await shell(`pidof ${PKG}`);
@@ -2632,6 +2665,9 @@ async function main() {
             expectedChannelActive: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
             rememberedChannelMatches: localStorage.getItem(`bridge:last-navigation:v1:channel:${user}:${server}`) === expected,
             bootNavigation: window.__bridgeNavigationProbeV1?.inspect(user, server, expected) ?? { available: false },
+            // #490: counters, states and booleans only (no IDs or values).
+            durability: window.__bridgeNavigationDurabilityV1?.status() ?? { native: 'missing' },
+            durableExpected: window.__bridgeNavigationDurabilityV1?.inspectChannel(user, server, expected) ?? 'missing',
             focused: document.hasFocus() };
         }, { expected: expectedChannel, user: me.id, server: serverId }).catch(() => ({ available: false })),
         // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original
@@ -2641,6 +2677,18 @@ async function main() {
       }),
     });
     log('EX01 separate lifecycle experiment', JSON.stringify(facts.androidLifecycleExperiment));
+    // #490: native durable-store lifecycle from the debug plugin's own log.
+    // Raw logcat stays in memory; only counts and a leak boolean are kept.
+    {
+      let raw;
+      try {
+        raw = await androidFailureShell("logcat -d -v brief -s BridgeNavStore:I '*:S'");
+      } catch { /* unavailable stays available=false */ }
+      const evidence = parseNavigationStoreLog(raw, { identifiers: [me.id, serverId, channelId, otherId, me.username] });
+      const lifecyclePassed = facts.androidLifecycleExperiment?.status === 'PASS';
+      facts.androidNavigationStoreEvidence = { ...evidence, status: navigationStoreVerdict(evidence, { lifecyclePassed }) };
+      log('NAVSTORE native durable navigation evidence', JSON.stringify(facts.androidNavigationStoreEvidence));
+    }
     // EX02 is a separate comparison, never a retry or replacement for EX01.
     // Pause app JavaScript, verify browser storage, then stop once. This
     // removes a late app write from the pre-stop interval without a sleep or
@@ -2761,5 +2809,6 @@ main()
     for (const r of results) console.log(`${r.status.padEnd(8)} ${r.id.padEnd(7)} ${r.title}${r.error ? `\n          ↳ ${r.error.split('\n')[0]}` : ''}${r.reason ? `\n          ↳ ${r.reason}` : ''}${r.detail ? `\n          ↳ ${JSON.stringify(r.detail)}` : ''}`);
     console.log(`TOTAL pass=${summary.totals.pass} fail=${summary.totals.fail} skipped=${summary.totals.skipped} measured=${summary.totals.measured} (skipped and measured are never counted as pass)`);
     try { if (device) await device.close(); } catch {}
-    process.exit(summary.totals.fail > 0 || facts.androidLifecycleExperiment?.status === 'FAIL' ? 1 : 0);
+    const navigationStoreFailed = facts.androidNavigationStoreEvidence?.status === 'FAIL';
+    process.exit(summary.totals.fail > 0 || navigationStoreFailed || facts.androidLifecycleExperiment?.status === 'FAIL' ? 1 : 0);
   });

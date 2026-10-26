@@ -47,7 +47,9 @@ vi.mock('../js/core/logger.js', () => ({
 
 import ChannelListManager from '../js/core/ChannelListManager.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { rememberTextChannel } from '../js/core/navigation-selection.ts';
+import {
+  rememberTextChannel, resetNavigationSelectionForTests, navigationDurabilityStatus,
+} from '../js/core/navigation-selection.ts';
 import { CHANNELS_CHANGED_COALESCE_MS, CHANNELS_CHANGED_JITTER_MS } from '../js/core/channel-list/access-revocation.ts';
 
 type Channel = { _id: string; name: string; type?: string; serverId?: string };
@@ -209,6 +211,121 @@ describe('P7 Android reload: last authorized text channel restoration', () => {
       const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
       expect(last.activeChannelId).toBe('first');
     });
+  });
+});
+
+// #490: on Android the WebView localStorage copy was rolled back after a real
+// force-stop; the native, commit-acknowledged copy must decide restoration,
+// still only within the fresh authorized list.
+describe('#490 Android: restoration from the acknowledged native store', () => {
+  const key = (u: string, srv: string) => `bridge:last-navigation:v1:channel:${u}:${srv}`;
+  let disk: Map<string, string>;
+  let readGate: Promise<void>;
+
+  function installNative(): void {
+    (globalThis as { Capacitor?: unknown }).Capacitor = {
+      getPlatform: () => 'android',
+      isPluginAvailable: (n: string) => n === 'BridgeNavigationStore',
+      Plugins: { BridgeNavigationStore: {
+        write: async ({ key: k, value }: { key: string; value: string | null }) => {
+          if (value === null) disk.delete(k); else disk.set(k, value);
+          return { committed: true };
+        },
+        readAll: async () => { await readGate; return { entries: Object.fromEntries(disk), processFirstRead: true }; },
+        forgetOwner: async () => ({ committed: true }),
+      } },
+    };
+  }
+  const active = () => (mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string } | undefined)?.activeChannelId;
+  const three = [
+    { _id: 'first', name: 'general', type: 'text' },
+    { _id: 'second', name: 'help', type: 'text' },
+    { _id: 'third', name: 'old', type: 'text' },
+  ];
+
+  beforeEach(() => {
+    resetNavigationSelectionForTests();
+    disk = new Map();
+    readGate = Promise.resolve();
+    installNative();
+    currentServer = { _id: 'srv-1' };
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+  });
+  afterEach(() => {
+    delete (globalThis as { Capacitor?: unknown }).Capacitor;
+    resetNavigationSelectionForTests();
+  });
+
+  it('restores the native-acknowledged channel when WebView storage rolled back', async () => {
+    disk.set(key('user-1', 'srv-1'), 'second');
+    localStorage.setItem(key('user-1', 'srv-1'), 'third'); // older value after force-stop
+    mockApiFetch.mockResolvedValue(okResponse(three));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => expect(active()).toBe('second'));
+    expect(recordNavigation).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
+    expect(recordNavigation).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: 'third' }));
+    expect(navigationDurabilityStatus()).toMatchObject({
+      boot: { state: 'hydrated', repaired: 1 }, restoration: { channel: 'restored' },
+    });
+  });
+
+  it('refuses a natively remembered channel that is no longer authorized', async () => {
+    disk.set(key('user-1', 'srv-1'), 'revoked');
+    mockApiFetch.mockResolvedValue(okResponse([{ _id: 'first', name: 'general', type: 'text' }]));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => expect(active()).toBe('first'));
+    expect(recordNavigation).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: 'revoked' }));
+    expect(navigationDurabilityStatus().restoration.channel).toBe('refused');
+  });
+
+  it('never auto-joins a natively remembered voice or stage channel', async () => {
+    disk.set(key('user-1', 'srv-1'), 'stage');
+    mockApiFetch.mockResolvedValue(okResponse([
+      { _id: 'first', name: 'general', type: 'text' },
+      { _id: 'stage', name: 'town hall', type: 'stage' },
+    ]));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => expect(active()).toBe('first'));
+    expect(navigationDurabilityStatus().restoration.channel).toBe('refused');
+  });
+
+  it('never uses another account\'s or another server\'s native preference', async () => {
+    disk.set(key('user-2', 'srv-1'), 'second');
+    disk.set(key('user-1', 'srv-2'), 'third');
+    mockApiFetch.mockResolvedValue(okResponse(three));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => expect(active()).toBe('first'));
+  });
+
+  it('a server switch during the native read discards the stale request', async () => {
+    let open!: () => void;
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    disk.set(key('user-1', 'srv-1'), 'second');
+    disk.set(key('user-1', 'srv-2'), 'b2');
+    mockApiFetch.mockImplementation(async (raw: string) => {
+      const path = new URL(String(raw)).pathname;
+      if (path.endsWith('/categories')) return okResponse([]);
+      return okResponse(path.includes('srv-2')
+        ? [{ _id: 'b1', name: 'a', type: 'text' }, { _id: 'b2', name: 'b', type: 'text' }]
+        : three);
+    });
+    await requestLoad('srv-1');
+    await drainPending();
+    currentServer = { _id: 'srv-2' };
+    document.dispatchEvent(new CustomEvent('bridge:load-channels', { detail: { serverId: 'srv-2' } }));
+    await drainPending();
+    open();
+    await vi.waitFor(() => expect(active()).toBe('b2'));
+    await drainPending();
+    expect(recordNavigation).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
+  });
+
+  it('a selection is mirrored to native storage and acknowledged', async () => {
+    mockApiFetch.mockResolvedValue(okResponse(three));
+    rememberTextChannel('user-1', 'srv-1', 'third');
+    await drainPending();
+    expect(disk.get(key('user-1', 'srv-1'))).toBe('third');
+    expect(navigationDurabilityStatus()).toMatchObject({ requested: 1, acknowledged: 1, failed: 0 });
   });
 });
 

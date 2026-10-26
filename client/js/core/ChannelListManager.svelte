@@ -30,7 +30,9 @@
   import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, channelsChangedDelay, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
   import { channelExpiresAt, formatChannelExpiry } from './channel-list/channel-expiry.ts';
-  import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
+  import {
+    navigationOwner, lastTextChannel, rememberTextChannel, navigationPreferencesReady, noteNavigationRestoration,
+  } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
   let { children }: { children?: Snippet } = $props();
@@ -307,6 +309,12 @@
       // remembered ID is accepted ONLY when the fresh, authorized API list
       // contains it. Voice/stage is not restored automatically (no implicit
       // microphone/camera access).
+      // #490: on Android the remembered ID comes from the acknowledged
+      // native store (WebView localStorage can roll back on force-stop).
+      // Bounded and never rejects; the list may change meanwhile, so the
+      // request and the user's own selection are re-checked afterwards.
+      await navigationPreferencesReady();
+      if (seq !== requestSeq || destroyed) return;
       const first = channels.find(c => (c.type ?? 'text') === 'text');
       const owner = navigationOwner(BridgeRegistry.call('getMe'));
       const rememberedId = owner ? lastTextChannel(owner, targetServerId) : null;
@@ -315,6 +323,7 @@
       if (!activeChannelId && !selectedByPendingNavigation && (remembered || first)) {
         selectChannel((remembered || first)!);
         provisionalPreAuthSelection = owner === null;
+        noteNavigationRestoration('channel', remembered ? 'restored' : rememberedId ? 'refused' : 'none');
       }
 
       // Apply optional presentation metadata only if this request is still the
@@ -458,8 +467,11 @@
     void renderView();
   }
 
-  function onAuthSuccess(): void {
+  async function onAuthSuccess(): Promise<void> {
     if (!provisionalPreAuthSelection || !serverId) return;
+    await navigationPreferencesReady();
+    // A user selection or server switch during the read supersedes it.
+    if (destroyed || !provisionalPreAuthSelection || !serverId) return;
     const owner = navigationOwner(BridgeRegistry.call('getMe'));
     if (!owner) return;
     provisionalPreAuthSelection = false;
@@ -467,6 +479,7 @@
     const authorized = channels.find(c =>
       c._id === remembered && (c.type ?? 'text') === 'text');
     if (authorized && authorized._id !== activeChannelId) selectChannel(authorized);
+    noteNavigationRestoration('channel', authorized ? 'restored' : remembered ? 'refused' : 'none');
   }
 
   // ── ERİŞİM DEĞİŞİKLİKLERİ (Final21 Faz 16) ─────────────────────────────────

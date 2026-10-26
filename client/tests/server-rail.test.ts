@@ -52,7 +52,9 @@ vi.mock('../js/core/globals.js', () => ({ getAPI: () => '' }));
 
 import ServerSwitcher from '../js/core/ServerSwitcher.svelte';
 import { BridgeRegistry } from '../js/core/bridge-registry.ts';
-import { rememberServer } from '../js/core/navigation-selection.ts';
+import {
+  rememberServer, resetNavigationSelectionForTests, navigationDurabilityStatus,
+} from '../js/core/navigation-selection.ts';
 
 let instance: ReturnType<typeof mount> | null = null;
 let host: HTMLDivElement;
@@ -253,6 +255,62 @@ describe('P7 Android WebView reload selection integrity', () => {
     await BridgeRegistry.call<Promise<void>>('loadServers');
     await settle(); flushSync();
     expect(host.querySelector('[data-id="manual"]')?.getAttribute('aria-current')).toBe('true');
+  });
+});
+
+describe('#490 Android: server restoration from the acknowledged native store', () => {
+  const key = (u: string) => `bridge:last-navigation:v1:server:${u}`;
+  let disk: Map<string, string>;
+  beforeEach(() => {
+    resetNavigationSelectionForTests();
+    disk = new Map();
+    (globalThis as { Capacitor?: unknown }).Capacitor = {
+      getPlatform: () => 'android',
+      isPluginAvailable: (n: string) => n === 'BridgeNavigationStore',
+      Plugins: { BridgeNavigationStore: {
+        write: async ({ key: k, value }: { key: string; value: string | null }) => {
+          if (value === null) disk.delete(k); else disk.set(k, value);
+          return { committed: true };
+        },
+        readAll: async () => ({ entries: Object.fromEntries(disk), processFirstRead: true }),
+        forgetOwner: async () => ({ committed: true }),
+      } },
+    };
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-a' })) as never);
+    serverTruth = [
+      { _id: 'first', name: 'Default' },
+      { _id: 'durable', name: 'Durable' },
+      { _id: 'stale', name: 'Stale' },
+    ];
+  });
+  afterEach(() => {
+    delete (globalThis as { Capacitor?: unknown }).Capacitor;
+    resetNavigationSelectionForTests();
+  });
+
+  it('restores the native-acknowledged server when WebView storage rolled back', async () => {
+    disk.set(key('user-a'), 'durable');
+    localStorage.setItem(key('user-a'), 'stale');
+    await mountRail();
+    await settle(); flushSync();
+    expect(host.querySelector('[data-id="durable"]')?.getAttribute('aria-current')).toBe('true');
+    expect(navigationDurabilityStatus().restoration.server).toBe('restored');
+  });
+
+  it('refuses a natively remembered server the account no longer belongs to', async () => {
+    disk.set(key('user-a'), 'left-server');
+    await mountRail();
+    await settle(); flushSync();
+    expect(host.querySelector('[data-id="first"]')?.getAttribute('aria-current')).toBe('true');
+    expect(navigationDurabilityStatus().restoration.server).toBe('refused');
+  });
+
+  it('an explicit server click is mirrored to native storage and acknowledged', async () => {
+    await mountRail();
+    (host.querySelector('[data-id="stale"]') as HTMLButtonElement).click();
+    await settle(); flushSync();
+    expect(disk.get(key('user-a'))).toBe('stale');
+    expect(navigationDurabilityStatus()).toMatchObject({ acknowledged: 1, failed: 0 });
   });
 });
 
