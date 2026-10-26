@@ -160,3 +160,35 @@ test('EX01 is after all product checkpoints, separate from totals, with original
   const workflow = readFileSync(new URL('../../.github/workflows/mobile-android.yml', import.meta.url), 'utf8');
   assert.match(workflow, /node --test e2e\/android\/\*\.test\.mjs/);
 });
+
+test('EX01 records pre-force-stop preference and channel equality before cold start', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const coldBranch = source.indexOf("} else if (phase === 'cold-start') {");
+  const preStop = source.indexOf('facts.ex01ColdStartPreStop =', coldBranch);
+  const forceStop = source.indexOf("platform.coldLaunch('', { shell })", coldBranch);
+  assert.ok(coldBranch >= 0 && preStop > coldBranch && forceStop > preStop);
+  assert.ok(source.includes('preStop: facts.ex01ColdStartPreStop ?? { available: false }'));
+});
+
+test('EX01 classifies foreign/system/own focus without leaking components or weakening the focus gate', async () => {
+  for (const [owner, windowText] of [
+    ['bridge-main', window],
+    ['bridge-other', `mCurrentFocus=Window{abc u0 ${pkg}/com.bridge.app.OtherActivity}`],
+    ['system-ui', 'mCurrentFocus=Window{abc u0 com.android.systemui/com.android.systemui.SomePanel}'],
+    ['launcher', 'mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher}'],
+    ['other', 'mCurrentFocus=Window{abc u0 private.example/.SecretActivity}'],
+    ['unknown', 'mCurrentFocus=null'],
+  ]) {
+    const row = await observeLifecycleWindow(shell('', windowText), pkg, start);
+    assert.equal(row.focusOwner, owner);
+    assert.equal(row.nativeWindowFocused, owner === 'unknown' ? null : owner === 'bridge-main');
+    assert.doesNotMatch(JSON.stringify(row), /SecretActivity|SomePanel|Launcher|OtherActivity|private\.example/);
+  }
+  const many = await observeLifecycleWindow(shell('', [
+    'mCurrentFocus=Window{abc u0 private.example/.OtherActivity}', window,
+  ].join('\n')), pkg, start);
+  assert.equal(many.focusEntries, 2);
+  assert.equal(many.focusOwner, 'other');
+  assert.equal(many.ownMainInSecondaryEntry, true);
+  assert.equal(many.nativeWindowFocused, false);
+});

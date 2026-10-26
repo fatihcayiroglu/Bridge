@@ -26,6 +26,7 @@ import path from 'node:path';
 import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers } from './exit-diagnostics.mjs';
 import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
 import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-reproduction.mjs';
+import { frozenPreferenceControlApplies, runFrozenPreferenceControl, summarizeFrozenPreferenceEntries } from './frozen-preference-control.mjs';
 import { collectKernelPressure } from './pressure-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
@@ -2554,6 +2555,15 @@ async function main() {
         await step('restore', () => login(me.username, me.id));
         await step('restore', () => openServer(serverId));
         await step('restore', () => openChannel(channelId));
+        // Assert that the EX01 fixture was truly saved BEFORE force-stop.
+        // Otherwise a test setup failure would look like Android data loss.
+        await step('restore', async () => {
+          const persisted = await page.evaluate(({ user, server, expected }) =>
+            localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server) === expected,
+            { user: me.id, server: serverId, expected: channelId });
+          facts.ex01PreferenceSavedBeforeColdLaunch = persisted === true;
+          assert(persisted === true, 'EX01 channel preference missing before process restart');
+        });
       },
       clock: readAttachCrashClock,
       pressure: () => collectKernelPressure(androidFailureShell),
@@ -2573,6 +2583,19 @@ async function main() {
           const launch = await step('resume', () => platform.foreground(shell));
           launchState = launch.launchState;
         } else if (phase === 'cold-start') {
+          // No waiting or storage writes: sample immediately BEFORE Android's
+          // force-stop, to distinguish a late in-process overwrite from
+          // a process-kill/WebView persistence rollback.
+          facts.ex01ColdStartPreStop = await page.evaluate(({ user, server, expected }) => {
+            const value = localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server);
+            return {
+              available: true,
+              preferencePresent: value !== null,
+              preferenceMatches: value === expected,
+              activeChannelMatches: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
+            };
+          }, { user: me.id, server: serverId, expected: expectedChannel })
+            .catch(() => ({ available: false }));
           const launch = await step('launch', () => platform.coldLaunch('', { shell }));
           launchState = launch.launchState;
           beforePid = await shell(`pidof ${PKG}`);
@@ -2597,6 +2620,7 @@ async function main() {
       },
       observe: start => observeLifecycleWindow(androidFailureShell, PKG, start),
       failureEvidence: async start => ({
+        preStop: facts.ex01ColdStartPreStop ?? { available: false },
         ui: await page.evaluate(({ expected, user, server }) => {
           const visible = id => {
             const element = document.getElementById(id);
@@ -2606,6 +2630,7 @@ async function main() {
             anyActiveChannel: Boolean(document.querySelector('.ch-item.active')),
             expectedChannelActive: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
             rememberedChannelMatches: localStorage.getItem(`bridge:last-navigation:v1:channel:${user}:${server}`) === expected,
+            bootNavigation: window.__bridgeNavigationProbeV1?.inspect(user, server, expected) ?? { available: false },
             focused: document.hasFocus() };
         }, { expected: expectedChannel, user: me.id, server: serverId }).catch(() => ({ available: false })),
         // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original
@@ -2615,6 +2640,80 @@ async function main() {
       }),
     });
     log('EX01 separate lifecycle experiment', JSON.stringify(facts.androidLifecycleExperiment));
+    // EX02 is a separate comparison, never a retry or replacement for EX01.
+    // Freeze app tasks, verify the browser storage area, then stop once. This
+    // removes a late app write from the pre-stop interval without a sleep or
+    // a product persistence change. The original EX01 failure remains gating.
+    if (frozenPreferenceControlApplies(facts.androidLifecycleExperiment)) {
+      let session = null;
+      let controlPage = null;
+      const controlStart = await readAttachCrashClock();
+      facts.androidFrozenPreferenceControl = await runFrozenPreferenceControl({
+        emulatorDebug: facts.device?.qemu === '1' && PKG === 'com.bridge.app.debug',
+        select: async ({ step }) => {
+          await step('server', () => openServer(serverId));
+          await step('channel', () => openChannel(expectedChannel));
+        },
+        readBefore: async ({ step }) => step('read', () => page.evaluate(({ user, server, expected }) => {
+          const value = localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server);
+          return { available: true, preferenceMatches: value === expected,
+            activeChannelMatches: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected };
+        }, { user: me.id, server: serverId, expected: expectedChannel })),
+        freeze: async ({ step }) => {
+          controlPage = page;
+          session = await step('session', () => controlPage.context().newCDPSession(controlPage));
+          await step('storage-domain', () => session.send('DOMStorage.enable'));
+          await step('freeze-listener', () => controlPage.evaluate(() => {
+            globalThis.__bridgeEx02FreezeReady = new Promise(resolve => {
+              document.addEventListener('freeze', () => resolve(true), { once: true });
+            });
+          }));
+          await step('freeze', () => session.send('Page.setWebLifecycleState', { state: 'frozen' }));
+          // Require the renderer's actual freeze event, not merely a browser
+          // command ACK. Inspector evaluation is non-freezable; no app task
+          // or storage write is scheduled here.
+          const event = await step('freeze-event', () => session.send('Runtime.evaluate', {
+            expression: 'globalThis.__bridgeEx02FreezeReady', awaitPromise: true, returnByValue: true, timeout: 4000,
+          }));
+          return { eventObserved: event.result?.value === true };
+        },
+        readFrozen: async ({ step }) => {
+          // Raw entries (including other local values) stay in this scope.
+          // Only the exact expected key's presence/equality can leave it.
+          const response = await step('read', () => session.send('DOMStorage.getDOMStorageItems', {
+            storageId: { securityOrigin: 'https://localhost', isLocalStorage: true },
+          }));
+          const key = 'bridge:last-navigation:v1:channel:' + me.id + ':' + serverId;
+          return summarizeFrozenPreferenceEntries(response.entries, key, expectedChannel);
+        },
+        coldLaunch: async ({ signal }) => platform.coldLaunch('', { shell: async command => {
+          signal.throwIfAborted();
+          const raw = await androidFailureShell(command);
+          signal.throwIfAborted();
+          return raw;
+        } }),
+        readBoot: async ({ step }) => {
+          await step('attach', () => attachPage({ crashWindowStart: controlStart }));
+          await step('probe-ready', () => until(() => page.evaluate(() =>
+            typeof window.__bridgeNavigationProbeV1?.inspect === 'function'),
+          { timeout: 15_000, message: 'EX02 early navigation probe ready' }));
+          return step('probe', () => page.evaluate(({ user, server, expected }) =>
+            window.__bridgeNavigationProbeV1.inspect(user, server, expected),
+          { user: me.id, server: serverId, expected: expectedChannel }));
+        },
+        cleanup: async ({ step }) => {
+          if (!session) return;
+          if (controlPage && !controlPage.isClosed()) {
+            await step('unfreeze', () => session.send('Page.setWebLifecycleState', { state: 'active' }));
+          }
+          try { await step('detach', () => session.detach()); }
+          catch { if (controlPage && !controlPage.isClosed()) throw new Error('control cleanup unavailable'); }
+        },
+      });
+    } else {
+      facts.androidFrozenPreferenceControl = { case: 'EX02', status: 'NOT_APPLICABLE', reason: 'no-matching-storage-failure' };
+    }
+    log('EX02 independent frozen-page storage comparison', JSON.stringify(facts.androidFrozenPreferenceControl));
   }
 
   peerSock.close();
