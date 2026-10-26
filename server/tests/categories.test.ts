@@ -50,6 +50,8 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   }
   next();
 });
+const emitted: Array<[string, string, unknown]> = [];
+app.set('io', { to: (room: string) => ({ emit: (event: string, payload: unknown) => emitted.push([room, event, payload]) }) });
 app.use('/api/servers/:serverId/categories', router);
 app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
@@ -274,5 +276,34 @@ describe('DELETE /api/servers/:serverId/categories/:catId', () => {
       .delete(`/api/servers/${SERVER_ID}/categories/missing-category`)
       .set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('channels:changed announcements (P7 D2 live list sync)', () => {
+  const announced = () => emitted.filter(([room, event]) => room === `server:${SERVER_ID}` && event === 'channels:changed');
+
+  it('each successful category mutation tells the server room, with the server id only', async () => {
+    emitted.length = 0;
+    const created = await request(app).post(`/api/servers/${SERVER_ID}/categories`)
+      .set('Authorization', `Bearer ${token()}`).send({ name: 'live' });
+    expect(created.status).toBe(200);
+    const catId = String(created.body._id);
+    expect((await request(app).patch(`/api/servers/${SERVER_ID}/categories/${catId}`)
+      .set('Authorization', `Bearer ${token()}`).send({ name: 'renamed' })).status).toBe(200);
+    expect((await request(app).post(`/api/servers/${SERVER_ID}/categories/reorder`)
+      .set('Authorization', `Bearer ${token()}`).send({ order: [{ id: catId, position: 0 }] })).status).toBe(200);
+    expect((await request(app).delete(`/api/servers/${SERVER_ID}/categories/${catId}`)
+      .set('Authorization', `Bearer ${token()}`)).status).toBe(200);
+    expect(announced()).toEqual(Array.from({ length: 4 }, () => [`server:${SERVER_ID}`, 'channels:changed', { serverId: SERVER_ID }]));
+  });
+
+  it('a refused or failed mutation announces nothing', async () => {
+    emitted.length = 0;
+    mockHasPermission.mockReturnValueOnce(false);
+    expect((await request(app).post(`/api/servers/${SERVER_ID}/categories`)
+      .set('Authorization', `Bearer ${token()}`).send({ name: 'nope' })).status).toBe(403);
+    expect((await request(app).delete(`/api/servers/${SERVER_ID}/categories/missing-category`)
+      .set('Authorization', `Bearer ${token()}`)).status).toBe(404);
+    expect(announced()).toEqual([]);
   });
 });

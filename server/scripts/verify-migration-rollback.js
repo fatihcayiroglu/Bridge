@@ -472,7 +472,11 @@ async function main() {
       let orderedOk = true, orderedDetail = '';
       try {
         runTs('db/migrate-postgres.ts', ['rollback', String(migrations.length)], dbUrl);
-        runTs('db/migrate-postgres.ts', ['up'], dbUrl);
+        // This throwaway DB is deliberately missing columns after rollback.
+        // The production 'up' CLI correctly refuses such an unverified source.
+        // Reuse the canonical migration applicator in a strictly DB-name-gated
+        // proof harness, without introducing a production preflight bypass.
+        runTs('scripts/reapply-rollback-proof.ts', [], dbUrl);
       } catch (err) {
         orderedOk = false;
         // Son satırı almak YANILTICIYDI: koşucu hata satırını bastıktan sonra

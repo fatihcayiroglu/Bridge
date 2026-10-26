@@ -71,6 +71,11 @@ class FakeSocket {
   once = vi.fn((event: string, handler: Handler) => {
     const list = this.onceHandlers.get(event) ?? []; list.push(handler); this.onceHandlers.set(event, list);
   });
+  off = vi.fn((event: string, handler: Handler) => {
+    this.handlers.set(event, (this.handlers.get(event) ?? []).filter(fn => fn !== handler));
+    this.onceHandlers.set(event, (this.onceHandlers.get(event) ?? []).filter(fn => fn !== handler));
+  });
+  removeAllListeners = vi.fn(() => { this.handlers.clear(); this.onceHandlers.clear(); });
   emit = vi.fn();
   disconnect = vi.fn(() => { this.connected = false; });
   constructor(id: string | undefined) { this.id = id; }

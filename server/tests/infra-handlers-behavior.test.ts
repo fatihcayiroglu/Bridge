@@ -434,6 +434,26 @@ describe('registerInfraHandlers', () => {
 });
 
 describe('handleDisconnect deeper branches', () => {
+  test('releases authoritative socket presence even if voice cleanup fails', async () => {
+    const h = setupInfra();
+    h.leaveVoice.mockRejectedValueOnce(new Error('voice Redis unavailable'));
+    mockReleaseSocket.mockResolvedValueOnce(0);
+
+    await expect(handleDisconnect(h.socket, h.safeUser, {
+      socketUsers: h.socketUsers, typingTimers: h.typingTimers, _socketRateStore: h.rateStore,
+      leaveVoice: h.leaveVoice, voiceActivity: h.voiceActivity,
+      tokenCheckTimer: null, tokenExpiryTimer: null, io: h.io,
+    })).resolves.toBeUndefined();
+
+    expect(h.voiceActivity.has('sock1')).toBe(false);
+    expect(mockReleaseSocket).toHaveBeenCalledWith('u1', 'sock1');
+    expect(mockUsersUpdate).toHaveBeenCalledWith('u1', { status: 'offline' });
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      { event: 'socket.disconnect.voice_cleanup_failed' },
+      expect.stringContaining('continuing with presence release'),
+    );
+  });
+
   test('cleans rooms/timers/rate/voice and broadcasts offline when last socket disappears', async () => {
     const h = setupInfra();
     h.socket.rooms.add('server:s1');

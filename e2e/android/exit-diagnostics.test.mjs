@@ -1,7 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers, parseAndroidCrashClock, summarizeAndroidJavaCrashes } from './exit-diagnostics.mjs';
+
+test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit descriptions', () => {
+  const raw = { available: true, exits: [
+    { pid: 9981, process: 'com.bridge.app.debug', at: 'private-time',
+      reason: '6 (ANR)', subreason: '0 (UNKNOWN)', dependencyDescription: 'user@example.com' },
+    { pid: 9982, process: 'private-app', at: 'secret',
+      reason: '12 (DEPENDENCY DIED)', subreason: '21 (FORCE STOP)',
+      dependency: { provider: 'sensitive-service', available: true } },
+    { pid: 9983, reason: '5 (secret)', subreason: 'malformed' },
+  ] };
+  const safe = redactRecentAndroidExits(raw);
+  assert.deepEqual(safe, { available: true, count: 3, reasons: [
+    { reasonCode: 6, subreasonCode: 0 },
+    { reasonCode: 12, subreasonCode: 21 },
+    { reasonCode: null, subreasonCode: null },
+  ] });
+  assert.doesNotMatch(JSON.stringify(safe), /9981|9982|9983|private|secret|user@|process|provider|description/);
+  assert.deepEqual(redactRecentAndroidExits(null), { available: false, count: 0, reasons: [] });
+  assert.deepEqual(redactRecentAndroidExits({ available: true, exits: 'bad' }),
+    { available: false, count: 0, reasons: [] });
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(journeys, /redactRecentAndroidExits\(exitFacts\)/);
+  assert.match(journeys, /id === 'CS01' \|\| id === 'L01' \|\| id === 'ANR01'/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\(exitFacts\)/);
+  assert.doesNotMatch(journeys, /Object\.assign\(facts, \{ deviceUser:/);
+});
+
+test('Android public journey artifact excludes dynamic channel IDs, test message text and raw OS/UI responses', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  // Assertions use real IDs and messages in memory, but never persist them as PASS details.
+  assert.match(journeys, /assert\(\(await activeChannel\(\)\) === channelId/);
+  assert.match(journeys, /return \{ expectedChannelActive: true \}/);
+  assert.match(journeys, /return \{ persistedOnce: true, rendered: true \}/);
+  assert.match(journeys, /return \{ dmRendered: true \}/);
+  assert.match(journeys, /return \{ deniedChannelNotVisible: true/);
+  assert.match(journeys, /return \{ channelRegistered: lines\.includes\('bridge_default'\) \}/);
+  assert.match(journeys, /return \{ deepLinkOpened: true \}/);
+  assert.match(journeys, /return \{ appStillForeground: true/);
+  assert.match(journeys, /return \{ osSheet: sheet, denialExplained: Boolean\(text\) \}/);
+  assert.doesNotMatch(journeys, /return \{\s*(?:needle|active:|before, after|top,|am:|osSheet: sheet, shown:)/);
+  assert.doesNotMatch(journeys, /origin: await page\.evaluate|api: await page\.evaluate/);
+  assert.doesNotMatch(journeys, /app left (?:the )?foreground(?: after back)?: \$\{top\}/);
+  assert.match(journeys, /audioProbeAvailable: Boolean\(recording\.trim\(\)\)/);
+  assert.match(journeys, /return \{ processAlive: true, status/);
+  assert.match(journeys, /return \{ processStable: true \}/);
+  assert.doesNotMatch(journeys, /audioDump:|return \{ pid: (?:alive|after) \}|crash\.slice\(-1500\)/);
+  assert.match(journeys, /API request failed \(HTTP \$\{r\.status\}\)/);
+  assert.match(journeys, /last operation errored: \$\{last instanceof Error\}/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\((?:r|reg)\.json\)|last error: \$\{last\.message\}/);
+});
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -347,7 +398,7 @@ test('L03 failure evidence proves only OS state and redacts all free-text and de
 
 test('L03 WebView attach failure path cannot archive raw Android dump or transport exception', () => {
   const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const begin = code.indexOf('async function webViewAttachEvidence() {');
+  const begin = code.indexOf('async function webViewAttachEvidence(');
   const end = code.indexOf('\nasync function attachPage(', begin);
   assert.ok(begin >= 0 && end > begin);
   const actual = code.slice(begin, end);
@@ -379,7 +430,7 @@ test('DevTools HTTP targets are counted without leaking page titles, URLs or web
 test('failure-only CDP probing preserves strict L03 failures and removes ADB forwards', () => {
   const src = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const begin = src.indexOf('async function devToolsHttpProbe(');
-  const end = src.indexOf('\nasync function webViewAttachEvidence()', begin);
+  const end = src.indexOf('\nasync function readAttachCrashClock()', begin);
   assert.ok(begin >= 0 && end > begin);
   const fn = src.slice(begin, end);
   assert.ok(fn.includes("['-s', serial, 'forward', '--remove'"));
@@ -1204,10 +1255,11 @@ test('production release and FD00G sources keep the release off the main thread 
 
 test('ANR02 probe markers keep only allowlisted main-thread enums from the exact PID', () => {
   const raw = [
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only',
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview',
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer',
-    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only nativeHint=libc',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview nativeHint=art',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer nativeHint=libc',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=secret',
+    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge nativeHint=graphics',
     'I/BridgeAnrTraceProbe( 5150): stage=done supported=true error=false anrExits=3 records=16 oldestBeforeStart=false capacity=16',
   ].join('\n');
   const result = parseAnrTraceProbeMarkers(raw, 5150);
@@ -1215,8 +1267,8 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
     complete: true, supported: true, error: false, fatalAnrs: 3, records: 16, capacity: 16,
     coverage: 'possibly-truncated',
     traces: [
-      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only' },
-      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview' },
+      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only', nativeHint: 'libc' },
+      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview', nativeHint: 'art' },
     ],
   });
   assert.doesNotMatch(JSON.stringify(result), /secret|Customer|5150|6000/);
@@ -1246,6 +1298,94 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
   const anr02 = journeys.slice(journeys.indexOf("await measure('ANR02'"));
   assert.ok(anr02.indexOf('facts.androidFatalAnrTraces = result;') <
     anr02.indexOf("assert(result.complete, 'ANR02 probe did not report completion"));
+});
+
+test('ANR02 preserves distinct top and first-owner operation categories', () => {
+  const raw = [
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=capacitor nativeHint=none topOperation=class-load ownerOperation=capacitor-plugins',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=capacitor nativeHint=none topOperation=capacitor-build ownerOperation=capacitor-build',
+  ].join('\n');
+  const result = parseAnrTraceProbeMarkers(raw, 5150);
+  assert.deepEqual(result.traces, [
+    { traceAvailable: true, mainState: 'Runnable', top: 'running-code', subsystem: 'capacitor',
+      nativeHint: 'none', topOperation: 'class-load', ownerOperation: 'capacitor-plugins' },
+    { traceAvailable: true, mainState: 'Runnable', top: 'running-code', subsystem: 'capacitor',
+      nativeHint: 'none', topOperation: 'capacitor-build', ownerOperation: 'capacitor-build' },
+  ]);
+});
+
+test('ANR02 rejects unknown, partial or extended operations and foreign PIDs', () => {
+  const prefix = 'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=capacitor nativeHint=none';
+  for (const suffix of [
+    ' topOperation=com.secret.Customer ownerOperation=capacitor-build',
+    ' topOperation=class-load ownerOperation=secret',
+    ' topOperation=class-load',
+    ' ownerOperation=capacitor-build',
+    ' topOperation=class-load ownerOperation=capacitor-build token=private',
+    ' topOperation=class-load ownerOperation=capacitor-build-secret',
+  ]) {
+    assert.deepEqual(parseAnrTraceProbeMarkers(prefix + suffix, 5150).traces, []);
+  }
+  assert.deepEqual(parseAnrTraceProbeMarkers(prefix +
+    ' topOperation=class-load ownerOperation=capacitor-build', 6000).traces, []);
+});
+
+test('ANR02 bounds operation records and keeps unknown operations explicit', () => {
+  const marker = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=other-app nativeHint=none topOperation=other ownerOperation=other';
+  const result = parseAnrTraceProbeMarkers(Array(8).fill(marker).join('\n'), 77);
+  assert.equal(result.traces.length, 5);
+  assert.equal(result.traces[0].topOperation, 'other');
+  assert.equal(result.traces[0].ownerOperation, 'other');
+  assert.equal(result.complete, false);
+  assert.doesNotMatch(JSON.stringify(result), /secret|Customer|5150|6000/);
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker + '\n' + Array(200).fill('irrelevant').join('\n'), 77).traces, []);
+});
+
+test('ANR02 binds graphics and RenderThread context to the same exit and exact probe PID', () => {
+  const marker = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=graphics topOperation=surface-setup ownerOperation=none mainNativeOperation=surface-setup renderState=Native renderNativeHint=graphics renderNativeOperation=context-init';
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker, 77).traces, [{
+    traceAvailable: true, mainState: 'Native', top: 'running-code', subsystem: 'framework-only',
+    nativeHint: 'graphics', topOperation: 'surface-setup', ownerOperation: 'none',
+    mainNativeOperation: 'surface-setup', renderState: 'Native', renderNativeHint: 'graphics',
+    renderNativeOperation: 'context-init',
+  }]);
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker, 78).traces, []);
+  const parsed = parseAnrTraceProbeMarkers(Array(8).fill(marker).join('\n'), 77);
+  assert.equal(parsed.traces.length, 5);
+  assert.equal(parsed.complete, false);
+  assert.deepEqual(parseAnrTraceProbeMarkers(marker + '\n' + Array(200).fill('irrelevant').join('\n'), 77).traces, []);
+});
+
+test('ANR02 rejects partial, extended, spoofed or unbounded graphics diagnostics', () => {
+  const prefix = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=graphics topOperation=surface-setup ownerOperation=none';
+  const suffix = ' mainNativeOperation=surface-setup renderState=Native renderNativeHint=graphics renderNativeOperation=context-init';
+  for (const bad of [
+    suffix.replace('context-init', 'com.secret.Customer'),
+    suffix.replace('context-init', 'context-init-secret'),
+    suffix.replace('Native', 'Customer'),
+    suffix.replace('renderNativeHint=graphics', 'renderNativeHint=private'),
+    suffix.replace('mainNativeOperation=surface-setup', 'mainNativeOperation=looper'),
+    suffix.replace('renderNativeOperation=context-init', ''),
+    suffix.replace(' renderState=Native', ''),
+    suffix + ' token=private',
+    suffix + ' mainNativeOperation=surface-setup',
+    suffix.replace('context-init', 'a'.repeat(25)),
+  ]) assert.deepEqual(parseAnrTraceProbeMarkers(prefix + bad, 77).traces, []);
+  assert.deepEqual(parseAnrTraceProbeMarkers(prefix + '\n' + suffix, 77).traces, [{
+    traceAvailable: true, mainState: 'Native', top: 'running-code', subsystem: 'framework-only',
+    nativeHint: 'graphics', topOperation: 'surface-setup', ownerOperation: 'none',
+  }]); // A later line must never attach context to a historical exit.
+});
+
+test('ANR02 preserves absent historical graphics fields and explicit missing render thread', () => {
+  const prefix = 'I/BridgeAnrTraceProbe( 77): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=graphics topOperation=frame-sync ownerOperation=none';
+  const historical = parseAnrTraceProbeMarkers(prefix, 77).traces[0];
+  assert.equal(Object.hasOwn(historical, 'mainNativeOperation'), false);
+  assert.equal(Object.hasOwn(historical, 'renderState'), false);
+  const current = parseAnrTraceProbeMarkers(prefix + ' mainNativeOperation=other renderState=missing renderNativeHint=none renderNativeOperation=none', 77).traces[0];
+  assert.equal(current.mainNativeOperation, 'other');
+  assert.equal(current.renderState, 'missing');
+  assert.doesNotMatch(JSON.stringify(current), /libhwui|android::|private|77/);
 });
 
 test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => {
@@ -1600,4 +1740,646 @@ test('workflows: product suite gates, upstream controls run non-gating but keep 
   // The runner script propagates the journey exit status unchanged.
   const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
   assert.match(runner, /node android\/android-journeys\.mjs\nstatus=\$\?\n[\s\S]*exit \$status\n$/);
+});
+
+// verify-emulator-image.sh, driven with a stub sdkmanager. A package's next N
+// installs fail like run 40029859999 ("Error on ZipFile unknown archive"):
+// a partial archive is left in the SDK staging directory and nothing is
+// installed. The preflight retries only the SDK download, from a clean
+// staging directory, and never reports success from an exit code alone.
+test('emulator image preflight retries corrupt SDK downloads cleanly and fails closed', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync: read } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const script = new URL('./verify-emulator-image.sh', import.meta.url).pathname;
+  const image = 'system-images/android-34/google_apis/x86_64';
+
+  function sdk({ emulatorFails = 0, imageFails = 0, silentNoop = false, installed = false } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'sdk-'));
+    const bin = join(root, 'cmdline-tools/latest/bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(root, 'fails-emulator'), String(emulatorFails));
+    writeFileSync(join(root, 'fails-image'), String(imageFails));
+    writeFileSync(join(bin, 'sdkmanager'), `#!/usr/bin/env bash
+root=${JSON.stringify(root)}
+for a in "$@"; do case "$a" in --licenses) exit 0;; esac; done
+pkg="\${@: -2:1}"
+case "$pkg" in emulator) key=emulator dir="$root/emulator";; system-images*) key=image dir="$root/${image}";; *) exit 2;; esac
+echo "$key staging=$( [ -e "$root/.temp/partial.zip" ] && echo stale || echo clean )" >> "$root/calls"
+${silentNoop ? 'exit 0' : ''}
+n=$(cat "$root/fails-$key")
+if [ "$n" -gt 0 ]; then
+  echo $((n - 1)) > "$root/fails-$key"; mkdir -p "$root/.temp" "$dir"; echo x > "$root/.temp/partial.zip"
+  echo "Warning: An error occurred while preparing SDK package: Error on ZipFile unknown archive."; exit 0
+fi
+mkdir -p "$dir"; echo '<pkg/>' > "$dir/package.xml"
+if [ "$key" = emulator ]; then printf '#!/bin/sh\\n' > "$dir/emulator"; chmod +x "$dir/emulator"; else echo img > "$dir/system.img"; fi
+`);
+    chmodSync(join(bin, 'sdkmanager'), 0o755);
+    if (installed) {
+      mkdirSync(join(root, image), { recursive: true }); mkdirSync(join(root, 'emulator'));
+      writeFileSync(join(root, image, 'system.img'), 'img'); writeFileSync(join(root, image, 'package.xml'), '<pkg/>');
+      writeFileSync(join(root, 'emulator/package.xml'), '<pkg/>'); writeFileSync(join(root, 'emulator/emulator', ''), '#!/bin/sh\n'); chmodSync(join(root, 'emulator/emulator'), 0o755);
+    }
+    return root;
+  }
+  const run = root => spawnSync('bash', [script], {
+    env: { ...process.env, ANDROID_HOME: root, ANDROID_SDK_ROOT: '', ANDROID_SDK_RETRY_BASE_SECONDS: '0', ANDROID_SDK_INSTALL_ATTEMPTS: '4' },
+    encoding: 'utf8',
+  });
+  const calls = root => (existsSync(join(root, 'calls')) ? read(join(root, 'calls'), 'utf8').trim().split('\n') : []);
+
+  // Already installed: no download at all.
+  let root = sdk({ installed: true });
+  let out = run(root);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.deepEqual(calls(root), []);
+
+  // The run-40029859999 pattern: the emulator corrupt on attempt 1, the image on attempts 1-2.
+  root = sdk({ emulatorFails: 1, imageFails: 2 });
+  out = run(root);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /verified \(attempt 3\/4\)/);
+  // Each retry starts from clean staging; a completed emulator is not downloaded again.
+  assert.deepEqual(calls(root), [
+    'emulator staging=clean', 'image staging=stale',
+    'emulator staging=clean', 'image staging=clean',
+    'image staging=clean',
+  ]);
+
+  // Still corrupt after every attempt: the job fails and says the journeys did not run.
+  root = sdk({ imageFails: 9 });
+  out = run(root);
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /::error::Android system image or emulator is missing or incomplete after 4 attempts; emulator tests were not run/);
+  assert.equal(calls(root).filter(c => c.startsWith('image')).length, 4);
+
+  // An sdkmanager that exits 0 but installs nothing is never trusted.
+  root = sdk({ silentNoop: true });
+  out = run(root);
+  assert.equal(out.status, 1);
+  assert.equal(calls(root).length, 8);
+});
+
+// #209 FocusEvent ANRs: the event log's own ANR/kill timeline.
+const EV = (epoch, tag, payload, pid = 512) => `${epoch}  ${pid}  ${pid + 7} I ${tag}: [${payload}]`;
+const originEpochMs = Date.UTC(2026, 9, 15, 11, 9, 0);
+const sec = offsetMs => ((originEpochMs + offsetMs) / 1000).toFixed(3);
+
+test('ANR event timeline links each ANR to the kill that ended its process, with fixed classes only', () => {
+  const raw = [
+    EV(sec(1000), 'am_proc_start', '0,3697,10123,com.bridge.app.debug,next-top-activity,{com.bridge.app.debug/com.bridge.app.MainActivity}'),
+    EV(sec(1200), 'am_proc_start', '0,3720,10123,com.other.app,service,{com.other.app/.S}'),
+    EV(sec(16000), 'am_anr', '0,3697,com.bridge.app.debug,550026820,Input dispatching timed out (8d4 com.bridge.app.debug/com.bridge.app.MainActivity (server) is not responding. Waited 5002ms for FocusEvent(hasFocus=true))'),
+    EV(sec(16500), 'am_anr', '0,3720,com.other.app,0,executing service com.other.app/.S'),
+    EV(sec(40100), 'am_kill', '0,3697,com.bridge.app.debug,0,user request after error'),
+    EV(sec(40150), 'am_proc_died', '0,3697,com.bridge.app.debug,0,2'),
+    EV(sec(41000), 'am_proc_start', '0,3801,10123,com.bridge.app.debug,activity,{com.bridge.app.debug/com.bridge.app.MainActivity}'),
+    EV(sec(90000), 'am_kill', '0,3801,com.bridge.app.debug,0,stop com.bridge.app.debug due to from pid 2401'),
+    'garbage am_anr line without structure',
+  ].join('\n');
+  const result = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs);
+  assert.equal(result.available, true);
+  assert.equal(result.unparsedLines, 1);
+  assert.deepEqual(result.anrs, [{ atMs: 16000, process: 1, reasonClass: 'input-focus-event',
+    killAfterMs: 24100, killReasonClass: 'user-request-after-error', diedAfterMs: 24150 }]);
+  assert.deepEqual(result.events.map(e => [e.type, e.process, e.reasonClass ?? null]), [
+    ['am_proc_start', 1, null], ['am_anr', 1, 'input-focus-event'], ['am_kill', 1, 'user-request-after-error'],
+    ['am_proc_died', 1, null], ['am_proc_start', 2, null], ['am_kill', 2, 'force-stop']]);
+  const json = JSON.stringify(result);
+  assert.doesNotMatch(json, /3697|3801|other\.app|MainActivity|Waited|server|2401/);
+  // An ANR whose process was never killed afterwards keeps nulls, not zeros.
+  const open = parseAnrEventTimeline(raw.split('\n').slice(0, 3).join('\n'), 'com.bridge.app.debug', originEpochMs);
+  assert.deepEqual(open.anrs, [{ atMs: 16000, process: 1, reasonClass: 'input-focus-event',
+    killAfterMs: null, killReasonClass: null, diedAfterMs: null }]);
+});
+
+test('ANR event timeline fails closed on bad input', () => {
+  const none = { available: false, events: [], anrs: [], unparsedLines: 0 };
+  assert.deepEqual(parseAnrEventTimeline('', 'com.bridge.app.debug', originEpochMs), none);
+  assert.deepEqual(parseAnrEventTimeline(EV(sec(1), 'am_anr', '0,1,x,0,y'), 'bad name; rm', originEpochMs), none);
+  assert.deepEqual(parseAnrEventTimeline(EV(sec(1), 'am_anr', '0,1,x,0,y'), 'x', NaN), none);
+  // A Bridge row whose PID does not parse is counted, never silently dropped.
+  const bad = parseAnrEventTimeline(EV(sec(5), 'am_kill', '0,abc,com.bridge.app.debug,0,bg anr'), 'com.bridge.app.debug', originEpochMs);
+  assert.equal(bad.unparsedLines, 1);
+  assert.deepEqual(bad.events, []);
+  const kinds = ['bg anr', 'anr', 'remove task', 'depends on provider x in dying proc y (adj 0)', 'crash', 'lmk'].map(reason =>
+    parseAnrEventTimeline(EV(sec(5), 'am_kill', `0,9,com.bridge.app.debug,0,${reason}`), 'com.bridge.app.debug', originEpochMs).events[0].reasonClass);
+  assert.deepEqual(kinds, ['background-anr', 'anr', 'remove-task', 'provider-dependency', 'crash', 'other']);
+});
+
+test('ANR03 excludes pre-journey and post-window events, including stale ANRs', () => {
+  const raw = [
+    EV(sec(-4000), 'am_proc_start', '0,123,10123,com.bridge.app.debug,activity,X'),
+    EV(sec(-2000), 'am_anr', '0,123,com.bridge.app.debug,0,Input dispatching timed out for FocusEvent'),
+    EV(sec(1000), 'am_proc_start', '0,456,10123,com.bridge.app.debug,activity,X'),
+    EV(sec(3000), 'am_kill', '0,456,com.bridge.app.debug,0,force-stop'),
+    EV(sec(15000), 'am_anr', '0,456,com.bridge.app.debug,0,Input dispatching timed out for FocusEvent'),
+  ].join('\n');
+  const result = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs, 64, 5000);
+  assert.equal(result.available, true);
+  assert.equal(result.preOriginEvents, 2);
+  assert.equal(result.postWindowEvents, 1);
+  assert.equal(result.anrs.length, 0);
+  assert.equal(result.events.length, 2);
+  assert.equal(result.events[0].process, 1);
+  assert.doesNotMatch(JSON.stringify(result), /\b123\b|\b456\b/);
+  const onlyOld = parseAnrEventTimeline(raw.split('\n').slice(0, 2).join('\n'), 'com.bridge.app.debug', originEpochMs);
+  assert.equal(onlyOld.available, false, 'old ANRs cannot make this journey look measured');
+  assert.equal(onlyOld.preOriginEvents, 2);
+});
+
+test('ANR03 rejects foreign-only log snapshots and never calls them zero Bridge ANRs', () => {
+  const raw = [
+    EV(sec(1000), 'am_proc_start', '0,900,10123,com.other.app,activity,X'),
+    EV(sec(8000), 'am_anr', '0,900,com.other.app,0,Input dispatching timed out'),
+  ].join('\n');
+  assert.deepEqual(parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs),
+    { available: false, events: [], anrs: [], unparsedLines: 0 });
+});
+
+test('ANR03 separates reused PIDs and never borrows a later incarnation kill', () => {
+  const raw = [
+    EV(sec(1000), 'am_proc_start', '0,222,10123,com.bridge.app.debug,activity,X'),
+    EV(sec(2000), 'am_anr', '0,222,com.bridge.app.debug,0,Input dispatching timed out for FocusEvent'),
+    EV(sec(3000), 'am_proc_died', '0,222,com.bridge.app.debug,0,2'),
+    EV(sec(5000), 'am_proc_start', '0,222,10123,com.bridge.app.debug,activity,Y'),
+    EV(sec(7000), 'am_kill', '0,222,com.bridge.app.debug,0,user request after error'),
+  ].join('\n');
+  const result = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs);
+  assert.equal(result.anrs.length, 1);
+  assert.equal(result.anrs[0].killAfterMs, null, 'later process kill is unrelated');
+  assert.equal(result.anrs[0].diedAfterMs, 1000);
+  assert.equal(result.events.at(-1).process, 2);
+  assert.equal(result.coverage, 'observed-only');
+});
+
+test('ANR03 marks truncated histories and missing process starts as incomplete evidence', () => {
+  const raw = [
+    EV(sec(1000), 'am_anr', '0,333,com.bridge.app.debug,0,Input dispatching timed out'),
+    EV(sec(2000), 'am_kill', '0,333,com.bridge.app.debug,0,bg anr'),
+    EV(sec(3000), 'am_proc_died', '0,333,com.bridge.app.debug,0,2'),
+  ].join('\n');
+  const limited = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs, 1);
+  assert.equal(limited.truncated, true);
+  assert.equal(limited.coverage, 'partial');
+  const full = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs);
+  assert.equal(full.coverage, 'partial', 'a missing process-start cannot prove full coverage');
+  assert.equal(parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs, 64, -1).available, false);
+});
+
+test('stepAtOffset names the check that was running, or null before the first one', () => {
+  const steps = [{ id: 'A01', atMs: 5000 }, { id: 'CS01', atMs: 20000 }, { id: 'bad id!', atMs: 30000 }, { id: 'L01', atMs: 40000 }];
+  assert.equal(stepAtOffset(steps, 4999), null);
+  assert.equal(stepAtOffset(steps, 16000), 'A01');
+  assert.equal(stepAtOffset(steps, 35000), 'CS01');
+  assert.equal(stepAtOffset(steps, 40100), 'L01');
+  assert.equal(stepAtOffset(null, 1), null);
+});
+
+test('ANR dialog windows are counted by their AOSP title, focus is a boolean', () => {
+  const dump = [
+    'WINDOW MANAGER WINDOWS (dumpsys window windows)',
+    '  Window #9 Window{1a2b3c u0 Application Not Responding: com.bridge.app.debug}:',
+    '    mDisplayId=0 rootTaskId=1 mSession=Session{4 1234:1000} mClient=android.os.BinderProxy@a',
+    '  Window #8 Window{9f8e7d u0 com.bridge.app.debug/com.bridge.app.MainActivity}:',
+    '  Window #7 Window{5c5c5c u0 Application Not Responding: com.other.app}:',
+    '  mCurrentFocus=Window{1a2b3c u0 Application Not Responding: com.bridge.app.debug}',
+  ].join('\n');
+  assert.deepEqual(inspectAnrDialogWindows(dump, 'com.bridge.app.debug'),
+    { available: true, anrDialogs: 1, focusedOnAnrDialog: true });
+  const noDialog = dump.split('\n').filter(l => !l.includes('Not Responding: com.bridge')).join('\n')
+    .concat('\n  mCurrentFocus=Window{9f8e7d u0 com.bridge.app.debug/com.bridge.app.MainActivity}');
+  assert.deepEqual(inspectAnrDialogWindows(noDialog, 'com.bridge.app.debug'),
+    { available: true, anrDialogs: 0, focusedOnAnrDialog: false });
+  assert.deepEqual(inspectAnrDialogWindows('error: no window manager', 'com.bridge.app.debug'),
+    { available: false, anrDialogs: 0, focusedOnAnrDialog: null });
+  assert.doesNotMatch(JSON.stringify(inspectAnrDialogWindows(dump, 'com.bridge.app.debug')), /1a2b3c|other|Session/);
+});
+
+test('device clock reads keep their precision and reject toybox format leftovers', () => {
+  assert.deepEqual(parseDeviceEpoch('1792486915.123456789\r\n'), { epochMs: 1792486915123, precision: 'ms' });
+  assert.deepEqual(parseDeviceEpoch('1792486915'), { epochMs: 1792486915000, precision: 's' });
+  for (const bad of ['1792486915.%N', '1792486915.N', '', 'date: bad format', null]) assert.equal(parseDeviceEpoch(bad), null);
+});
+
+test('AN00 stall-control markers are read only from the exact control PID', () => {
+  const raw = [
+    'I/BridgeStallControl( 4321): stage=stall-end',
+    'I/BridgeStallControl( 4321): stage=stall-begin stallMs=7000',
+    'I/BridgeStallControl( 9999): stage=stall-begin stallMs=20000',
+    'BridgeStallControl: stage=stall-end forged',
+    'I/BridgeStallControl( 4321): stage=stall-end',
+  ].join('\n');
+  assert.deepEqual(parseStallControlMarkers(raw, '4321'), { began: true, ended: true, stallMs: 7000 });
+  assert.deepEqual(parseStallControlMarkers(raw.split('\n').slice(0, 2).join('\n'), 4321),
+    { began: true, ended: false, stallMs: 7000 }, 'an end before the begin does not count');
+  assert.deepEqual(parseStallControlMarkers(raw, 1111), { began: false, ended: false, stallMs: null });
+  assert.deepEqual(parseStallControlMarkers(raw, '4321; id'), { began: false, ended: false, stallMs: null });
+});
+
+test('ANR03 and AN00 are measurements: wired at the checkpoints, before L01 HOME, and debug-only', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const android = new URL('../../mobile/android/app/src/', import.meta.url);
+  const debugManifest = readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8');
+  const mainManifest = readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8');
+  const control = readFileSync(new URL('debug/java/com/bridge/app/MainThreadStallControlActivity.java', android), 'utf8');
+  // Measurement only: never an asserting check, never in the product verdicts.
+  assert.match(journeys, /await measure\('ANR03', /);
+  assert.doesNotMatch(journeys, /await check\('(?:ANR03|AN00)/);
+  // Every check and measurement records its start for step attribution.
+  assert.match(journeys, /async function check\(id, title, fn\) \{\n  const started = Date\.now\(\);\n  stepStarts\.push\(\{ id, hostMs: started \}\);/);
+  assert.match(journeys, /async function measure\(id, title, fn\) \{\n  const started = Date\.now\(\);\n  stepStarts\.push\(\{ id, hostMs: started \}\);/);
+  // Event-log reads at the PD01 checkpoints, a dialog sample right before L01's HOME.
+  assert.match(journeys, /await productExitCheckpoint\('after-startup'\);\n  await collectAnrEvents\(\);\n  await anrDialogSample\('after-startup'\);/);
+  assert.match(journeys, /await productExitCheckpoint\('after-lifecycle'\);\n  await collectAnrEvents\(\);/);
+  const l01 = journeys.slice(journeys.indexOf("await check('L01'"), journeys.indexOf("await check('L02'"));
+  assert.ok(l01.indexOf("await anrDialogSample('before-L01-home');") < l01.indexOf('await platform.home();'));
+  assert.ok(l01.indexOf("await anrDialogSample('before-L01-home');") > 0);
+  // L01's verdict is untouched.
+  assert.match(l01, /assert\(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume'\);/);
+  // The probes never throw into a check.
+  const collect = journeys.slice(journeys.indexOf('async function collectAnrEvents('), journeys.indexOf('async function anrDialogSample('));
+  assert.match(collect, /\} catch \{\n    anrEventReadFailures\+\+;\n    return false;\n  \}/);
+  assert.match(journeys, /const endOffsetMs = Math\.max\(0, Date\.now\(\) - anrOrigin\.hostMs\);/);
+  assert.match(journeys, /coverage: 'unknown'/);
+  assert.match(journeys, /eventReadFailures: anrEventReadFailures/);
+  assert.match(journeys, /truncated: timeline\.truncated/);
+  // AN00 runs only in the controls suite, after CS00.
+  const controls = journeys.slice(journeys.indexOf('async function runUpstreamWebViewControls('), journeys.indexOf('async function main('));
+  assert.ok(controls.indexOf("await measureAn00('AN00', 7_000);") > controls.indexOf("await measure('CS00'"));
+  assert.match(controls, /await measureAn00\('AN00-L', 20_000\);/);
+  const product = journeys.slice(journeys.indexOf('async function main('));
+  assert.doesNotMatch(product, /measureAn00|MainThreadStallControlActivity/);
+  // Debug source set only, bounded stall, fixed markers.
+  assert.match(debugManifest, /android:name="com\.bridge\.app\.MainThreadStallControlActivity"/);
+  assert.doesNotMatch(mainManifest, /MainThreadStallControlActivity/);
+  assert.match(control, /static final long MAX_STALL_MS = 30_000L;/);
+  assert.match(control, /Log\.i\(LOG_TAG, "stage=stall-begin stallMs=" \+ stallMs\);/);
+  assert.doesNotMatch(control, /new WebView|android\.webkit|getContentResolver|openFileDescriptor/);
+});
+
+// Synthetic AOSP logcat/ExitInfo records. Identity and messages stay private;
+// the public summary must contain only fixed categories and bounded counts.
+const crashBaseMs = Date.UTC(2026, 9, 26);
+const crashPackage = 'com.bridge.app.debug';
+function crashClock(delta = 0, offset = 0) {
+  const at = crashBaseMs + delta;
+  const abs = Math.abs(offset);
+  const zone = (offset < 0 ? '-' : '+') + String(Math.floor(abs / 60)).padStart(2, '0') + String(abs % 60).padStart(2, '0');
+  return parseAndroidCrashClock(Math.floor(at / 1000) + '.' + String(at % 1000).padStart(3, '0') +
+    '000000,' + new Date(at + offset * 60000).toISOString().slice(0, 19) + ',' + zone);
+}
+function crashRow(delta, pid, tid, text, tag = 'AndroidRuntime') {
+  return `${((crashBaseMs + delta) / 1000).toFixed(3)} ${pid} ${tid} E ${tag}: ${text}`;
+}
+function javaCrashLog({ pid = 5101, process = crashPackage, thread = 'main', delta = 0,
+  exception = 'java.lang.RuntimeException: Unable to start activity ComponentInfo{private/account?token=secret}',
+  causes = ['java.lang.IllegalStateException: owner@example.com private-token'] } = {}) {
+  return [crashRow(1000 + delta, pid, pid, `FATAL EXCEPTION: ${thread}`),
+    crashRow(1001 + delta, pid, pid, `Process: ${process}, PID: ${pid}`),
+    crashRow(1002 + delta, pid, pid, exception),
+    crashRow(1003 + delta, pid, pid, '  at com.secret.Customer.run(/private/path.java:123)'),
+    ...causes.map((c, i) => crashRow(1004 + delta + i, pid, pid, 'Caused by: ' + c))].join('\n');
+}
+function javaCrashExits({ pid = 5101, process = crashPackage, delta = 1500, offset = 0, reason = '4 (CRASH)' } = {}) {
+  const stamp = crashClock(delta, offset).localAt.replace('T', ' ');
+  return parseApplicationExits(`ApplicationExitInfo #0:\n timestamp=${stamp}\n pid=${pid} process=${process} reason=${reason}\n subreason=0 (UNKNOWN)\n description=private account owner@example.com`);
+}
+function crashSummary(raw = javaCrashLog(), exits = javaCrashExits(), start = crashClock(), end = crashClock(61000), pkg = crashPackage) {
+  return summarizeAndroidJavaCrashes(raw, pkg, start, end, exits);
+}
+
+test('DL02 crash clock correlates epoch and local ExitInfo clocks without host timezone assumptions', () => {
+  for (const offset of [0, 330, -420, 840]) {
+    const clock = crashClock(123, offset);
+    assert.equal(clock.epochMs, crashBaseMs + 123);
+    assert.equal(clock.offsetMinutes, offset);
+    assert.match(clock.localAt, /\.123$/);
+  }
+  for (const raw of [null, '', '1792972800.%N,2026-10-26T00:00:00,+0000',
+    '1792972800.000000000,2026-10-26T00:00:01,+0000',
+    '1792972800.000000000,2026-02-30T00:00:00,+0000',
+    '1792972800.000000000,2026-10-26T00:00:00,+0060',
+    '1792972800.000000000,2026-10-26T00:00:00,+1500']) assert.equal(parseAndroidCrashClock(raw), null);
+});
+
+test('DL02 retains bounded Java startup/cause categories only with a matching own OS crash', () => {
+  const result = crashSummary();
+  assert.deepEqual(result, { windowValid: true, exitInfoAvailable: true,
+    coverage: 'observed-only', truncated: false, crashes: [{ thread: 'main', exception: 'runtime',
+      context: 'activity-start', lastObservedCause: 'illegal-state', causeDepth: 1 }] });
+  assert.doesNotMatch(JSON.stringify(result), /5101|179297|bridge|secret|private|owner@|Customer|ComponentInfo|token|\.java/);
+  // A dead process need not have a current pidof result: OS exit corroboration
+  // is separate from the legacy live-process/socket observations.
+  assert.equal(summarizeWebViewAttachEvidence({ crash: javaCrashLog() }).appPidValid, false);
+  assert.deepEqual(crashSummary(javaCrashLog(), javaCrashExits({ offset: 330 }), crashClock(0, 330), crashClock(61000, 330)), result);
+});
+
+test('DL02 never attributes foreign, prefix-matching or subprocess fatal records to the app', () => {
+  for (const process of ['com.other.app', crashPackage + '.evil', crashPackage + ':remote']) {
+    const log = javaCrashLog({ process });
+    assert.equal(summarizeWebViewAttachEvidence({ crash: log }).crashBufferHasFatalMarker, true);
+    assert.deepEqual(crashSummary(log).crashes, []);
+    assert.equal(crashSummary(log).coverage, 'unknown');
+  }
+});
+
+test('DL02 requires matching emitter PID, identity PID and fresh OS PID', () => {
+  const raw = javaCrashLog();
+  assert.deepEqual(crashSummary(raw.replace('PID: 5101', 'PID: 5102')).crashes, []);
+  assert.deepEqual(crashSummary(raw.replace(/5101 5101 E AndroidRuntime: Process:/, '5102 5102 E AndroidRuntime: Process:')).crashes, []);
+  assert.deepEqual(crashSummary(raw.replace(/5101 5101 E AndroidRuntime: Process:/, '5101 5102 E AndroidRuntime: Process:')).crashes, []);
+  assert.deepEqual(crashSummary(raw, javaCrashExits({ pid: 5102 })).crashes, []);
+  assert.deepEqual(crashSummary(raw, javaCrashExits({ process: 'com.other.app' })).crashes, []);
+  assert.deepEqual(crashSummary(raw.replace('PID: 5101', 'PID: 5101 token=private')).crashes, []);
+});
+
+test('DL02 rejects stale/future fatal log records and exact-window OS exits', () => {
+  assert.deepEqual(crashSummary(javaCrashLog({ delta: -2000 })).crashes, []);
+  assert.deepEqual(crashSummary(javaCrashLog({ delta: 61000 })).crashes, []);
+  // The reused matcher has a legacy ±2 s grace. This diagnostic must narrow
+  // that grace, so a stale PID just one millisecond outside cannot qualify.
+  for (const delta of [-1, 61001]) assert.deepEqual(crashSummary(undefined, javaCrashExits({ delta })).crashes, []);
+});
+
+test('DL02 needs a reason-4 OS exit, not only a log header or a live process', () => {
+  for (const reason of ['5 (CRASH NATIVE)', '6 (ANR)', '10 (USER REQUESTED)', '4 (private)']) {
+    assert.deepEqual(crashSummary(undefined, javaCrashExits({ reason })).crashes, []);
+  }
+  assert.equal(crashSummary(undefined, javaCrashExits({ reason: '4 (APP CRASH(EXCEPTION))' })).crashes.length, 1);
+  for (const exits of [null, [], 'raw private text']) {
+    const result = crashSummary(undefined, exits);
+    assert.deepEqual(result.crashes, []);
+    assert.equal(result.coverage, 'unknown');
+    assert.equal(result.exitInfoAvailable, Array.isArray(exits));
+  }
+});
+
+test('DL02 keeps missing, inconsistent or unbounded device windows unknown', () => {
+  for (const [start, end] of [[null, crashClock(61000)], [crashClock(), null],
+    [crashClock(61000), crashClock()], [crashClock(), crashClock(120001)],
+    [crashClock(), crashClock(61000, 60)],
+    [{ ...crashClock(), epochMs: crashBaseMs + 1 }, crashClock(61000)]]) {
+    const result = crashSummary(undefined, undefined, start, end);
+    assert.equal(result.windowValid, false);
+    assert.equal(result.coverage, 'unknown');
+    assert.deepEqual(result.crashes, []);
+  }
+  assert.equal(crashSummary(undefined, undefined, undefined, undefined, 'bad process; rm').windowValid, false);
+});
+
+test('DL02 does not borrow a previous PID incarnation or an interleaved foreign cause', () => {
+  const stale = javaCrashLog({ delta: -2000 });
+  const reused = javaCrashLog();
+  assert.deepEqual(crashSummary(stale + '\n' + reused, javaCrashExits({ delta: -1 })).crashes, []);
+  const own = javaCrashLog();
+  const foreign = javaCrashLog({ pid: 5102, process: 'com.other.app', causes: ['java.lang.SecurityException: private'] });
+  const ownLines = own.split('\n');
+  assert.deepEqual(crashSummary([...ownLines.slice(0, 3), foreign, ...ownLines.slice(3)].join('\n')).crashes, crashSummary().crashes);
+  // A new FATAL on the same emitter must reset an incomplete prior identity.
+  const incomplete = ownLines.slice(0, 2).join('\n');
+  assert.deepEqual(crashSummary(incomplete + '\n' + javaCrashLog({ process: 'com.other.app' })).crashes, []);
+});
+
+test('DL02 unknown exceptions and misleading messages cannot gain a known class or context', () => {
+  for (const name of ['com.secret.CustomerException', 'java.lang.SecurityExceptionEvil', 'com.secret.java.lang.SecurityException']) {
+    const result = crashSummary(javaCrashLog({ exception: name + ': java.lang.SecurityException Unable to start activity private',
+      causes: ['com.secret.InnerException: java.lang.OutOfMemoryError secret'] }));
+    assert.deepEqual(result.crashes, [{ thread: 'main', exception: 'other', context: 'other', lastObservedCause: 'other', causeDepth: 1 }]);
+    assert.doesNotMatch(JSON.stringify(result), /secret|Customer|InnerException|OutOfMemoryError/);
+  }
+  assert.equal(crashSummary(javaCrashLog({ exception: 'java.lang.RuntimeException: not Unable to start activity private' })).crashes[0].context, 'other');
+});
+
+test('DL02 distinguishes class-loading and finalizer-watchdog failures without private messages', () => {
+  const loading = crashSummary(javaCrashLog({ exception: 'java.lang.RuntimeException: Unable to instantiate activity ComponentInfo{private}',
+    causes: ['java.lang.ClassNotFoundException: com.secret.Customer'] }));
+  assert.deepEqual(loading.crashes, [{ thread: 'main', exception: 'runtime', context: 'activity-create', lastObservedCause: 'class-not-found', causeDepth: 1 }]);
+  const watchdog = crashSummary(javaCrashLog({ thread: 'FinalizerWatchdogDaemon', exception: 'java.util.concurrent.TimeoutException: private finalizer timed out', causes: [] }));
+  assert.deepEqual(watchdog.crashes, [{ thread: 'finalizer-watchdog', exception: 'timeout', context: 'other', lastObservedCause: 'none', causeDepth: 0 }]);
+  assert.equal(crashSummary(javaCrashLog({ thread: 'private-owner@example.com' })).crashes[0].thread, 'other');
+});
+
+test('DL02 bounds records and cause chains without claiming the last sampled cause is the root', () => {
+  const logs = [5101, 5102, 5103, 5104].map(pid => javaCrashLog({ pid })).join('\n');
+  const exits = [5101, 5102, 5103, 5104].flatMap(pid => javaCrashExits({ pid }));
+  const many = crashSummary(logs, exits);
+  assert.equal(many.crashes.length, 3);
+  assert.equal(many.truncated, true);
+  assert.equal(many.coverage, 'partial');
+  const chain = crashSummary(javaCrashLog({ causes: [...Array(8).fill('java.lang.IllegalStateException: private'), 'java.lang.SecurityException: private'] }));
+  assert.equal(chain.crashes[0].causeDepth, 8);
+  assert.equal(chain.crashes[0].lastObservedCause, 'illegal-state');
+  assert.equal(chain.truncated, true);
+  assert.equal(chain.coverage, 'partial');
+});
+
+test('DL02 bounds characters/lines and keeps a complete 200-line record including final newline', () => {
+  for (const prefix of ['x'.repeat(262145) + '\n', Array(200).fill('unparsed').join('\n') + '\n']) {
+    const result = crashSummary(prefix + javaCrashLog());
+    assert.deepEqual(result.crashes, crashSummary().crashes);
+    assert.equal(result.truncated, true);
+    assert.equal(result.coverage, 'partial');
+  }
+  const raw = javaCrashLog();
+  const full = raw + '\n' + Array(200 - raw.split('\n').length).fill('unparsed').join('\n') + '\n';
+  const result = crashSummary(full);
+  assert.deepEqual(result.crashes, crashSummary().crashes);
+  assert.equal(result.truncated, false);
+  const huge = crashSummary('x'.repeat(262145));
+  assert.equal(huge.truncated, true);
+  assert.equal(huge.coverage, 'unknown');
+  assert.deepEqual(huge.crashes, []);
+});
+
+test('DL02 malformed/truncated records, foreign tags and native signals stay unknown', () => {
+  for (const raw of ['', null, javaCrashLog().replaceAll('AndroidRuntime:', 'System.err:'),
+    javaCrashLog().replace('FATAL EXCEPTION: main', 'Fatal signal 6 in private'),
+    javaCrashLog().split('\n').slice(0, 2).join('\n'),
+    javaCrashLog().replaceAll('5101 5101 E', '0 0 E'),
+    javaCrashLog().replace('Process: com.bridge.app.debug, PID: 5101', 'arbitrary private data')]) {
+    const result = crashSummary(raw);
+    assert.deepEqual(result.crashes, []);
+    assert.equal(result.coverage, 'unknown');
+  }
+});
+
+test('DL02 captures its own clock before cold launch and preserves strict original attach failure', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const dl02 = code.slice(code.indexOf("await check('DL02'"), code.indexOf("await check('DL03'"));
+  assert.ok(dl02.indexOf('const crashWindowStart = await readAttachCrashClock();') < dl02.indexOf('await platform.deepLink('));
+  assert.match(dl02, /await attachPage\(\{ crashWindowStart \}\);/);
+  assert.match(dl02, /timeout: 45_000/);
+  assert.match(dl02, /timeout: 30_000/);
+  const evidence = code.slice(code.indexOf('async function webViewAttachEvidence('), code.indexOf('async function pid()'));
+  assert.match(evidence, /logcat -d -b crash -v epoch -t 200/);
+  assert.match(evidence, /const appCrash = await collectAndroidJavaCrashEvidence\(androidFailureShell, PKG,/);
+  const probe = readFileSync(new URL('./java-crash-probe.mjs', import.meta.url), 'utf8');
+  assert.match(probe, /parseApplicationExits\(await shell\(`dumpsys activity exit-info \$\{pkg\}`\), 32\)/);
+  assert.match(probe, /return summarizeAndroidJavaCrashes\(rawCrashLog, pkg, start, end, exits\)/);
+  assert.doesNotMatch(evidence, /JSON\.stringify\((?:inputs|crashExits|crashWindowStart|crashWindowEnd)\)|log\((?:inputs|crashExits)/);
+  assert.match(evidence, /timeout = 60_000/);
+  assert.match(evidence, /throw new Error\(`Android WebView attach/);
+  assert.match(evidence, /\{ cause: err \}/);
+});
+
+test('Java crash probe shares the real parser, closes the device window after OS reading and keeps failed probes unknown', async () => {
+  const calls = [];
+  const endRaw = (crashBaseMs / 1000 + 61) + '.000000000,2026-10-26T00:01:01,+0000';
+  const ownRaw = `ApplicationExitInfo #0:\n timestamp=${crashClock(1500).localAt.replace('T', ' ')}\n pid=5101 process=${crashPackage} reason=4 (CRASH)\n subreason=0 (UNKNOWN)\n description=owner@example.com private`;
+  const shell = async command => {
+    calls.push(command);
+    if (command.startsWith('dumpsys activity exit-info ')) return ownRaw;
+    if (command === 'date +%s.%N,%Y-%m-%dT%H:%M:%S,%z') return endRaw;
+    throw new Error('unexpected raw private command');
+  };
+  const result = await collectAndroidJavaCrashEvidence(shell, crashPackage, crashClock(), javaCrashLog());
+  assert.deepEqual(result, crashSummary());
+  assert.deepEqual(calls, [`dumpsys activity exit-info ${crashPackage}`, 'date +%s.%N,%Y-%m-%dT%H:%M:%S,%z']);
+  assert.doesNotMatch(JSON.stringify(result), /5101|179297|owner@|private|com\.bridge/);
+  const failed = async () => { throw new Error('private device paths and user data'); };
+  assert.equal(await readAndroidCrashClock(failed), null);
+  const unknown = await collectAndroidJavaCrashEvidence(failed, crashPackage, crashClock(), javaCrashLog());
+  assert.equal(unknown.windowValid, false);
+  assert.equal(unknown.exitInfoAvailable, false);
+  assert.equal(unknown.coverage, 'unknown');
+  calls.length = 0;
+  assert.equal((await collectAndroidJavaCrashEvidence(shell, crashPackage, null, javaCrashLog())).coverage, 'unknown');
+  assert.equal((await collectAndroidJavaCrashEvidence(shell, 'bad package; rm', crashClock(), javaCrashLog())).coverage, 'unknown');
+  assert.deepEqual(calls, []);
+});
+
+test('CR00 is a debug-only post-product real-emulator control using the same evidence pipeline', () => {
+  const android = new URL('../../mobile/android/app/src/', import.meta.url);
+  assert.match(readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8'), /android:name="com\.bridge\.app\.JavaCrashControlActivity"/);
+  assert.doesNotMatch(readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8'), /JavaCrashControlActivity/);
+  assert.ok(readFileSync(new URL('debug/java/com/bridge/app/JavaCrashControlActivity.java', android), 'utf8').length > 0);
+  const control = readFileSync(new URL('./java-crash-control.mjs', import.meta.url), 'utf8');
+  assert.match(control, /collectAndroidJavaCrashEvidence\(shell, pkg, start, raw\)/);
+  assert.equal((control.match(/shell\(`am start -n/g) || []).length, 1);
+  assert.ok(control.indexOf("new ControlFailure('not-emulator')") < control.indexOf('shell(`am force-stop'));
+  assert.match(control, /actual\.exception !== 'illegal-state'/);
+  assert.match(control, /process\.exitCode = result\.status === 'PASS' \? 0 : 1/);
+  assert.doesNotMatch(control, /console\.(?:log|error)\((?:raw|error)|error\.(?:message|stack)|logcat -c/);
+  const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
+  assert.ok(runner.indexOf('node android/java-crash-control.mjs') > runner.indexOf('node android/android-journeys.mjs'));
+  assert.match(runner, /"\$status" -eq 0 && "\$control_status" -ne 0/);
+});
+
+test('runner propagates both product and CR00 failures (shell contract, not Android acceptance)', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync: read, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-crash-runner-'));
+  try {
+    const bin = join(root, 'bin');
+    mkdirSync(bin); mkdirSync(join(root, 'e2e'));
+    writeFileSync(join(bin, 'adb'), '#!/bin/sh\nexit 0\n');
+    writeFileSync(join(bin, 'node'), `#!/bin/sh
+printf '%s\\n' "$1" >> "$CONTROL_RUNNER_CALLS"
+case "$1" in
+ android/android-journeys.mjs) exit "$PRODUCT_TEST_EXIT";;
+ android/java-crash-control.mjs) exit "$CONTROL_TEST_EXIT";;
+ *) exit 99;;
+esac
+`);
+    chmodSync(join(bin, 'adb'), 0o755); chmodSync(join(bin, 'node'), 0o755);
+    const script = new URL('./run-emulator-journeys.sh', import.meta.url).pathname;
+    for (const [product, control, profile, expected] of [
+      [0, 0, 'product', 0], [17, 0, 'product', 17], [0, 23, 'product', 23],
+      [17, 23, 'product', 17], [0, 23, 'unknown-defaults-to-product', 23],
+      [0, 23, 'upstream-webview-controls', 0],
+    ]) {
+      const callsFile = join(root, 'calls'); writeFileSync(callsFile, '');
+      const run = spawnSync('bash', [script], { cwd: root, encoding: 'utf8',
+        env: { ...process.env, PATH: bin + ':' + process.env.PATH, APK_PATH: join(root, 'fixture.apk'),
+          CONTROL_RUNNER_CALLS: callsFile, PRODUCT_TEST_EXIT: String(product), CONTROL_TEST_EXIT: String(control),
+          ANDROID_JOURNEY_SUITE: profile } });
+      assert.equal(run.status, expected, run.stdout + run.stderr);
+      assert.deepEqual(read(callsFile, 'utf8').trim().split('\n'), profile === 'upstream-webview-controls'
+        ? ['android/android-journeys.mjs'] : ['android/android-journeys.mjs', 'android/java-crash-control.mjs']);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CR00 rejects physical devices and production packages before any mutating adb call (CLI guard unit test)', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, copyFileSync, readFileSync: read, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-crash-cli-guard-'));
+  try {
+    const bin = join(root, 'bin'); mkdirSync(bin);
+    for (const file of ['java-crash-control.mjs', 'java-crash-probe.mjs', 'exit-diagnostics.mjs']) {
+      copyFileSync(new URL('./' + file, import.meta.url), join(root, file));
+    }
+    writeFileSync(join(bin, 'adb'), '#!/bin/sh\nprintf "%s\\n" "$2" >> "$CRASH_GUARD_CALLS"\nprintf "0\\n"\n');
+    chmodSync(join(bin, 'adb'), 0o755);
+    const callsFile = join(root, 'calls');
+    for (const [pkg, failure, expectedCalls] of [
+      ['com.bridge.app.debug', 'not-emulator', ['getprop ro.kernel.qemu', 'getprop ro.boot.qemu']],
+      ['com.bridge.app', 'invalid-debug-package', []],
+    ]) {
+      writeFileSync(callsFile, '');
+      const run = spawnSync(process.execPath, [join(root, 'java-crash-control.mjs')], { cwd: root, encoding: 'utf8',
+        env: { ...process.env, PATH: bin + ':' + process.env.PATH, ANDROID_PKG: pkg, CRASH_GUARD_CALLS: callsFile } });
+      assert.equal(run.status, 1, run.stdout + run.stderr);
+      const result = JSON.parse(read(join(root, 'results/java-crash-control.json'), 'utf8'));
+      assert.equal(result.status, 'FAIL');
+      assert.equal(result.failure, failure);
+      assert.equal(result.evidenceCategory, 'UNKNOWN');
+      assert.equal(result.evidence, null);
+      const calls = read(callsFile, 'utf8').trim();
+      assert.deepEqual(calls ? calls.split('\n') : [], expectedCalls);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('job summary keeps CR00 separate and fails missing, stale or non-emulator calibration evidence', async () => {
+  const { formatCrashControlSummary } = await import('./suite-summary.mjs');
+  const { mkdtempSync, writeFileSync, readFileSync: read, rmSync, existsSync, unlinkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const commit = 'a'.repeat(40);
+  const { runLifecycleReproduction } = await import('./lifecycle-reproduction.mjs');
+  const experiment = await runLifecycleReproduction({ prepare: async () => {}, clock: async () => ({}),
+    run: async phase => ({ beforePid: '123', afterPid: '123', uiVisible: true, channelMatched: true,
+      focused: true, launchState: phase === 'hot-resume' ? 'HOT' : 'COLD' }),
+    observe: async () => ({ available: true, coverage: 'observed-only', anrCount: 0,
+      nativeWindowFocused: true, dialogs: { available: true, anrDialogs: 0 } }),
+    failureEvidence: async () => null });
+  const { PRODUCT_CHECKS, PRODUCT_MEASUREMENTS } = await import('./suite-verdict.mjs');
+  const product = { suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR',
+    results: [...PRODUCT_CHECKS.map(id => ({ id, status: 'PASS' })),
+      ...PRODUCT_MEASUREMENTS.map(id => ({ id, status: 'MEASURED' }))],
+    totals: { pass: 36, fail: 0, skipped: 0, measured: 7 },
+    facts: { androidLifecycleExperiment: experiment } };
+  const control = { case: 'CR00', commit, status: 'PASS', evidenceCategory: 'AUTOMATED / EMULATOR',
+    error: 'private owner@example.com token secret' };
+  const root = mkdtempSync(join(tmpdir(), 'bridge-crash-summary-'));
+  try {
+    const evidencePath = join(root, 'android-evidence.json');
+    const controlPath = join(root, 'java-crash-control.json');
+    writeFileSync(evidencePath, JSON.stringify(product));
+    for (const [record, expectedStatus] of [[control, 0], [null, 1],
+      [{ ...control, commit: 'b'.repeat(40) }, 1], [{ ...control, status: 'SKIPPED' }, 1],
+      [{ ...control, evidenceCategory: 'AUTOMATED / REAL DEVICE' }, 1], [{ ...control, case: 'other' }, 1]]) {
+      if (existsSync(controlPath)) unlinkSync(controlPath);
+      if (record) writeFileSync(controlPath, JSON.stringify(record));
+      const run = spawnSync(process.execPath, [new URL('./suite-summary.mjs', import.meta.url).pathname, evidencePath], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_SHA: commit, ANDROID_JOURNEY_SUITE: 'product' } });
+      assert.equal(run.status, expectedStatus, run.stderr);
+      assert.match(run.stdout, /CR00 Java crash diagnostic calibration/);
+      assert.match(run.stdout, /Totals: pass=36 fail=0 skipped=0 measured=7/);
+      assert.doesNotMatch(run.stdout, /owner@|token|secret|private/);
+      assert.equal(formatCrashControlSummary(product, record).status, expectedStatus === 0 ? 'PASS' : 'FAIL');
+    }
+    // A different profile's report never borrows a product CR00 PASS.
+    assert.equal(formatCrashControlSummary({ ...product, suite: 'upstream-webview-controls' }, control).status, 'FAIL');
+    assert.equal(JSON.parse(read(evidencePath, 'utf8')).results.length, 43);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

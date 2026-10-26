@@ -55,6 +55,11 @@ class FakeSocket {
     const list = this.onceHandlers.get(event) ?? [];
     list.push(handler); this.onceHandlers.set(event, list);
   });
+  off = vi.fn((event: string, handler: Handler) => {
+    this.handlers.set(event, (this.handlers.get(event) ?? []).filter(fn => fn !== handler));
+    this.onceHandlers.set(event, (this.onceHandlers.get(event) ?? []).filter(fn => fn !== handler));
+  });
+  removeAllListeners = vi.fn(() => { this.handlers.clear(); this.onceHandlers.clear(); });
   emit = vi.fn();
   disconnect = vi.fn(() => { this.connected = false; });
   constructor(id: string) { this.id = id; }
@@ -202,11 +207,152 @@ describe('SocketManager canonical realtime/auth lifecycle', () => {
   it('uses the ready fallback when the authenticated-server signal is lost', async () => {
     const ready = vi.fn(); document.addEventListener('bridge:socket-ready', ready);
     instance = mount(SocketManager, { target });
+    sockets[0].connected = true;
     sockets[0].fire('connect');
     expect(ready).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(3000);
     expect(ready).toHaveBeenCalledTimes(1);
     expect(mocks.logWarn).toHaveBeenCalledWith(expect.stringContaining('userAuthenticated gelmedi'));
     document.removeEventListener('bridge:socket-ready', ready);
+  });
+
+  it('cancels readiness when the transport disconnects before admission', async () => {
+    const ready = vi.fn();
+    document.addEventListener('bridge:socket-ready', ready);
+    try {
+      instance = mount(SocketManager, { target });
+      const socket = sockets[0]!;
+      socket.connected = true; socket.fire('connect');
+      const queuedAdmission = socket.onceHandlers.get('userAuthenticated')![0]!;
+      socket.connected = false; socket.fire('disconnect', 'transport close');
+      await vi.advanceTimersByTimeAsync(3000);
+      queuedAdmission();
+      expect(ready).not.toHaveBeenCalled();
+      expect(socket.onceHandlers.get('userAuthenticated') ?? []).toHaveLength(0);
+    } finally { document.removeEventListener('bridge:socket-ready', ready); }
+  });
+
+  it('reconciles late admission once while keeping application readiness idempotent', async () => {
+    const ready = vi.fn(); const reconnected = vi.fn();
+    document.addEventListener('bridge:socket-ready', ready);
+    document.addEventListener('bridge:socket-reconnected', reconnected);
+    try {
+      instance = mount(SocketManager, { target });
+      const socket = sockets[0]!;
+      socket.connected = true; socket.fire('connect');
+      await vi.advanceTimersByTimeAsync(3000);
+      const beforeAdmission = reconnected.mock.calls.length;
+      expect(ready).toHaveBeenCalledOnce();
+      socket.fire('userAuthenticated'); socket.fire('userAuthenticated');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(reconnected).toHaveBeenCalledTimes(beforeAdmission + 1);
+      expect(ready).toHaveBeenCalledOnce();
+      expect(socket.onceHandlers.get('userAuthenticated') ?? []).toHaveLength(0);
+    } finally {
+      document.removeEventListener('bridge:socket-ready', ready);
+      document.removeEventListener('bridge:socket-reconnected', reconnected);
+    }
+  });
+
+  it('invalidates the previous admission callback when the same transport reconnects', async () => {
+    const ready = vi.fn(); document.addEventListener('bridge:socket-ready', ready);
+    try {
+      instance = mount(SocketManager, { target });
+      const socket = sockets[0]!;
+      socket.connected = true; socket.fire('connect');
+      const queuedAdmission = socket.onceHandlers.get('userAuthenticated')![0]!;
+      socket.connected = false; socket.fire('disconnect');
+      socket.connected = true; socket.fire('connect');
+      queuedAdmission();
+      expect(ready).not.toHaveBeenCalled();
+      socket.fire('userAuthenticated');
+      expect(ready).toHaveBeenCalledOnce();
+    } finally { document.removeEventListener('bridge:socket-ready', ready); }
+  });
+
+  it('ignores queued callbacks from a replaced account socket', async () => {
+    instance = mount(SocketManager, { target });
+    const old = sockets[0]!;
+    old.connected = true; old.fire('connect'); old.fire('userAuthenticated');
+    const queuedConnect = old.handlers.get('connect')![0]!;
+    const queuedDisconnect = old.handlers.get('disconnect')![0]!;
+    const queuedRevocation = old.handlers.get('auth:revoked')![0]!;
+    const queuedError = old.handlers.get('connect_error')![0]!;
+    token = 'next-account-token';
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    const current = sockets[1]!;
+    current.connected = true; current.fire('connect'); current.fire('userAuthenticated');
+    mocks.registryCall.mockClear();
+
+    queuedConnect(); queuedDisconnect();
+    queuedError({ message: 'jwt expired' });
+    queuedRevocation({ reason: 'token_revoked' });
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mocks.registry.get('socket')).toBe(current);
+    expect(current.disconnect).not.toHaveBeenCalled();
+    expect(mocks.registryCall).not.toHaveBeenCalledWith('setSocketConnected', false);
+    expect(mocks.logout).not.toHaveBeenCalled();
+    expect(mocks.refreshAccessToken).not.toHaveBeenCalled();
+    expect(old.removeAllListeners).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])('discards a pending refresh (%s) after logout and another account login', async refreshed => {
+    let finish!: (result: boolean) => void;
+    mocks.refreshAccessToken.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    instance = mount(SocketManager, { target });
+    sockets[0]!.connected = true; sockets[0]!.fire('connect'); sockets[0]!.fire('userAuthenticated');
+    sockets[0]!.fire('connect_error', { message: 'jwt expired' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.refreshAccessToken).toHaveBeenCalledOnce();
+
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    token = 'next-account-token';
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    const current = sockets[1]!;
+    current.connected = true; current.fire('connect'); current.fire('userAuthenticated');
+    finish(refreshed);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(ioFactory).toHaveBeenCalledTimes(2);
+    expect(mocks.registry.get('socket')).toBe(current);
+    expect(current.disconnect).not.toHaveBeenCalled();
+    expect(mocks.logout).not.toHaveBeenCalled();
+  });
+
+  it('cannot reconnect after destruction when a pending refresh succeeds', async () => {
+    let finish!: (result: boolean) => void;
+    mocks.refreshAccessToken.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    instance = mount(SocketManager, { target });
+    sockets[0]!.connected = true; sockets[0]!.fire('connect'); sockets[0]!.fire('userAuthenticated');
+    sockets[0]!.fire('connect_error', { message: 'jwt expired' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await unmount(instance as never); instance = null;
+    finish(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ioFactory).toHaveBeenCalledTimes(1);
+    expect(mocks.registry.has('socket')).toBe(false);
+    expect(mocks.logout).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('ignores refresh completion (%s) while a replacement login is pending', async refreshed => {
+    let finish!: (result: boolean) => void;
+    mocks.refreshAccessToken.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    instance = mount(SocketManager, { target });
+    sockets[0]!.connected = true; sockets[0]!.fire('connect'); sockets[0]!.fire('userAuthenticated');
+    sockets[0]!.fire('connect_error', { message: 'jwt expired' });
+    await vi.advanceTimersByTimeAsync(1000);
+    document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
+    finish(refreshed);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ioFactory).toHaveBeenCalledTimes(1);
+    expect(mocks.registry.has('socket')).toBe(false);
+    expect(mocks.logout).not.toHaveBeenCalled();
+    token = 'new-account';
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    expect(ioFactory).toHaveBeenCalledTimes(2);
+    expect(ioFactory).toHaveBeenLastCalledWith('https://bridge.example.test', {
+      auth: { token: 'new-account' }, transports: ['websocket', 'polling'],
+    });
   });
 });

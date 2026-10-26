@@ -2,6 +2,7 @@
 // SFU room yaşam döngüsü — oluşturma, temizleme, peer listesi
 
 import logger from '../../../lib/logger';
+import { logRoutineMediaInfo } from '../../../lib/routineMediaLog';
 import * as sfuRegistry from '../../../lib/sfuRegistry';
 import { config } from './config';
 import { getNextWorkerWithIndex, incrementWorkerLoad, decrementWorkerLoad } from './workers';
@@ -117,8 +118,7 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
       const claim = await sfuRegistry.claimRoom(channelId);
 
       if (!claim.owned) {
-        logger.info({ channelId, owner: claim.owner, event: 'sfu.room.claim_lost' },
-          '[SFU] Oda başka bir node tarafından sahiplenildi; yerel oda açılmıyor.');
+        logRoutineMediaInfo({ event: 'sfu.room.claim_lost' });
         throw new RoomOwnedElsewhereError(channelId, claim.owner);
       }
       ownershipClaimed = true;
@@ -180,7 +180,7 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
         });
       }
 
-      logger.info(`[SFU] Room oluşturuldu — channel: ${channelId}, node: ${sfuRegistry.INSTANCE_ID}`);
+      logRoutineMediaInfo({ event: 'sfu.room.created' });
       return room;
     } catch (err) {
       // A failed worker/router creation must not strand ownership for an hour
@@ -214,7 +214,7 @@ export function cleanupRoom(channelId: string): void {
     sfuRegistry.releaseRoom(channelId).catch((err: Error) => {
       logger.warn({ err: err.message, channelId, event: 'sfu.registry.release_failed' }, '[SFU] Registry room release failed during cleanup.');
     });
-    logger.info(`[SFU] Boş room temizlendi — channel: ${channelId}`);
+    logRoutineMediaInfo({ event: 'sfu.room.cleaned' });
   }
 }
 

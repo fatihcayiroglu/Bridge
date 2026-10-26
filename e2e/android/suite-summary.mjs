@@ -8,6 +8,9 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { LIFECYCLE_PHASES, lifecycleObservationPasses } from './lifecycle-reproduction.mjs';
+import { assessSuiteEvidence } from './suite-verdict.mjs';
+import path from 'node:path';
 
 const SUITE_HEADINGS = {
   product: 'Android product journeys (mandatory Bridge reliability suite)',
@@ -45,10 +48,56 @@ export function formatSuiteSummary(evidence) {
   return lines.join('\n');
 }
 
+/** Separate calibration verdict; stale/missing/foreign evidence never passes. */
+export function formatCrashControlSummary(product, control) {
+  const valid = product?.suite === 'product' && typeof product.commit === 'string' &&
+    /^[a-f0-9]{40}$/.test(product.commit) && control?.commit === product.commit &&
+    control.case === 'CR00' && control.evidenceCategory === 'AUTOMATED / EMULATOR' && control.status === 'PASS';
+  const status = valid ? 'PASS' : 'FAIL';
+  return { status, markdown: '\n## CR00 Java crash diagnostic calibration\n\n**' + status + '**\n\n' +
+    'This separate, post-product calibration is excluded from product journey totals. ' +
+    'Missing, invalid or stale evidence fails this gate. See java-crash-control.json.\n' };
+}
+
+export function formatLifecycleExperimentSummary(evidence) {
+  const experiment = evidence?.facts?.androidLifecycleExperiment;
+  const valid = experiment?.case === 'EX01' && experiment.status === 'PASS' &&
+    experiment.preparation === 'PASS' && experiment.expectedPhases === 9 && experiment.cycles === 3 &&
+    Array.isArray(experiment.phases) && experiment.phases.length === 9 &&
+    experiment.phases.every((row, index) => row.status === 'PASS' && row.stage === 'complete' &&
+      row.cycle === Math.floor(index / 3) + 1 && row.phase === LIFECYCLE_PHASES[index % 3] &&
+      row.clockAvailable === true && lifecycleObservationPasses(row.phase, row.observation, row.events));
+  const status = valid ? 'PASS' : 'FAIL';
+  return { status, markdown: '\n## EX01 controlled lifecycle reproduction\n\n**' + status + '**\n\n' +
+    'Three cold-start / 20-second HOT-resume / cold-deep-link cycles, after product journeys. ' +
+    'Separate from product PASS counts; missing or failed experiment evidence fails this gate. ' +
+    'A passing experiment is nonreproduction, not proof of root-cause resolution.\n' };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   let evidence = null;
   try {
     evidence = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   } catch { /* reported as a missing run below */ }
   process.stdout.write(formatSuiteSummary(evidence));
+  const verdict = assessSuiteEvidence(evidence, {
+    expectedCommit: process.env.GITHUB_SHA ?? null,
+    expectedSuite: process.env.ANDROID_JOURNEY_SUITE || 'product',
+  });
+  if (verdict.status !== 'PASS') {
+    process.stdout.write('\n**Evidence verdict: FAIL (' + verdict.reason + ').**\n');
+    process.exitCode = 1;
+  }
+  if (evidence?.suite === 'product') {
+    let control = null;
+    try {
+      control = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'java-crash-control.json'), 'utf8'));
+    } catch { /* explicitly fails the calibration summary below */ }
+    const summary = formatCrashControlSummary(evidence, control);
+    process.stdout.write(summary.markdown);
+    if (summary.status !== 'PASS') process.exitCode = 1;
+    const experiment = formatLifecycleExperimentSummary(evidence);
+    process.stdout.write(experiment.markdown);
+    if (experiment.status !== 'PASS') process.exitCode = 1;
+  }
 }

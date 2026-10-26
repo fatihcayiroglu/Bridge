@@ -20,6 +20,8 @@
     on(event: string, handler: (...args: unknown[]) => void): void;
     /** Tek seferlik dinleyici — `userAuthenticated` hazır sinyali için. */
     once(event: string, handler: (...args: unknown[]) => void): void;
+    off(event: string, handler: (...args: unknown[]) => void): void;
+    removeAllListeners(): void;
     emit(event: string, ...args: unknown[]): void;
     disconnect(): void;
   }
@@ -28,6 +30,7 @@
   let _socket: SocketLike | null = null;
   let _socketToken: string | null = null;
   let _readyDispatched = false;
+  let _cancelSocketReady: (() => void) | null = null;
 
   // ── Auth kurtarma durumu (Faz 7) ───────────────────────────────────────────
   /** Aynı anda yalnızca tek yenileme+yeniden bağlanma denemesi. */
@@ -35,6 +38,8 @@
   /** Art arda başarısız auth denemesi — backoff ve döngü koruması için. */
   let _reauthAttempts = 0;
   let _reauthTimer: ReturnType<typeof setTimeout> | null = null;
+  // A refresh response can arrive after logout, replacement, or destruction.
+  let _reauthGeneration = 0;
   /** İlk bağlantıdan sonraki her başarılı bağlantı bir "reconnect"tir. */
   let _hasConnectedOnce = false;
 
@@ -89,10 +94,12 @@
 
   function bindLifecycle(socket: SocketLike, userId: string | undefined): void {
     socket.on('connect', () => {
+      if (_socket !== socket) return;
+      cancelSocketReady();
+      cancelReauth();
       setConnectedState(true);
       lastError = '';
       _reauthAttempts = 0;   // sağlıklı bağlantı → backoff sıfırlanır
-      _reauthInFlight = false;
       // Kişisel oda: DM/bildirim yönlendirmesi için (server/socket/index.ts:183)
       if (userId) socket.emit('user:join-room', userId);
       // Registry kaydı: bağlantı gerçekten kurulduktan sonra.
@@ -139,31 +146,47 @@
       _hasConnectedOnce = true;
 
       let signalled = false;
-      const emitReadySignals = (): void => {
-        if (signalled) return;
+      let cancelled = false;
+      const emitReadySignals = (authoritative = false): void => {
+        if (cancelled || _socket !== socket || !socket.connected) return;
+        const needsReconciliation = signalled;
+        if (signalled && !authoritative) return;
         signalled = true;
-        if (wasReconnect) {
+        // The fallback keeps legacy servers usable, but cannot prove that room
+        // admission/handlers finished. Keep listening for the real signal and
+        // reconcile once if it arrives later. Teardown still cancels both paths.
+        if (authoritative) cancelSocketReady();
+        if (wasReconnect || needsReconciliation) {
           // Yeniden bağlanma: oda üyelikleri kaybolmuştur ve kopukken gelen
           // mesajlar kaçmıştır. Dinleyen katmanlar (MessageLoader) kanala
           // yeniden katılıp eksik mesajları çeker.
           log.info('Socket yeniden bağlandı — senkronizasyon sinyali yayılıyor');
           document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
         }
-        dispatchSocketReady();
+        if (_socket === socket && socket.connected) dispatchSocketReady();
       };
 
       const fallback = setTimeout(() => {
+        if (cancelled || signalled || _socket !== socket || !socket.connected) return;
         log.warn('userAuthenticated gelmedi — hazır sinyali yedek süreyle yayılıyor');
         emitReadySignals();
       }, READY_SIGNAL_FALLBACK_MS);
 
-      socket.once('userAuthenticated', () => {
+      const onAuthenticated = (): void => {
         clearTimeout(fallback);
-        emitReadySignals();
-      });
+        emitReadySignals(true);
+      };
+      _cancelSocketReady = () => {
+        cancelled = true;
+        clearTimeout(fallback);
+        socket.off('userAuthenticated', onAuthenticated);
+      };
+      socket.once('userAuthenticated', onAuthenticated);
     });
 
     socket.on('disconnect', (...args: unknown[]) => {
+      if (_socket !== socket) return;
+      cancelSocketReady();
       setConnectedState(false);
       document.dispatchEvent(new CustomEvent('bridge:socket-disconnected'));
       log.warn('Socket bağlantısı koptu:', args[0] ?? '');
@@ -171,6 +194,8 @@
     });
 
     socket.on('connect_error', (...args: unknown[]) => {
+      if (_socket !== socket) return;
+      cancelSocketReady();
       setConnectedState(false);
       const err = args[0] as { message?: string } | undefined;
       const technicalMessage = err?.message ?? 'bilinmeyen bağlantı hatası';
@@ -193,6 +218,7 @@
     // `teardown()` yapıyordu: access token süresi dolunca UI giriş yapmış
     // görünmeye devam ediyor ama realtime kalıcı olarak ölüyordu.
     socket.on('auth:revoked', (...args: unknown[]) => {
+      if (_socket !== socket) return;
       const payload = args[0] as { reason?: unknown } | undefined;
       const reason = typeof payload?.reason === 'string' ? payload.reason : 'unknown';
 
@@ -241,14 +267,17 @@
     log.info(`Socket yeniden bağlanma denemesi ${_reauthAttempts}/${MAX_REAUTH_ATTEMPTS} — ${delay} ms sonra`);
 
     if (_reauthTimer) clearTimeout(_reauthTimer);
+    let generation = _reauthGeneration;
     _reauthTimer = setTimeout(() => {
       _reauthTimer = null;
       void (async () => {
         try {
           const refreshed = await refreshAccessToken();
+          if (generation !== _reauthGeneration) return;
           // Eski soketi (ve tüm dinleyicilerini) bırak — duplicate bağlantı ve
           // listener sızıntısı olmaz.
           teardown();
+          generation = _reauthGeneration;
 
           if (!refreshed) {
             if (wasLastRefreshFailureTransient()) {
@@ -268,6 +297,7 @@
           }
           connect(); // taze token localStorage'da; connect() onu okur
         } catch (error) {
+          if (generation !== _reauthGeneration) return;
           log.error('Yeniden kimlik doğrulama hatası', error);
           _reauthInFlight = false;
         }
@@ -308,22 +338,50 @@
   }
 
   function teardown(): void {
+    cancelReauth();
+    cancelSocketReady();
+    const socket = _socket;
+    // Invalidate callbacks before disconnect(), which can emit synchronously.
+    _socket = null;
+    _socketToken = null;
+    _readyDispatched = false;
+    if (!socket) return;
+    const wasConnected = socket.connected;
+    socket.removeAllListeners();
+    try { socket.disconnect(); } catch { /* bağlantı zaten kapalı olabilir */ }
+    BridgeRegistry.unregister('socket');
+    setConnectedState(false);
+    if (wasConnected) document.dispatchEvent(new CustomEvent('bridge:socket-disconnected'));
+  }
+
+  function cancelSocketReady(): void {
+    _cancelSocketReady?.();
+    _cancelSocketReady = null;
+  }
+
+  function cancelReauth(): void {
+    _reauthGeneration += 1;
     if (_reauthTimer) { clearTimeout(_reauthTimer); _reauthTimer = null; }
     // `refreshAccessToken() === false` yolunda teardown() sonrası logout()
     // gerçekleşir. Bu bayrak serbest bırakılmazsa kullanıcı daha sonra tekrar
     // giriş yaptığında bir sonraki socket auth hatası sonsuza kadar yutulur.
     _reauthInFlight = false;
-    if (!_socket) return;
-    try { _socket.disconnect(); } catch { /* bağlantı zaten kapalı olabilir */ }
-    _socket = null;
-    _socketToken = null;
-    _readyDispatched = false;
-    BridgeRegistry.unregister('socket');
-    setConnectedState(false);
   }
 
-  function onAuthSuccess(): void { connect(); }
+  function onAuthSuccess(): void {
+    cancelReauth();
+    _reauthAttempts = 0;
+    connect();
+  }
+  function onAuthLogout(): void {
+    teardown();
+    _reauthAttempts = 0;
+    _hasConnectedOnce = false;
+    lastError = '';
+  }
   document.addEventListener('bridge:auth-success', onAuthSuccess);
+  document.addEventListener('bridge:auth-logout', onAuthLogout);
+  document.addEventListener('bridge:auth-transition', onAuthLogout);
 
   // Diğer katmanların (Faz 2+, logout) kullanabilmesi için.
   BridgeRegistry.register('connectSocket', connect);
@@ -334,7 +392,9 @@
 
   onDestroy(() => {
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
-    teardown();
+    document.removeEventListener('bridge:auth-logout', onAuthLogout);
+    document.removeEventListener('bridge:auth-transition', onAuthLogout);
+    onAuthLogout();
     if (BridgeRegistry.get('connectSocket') === connect) BridgeRegistry.unregister('connectSocket');
     if (BridgeRegistry.get('disconnectSocket') === teardown) BridgeRegistry.unregister('disconnectSocket');
     log.info('SocketManager destroyed');

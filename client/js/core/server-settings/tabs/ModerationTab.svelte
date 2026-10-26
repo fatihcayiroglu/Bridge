@@ -48,10 +48,21 @@
     bannedAt?: number;
     [key: string]: unknown;
   }
+  /** P7 B5 (#336): what was reported, captured by the server when the report was filed. */
+  interface ReportEvidence {
+    state?: 'captured' | 'not_captured' | 'scrubbed';
+    text?: string; truncated?: boolean;
+    authorName?: string | null; messageType?: string; fileName?: string | null;
+  }
+  type ReportCurrentState = 'unchanged' | 'edited' | 'deleted' | 'removed' | 'unknown';
   interface ReportRow {
     id: string; messageId: string; channelId: string; reason: string; detail?: string; createdAt?: number;
-    channel?: { _id?: string; name?: string };
+    /** `available: false`: the channel expired or was deleted; the report and its evidence remain. */
+    channel?: { _id?: string; name?: string | null; available?: boolean };
+    /** The message as it is now. */
     message?: { displayName?: string; preview?: string };
+    evidence?: ReportEvidence;
+    currentState?: ReportCurrentState;
     reporter?: { _id?: string; displayName?: string };
   }
   interface MemberRow {
@@ -244,6 +255,37 @@
     if (ok) reports = reports.filter(row => row.id !== report.id);
   }
 
+  // The queue shows the snapshot taken at report time, so the reported author cannot
+  // change what the moderator reviews by editing or deleting the message afterwards.
+  function reportedAuthor(report: ReportRow): string {
+    const evidence = report.evidence;
+    return (evidence?.state === 'captured' && evidence.authorName) || report.message?.displayName || t('ui_bridge_user');
+  }
+
+  function reportedText(report: ReportRow): string {
+    const evidence = report.evidence;
+    if (evidence?.state === 'captured') {
+      // Line breaks are kept (`white-space: pre-line`): newline spam is part of what was reported.
+      const text = (evidence.text ?? '').trim();
+      if (text) return text;
+      if (evidence.messageType === 'e2ee') return t('moderation_report_encrypted');
+      if (evidence.fileName) return t('moderation_report_attachment', undefined, { name: evidence.fileName });
+      return t("surface_mesaj_icerigi_yok_23c6dd");
+    }
+    if (evidence?.state === 'scrubbed') return t('moderation_report_evidence_cleared');
+    return report.message?.preview || t("surface_mesaj_icerigi_yok_23c6dd");
+  }
+
+  function reportStateLabel(report: ReportRow): string {
+    switch (report.currentState) {
+      case 'edited': return t('moderation_report_edited_since');
+      case 'deleted': return t('moderation_report_deleted_since');
+      case 'removed': return t('moderation_report_removed');
+      case 'unknown': return t('moderation_report_no_snapshot');
+      default: return '';
+    }
+  }
+
   function openReportedMessage(report: ReportRow): void {
     if (!report.channelId || !report.messageId || !BridgeRegistry.has('navigateToChannel')) {
       error = t("ui_raporlanan_mesaj_su_anda_acilamiyor", "Raporlanan mesaj şu anda açılamıyor."); return;
@@ -339,13 +381,15 @@
             {#each reports as report (report.id)}
               <li class="mod-report">
                 <div class="mod-report-main">
-                  <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>#{report.channel?.name ?? report.channelId}</span><span>{whenOf(report.createdAt)}</span></div>
-                  <p><strong>{report.message?.displayName ?? t('ui_bridge_user')}:</strong> {report.message?.preview || t("surface_mesaj_icerigi_yok_23c6dd")}</p>
+                  <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>{report.channel?.available === false ? t('moderation_report_channel_gone') : `#${report.channel?.name ?? report.channelId}`}</span><span>{whenOf(report.createdAt)}</span></div>
+                  <p class="mod-report-content"><strong>{reportedAuthor(report)}:</strong> {reportedText(report)}{#if report.evidence?.state === 'captured' && report.evidence.truncated} <em>{t('moderation_report_truncated')}</em>{/if}</p>
+                  {#if reportStateLabel(report)}<small class="mod-report-state" data-state={report.currentState}>{reportStateLabel(report)}</small>{/if}
+                  {#if report.currentState === 'edited' && report.message?.preview}<small class="mod-report-now">{t('moderation_report_now', undefined, { text: report.message.preview })}</small>{/if}
                   {#if report.detail}<small>{t('moderation_report_note', undefined, { detail: report.detail })}</small>{/if}
                   <small>{t('moderation_reporter', undefined, { name: report.reporter?.displayName ?? t('ui_bridge_user') })}</small>
                 </div>
                 <div class="mod-report-actions">
-                  <button type="button" class="mod-btn" disabled={busyId !== ''} onclick={() => openReportedMessage(report)}>{t('pin_jump')}</button>
+                  <button type="button" class="mod-btn" disabled={busyId !== '' || report.currentState === 'removed' || report.currentState === 'deleted'} onclick={() => openReportedMessage(report)}>{t('pin_jump')}</button>
                   <button type="button" class="mod-btn" disabled={busyId !== ''} onclick={() => void resolveReport(report, 'dismissed')}>{t('dmc_reject')}</button>
                   <button type="button" class="mod-btn mod-btn-warn" disabled={busyId !== ''} onclick={() => void resolveReport(report, 'resolved')}>{t("moderation_resolved")}</button>
                 </div>
@@ -451,6 +495,11 @@
 .mod-report-main small { color: var(--text-muted); }
 .mod-report-meta { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; color: var(--text-muted); font-size: var(--text-2xs); }
 .mod-report-meta strong { color: var(--danger-text, var(--danger)); }
+.mod-report-content { white-space: pre-line; }
+.mod-report-state { font-weight: 600; }
+.mod-report-state[data-state="edited"],
+.mod-report-state[data-state="deleted"],
+.mod-report-state[data-state="removed"] { color: var(--yellow); }
 .mod-report-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 @media (max-width: 720px) { .mod-report { flex-direction: column; } .mod-report-actions { width: 100%; justify-content: flex-start; } }
 

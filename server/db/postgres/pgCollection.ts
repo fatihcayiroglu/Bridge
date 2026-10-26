@@ -218,6 +218,13 @@ const ALLOWED_COLUMNS = new Set([
   // access. This identifier allowlist is NOT an authorization gate and does
   // not activate expiry APIs, cleanup, or tombstone reads on any route.
   'expiryVersion', 'expiredAt', 'recordedAt', 'cleanupState',
+  // P7 B5 migration 085: message_reports evidence snapshot (lib/reportEvidence.ts).
+  'evidenceCapturedAt', 'evidenceText', 'evidenceTextTruncated', 'evidenceAuthorId',
+  'evidenceAuthorName', 'evidenceMessageType', 'evidenceMessageCreatedAt',
+  'evidenceMessageEditedAt', 'evidenceFileName', 'evidenceFileType', 'evidenceScrubbedAt',
+  // P7 D2 x B5 migration 090: recorded visibility of a gone channel's reports
+  // (written by raw SQL in lib/reportChannelVisibility.ts; read with the row).
+  'channelVisibility',
 ]);
 
 /**

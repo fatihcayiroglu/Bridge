@@ -23,7 +23,12 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers } from './exit-diagnostics.mjs';
+import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
+import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-reproduction.mjs';
+import { pausedPreferenceControlApplies, runPausedPreferenceControl, readPausedPreference } from './paused-preference-control.mjs';
+import { createDebuggerStoragePause } from './debugger-storage-pause.mjs';
+import { collectKernelPressure } from './pressure-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -108,9 +113,20 @@ let journeyStartedAt = null;
 let productExitLedger = emptyProductExitLedger();
 let productExitUnreadable = 0;
 let a01LaunchStartedAt = null;
+// #209 ANR03 (memory only): the device-clock origin of the ANR timeline and
+// the host instant it was read at, every check's host start time, the Bridge
+// process's de-duplicated event-log lines and ANR-dialog samples. Only
+// offsets, process ordinals and fixed classes ever leave.
+let anrOrigin = null;
+const stepStarts = [];
+const anrEventLines = new Set();
+let anrEventReads = 0;
+let anrEventReadFailures = 0;
+const anrDialogSamples = [];
 
 async function check(id, title, fn) {
   const started = Date.now();
+  stepStarts.push({ id, hostMs: started });
   log(`▶ ${id} ${title}`);
   try {
     const detail = await fn();
@@ -124,10 +140,11 @@ async function check(id, title, fn) {
     }
     // #209: preserve the failure as FAIL, and record only allow-listed OS
     // exit/dependency facts before any screenshot or DevTools probe can stall.
-    if (MODE === 'android' && (id === 'L01' || id === 'ANR01')) {
+    if (MODE === 'android' && (id === 'CS01' || id === 'L01' || id === 'ANR01')) {
       const exitFacts = await androidFailureExits();
-      (facts.androidFailureExits ??= []).push({ check: id, ...exitFacts });
-      log(`Android exit evidence ${id}`, JSON.stringify(exitFacts));
+      const safe = redactRecentAndroidExits(exitFacts);
+      (facts.androidFailureExits ??= []).push({ check: id, ...safe });
+      log(`Android exit evidence ${id}`, JSON.stringify(safe));
     }
     // A01 can time out with a detached/closed CDP page even while the
     // Android process and Activity are still alive. Failure-only and never
@@ -200,6 +217,7 @@ async function domSummary() {
 /** Measurement-only probe: records numbers, asserts nothing, and is NEVER counted as a PASS. */
 async function measure(id, title, fn) {
   const started = Date.now();
+  stepStarts.push({ id, hostMs: started });
   log(`▶ ${id} ${title} (measurement)`);
   try {
     const detail = await fn();
@@ -221,14 +239,17 @@ async function until(fn, { timeout = 15_000, interval = 250, message = 'conditio
     try { last = await fn(); if (last) return last; } catch (e) { last = e; }
     await sleep(interval);
   }
-  throw new Error(`timed out after ${timeout} ms waiting for ${message}${last instanceof Error ? ` (last error: ${last.message})` : ''}`);
+  // Playwright and HTTP errors can embed private URLs, response bodies and
+  // selectors. Keep failure/timeout attribution without archiving their text.
+  throw new Error(`timed out after ${timeout} ms waiting for ${message}; last operation errored: ${last instanceof Error}`);
 }
 
 // ── Host-side API (the other side of every journey) ─────────────────────────
-async function http(method, url, { token, body, csrf } = {}) {
+async function http(method, url, { token, body, csrf, stepUpGrant } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (csrf) headers['X-CSRF-Token'] = csrf;
+  if (stepUpGrant) headers['X-Bridge-Step-Up'] = stepUpGrant;
   const res = await fetch(`${API}${url}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = text; }
@@ -238,15 +259,15 @@ async function csrfFor(token) {
   const r = await http('GET', '/api/csrf-token', { token });
   return r.json?.token || r.json?.csrfToken;
 }
-async function write(method, url, token, body) {
-  const r = await http(method, url, { token, body, csrf: await csrfFor(token) });
-  if (!r.ok) throw new Error(`${method} ${url} → ${r.status} ${JSON.stringify(r.json).slice(0, 300)}`);
+async function write(method, url, token, body, stepUpGrant) {
+  const r = await http(method, url, { token, body, csrf: await csrfFor(token), stepUpGrant });
+  if (!r.ok) throw new Error(`${method} API request failed (HTTP ${r.status})`);
   return r.json;
 }
 async function account(label) {
   const username = `p4${label}${Date.now().toString(36)}`.slice(0, 24);
   const reg = await http('POST', '/api/register', { body: { username, password: PASSWORD } });
-  if (!reg.ok) throw new Error(`register ${label} → ${reg.status} ${JSON.stringify(reg.json)}`);
+  if (!reg.ok) throw new Error(`register ${label} failed (HTTP ${reg.status})`);
   const login = await http('POST', '/api/login', { body: { username, password: PASSWORD } });
   const token = login.json?.token || reg.json?.token;
   const me = await http('GET', '/api/me', { token });
@@ -308,6 +329,34 @@ async function seedLongChannel(serverId, userId, token, count) {
       SELECT $1::text || '-' || g, $1::text, $2::text, $3::text, 'seed', 'Seed', 'Uzun kanal ölçüm mesajı #' || g || ' — gerçekçi uzunlukta bir satır.', $4::bigint + g * 60000
       FROM generate_series(1, $5::int) g`, [channelId, serverId, userId, base, count]);
     return { channelId };
+  } finally { await client.end(); }
+}
+
+// ── P7 D2 expiry seeding: the real API sets the expiry (owner only, 1 h minimum), then the
+// stored value is moved into the database clock's past. Nothing in the product offers a shorter
+// lifetime, and the journey must not wait an hour. Requires DATABASE_URL (provided in CI);
+// without it the journey FAILS instead of skipping, so a missing service is never green.
+async function expireChannelNow(serverId, channelId, token) {
+  if (!process.env.DATABASE_URL) throw new Error('D2L01 needs DATABASE_URL to move an API-set expiry into the past');
+  // D2L01 is a legitimate account holder: obtain a fresh password proof.
+  // Do not bypass the channel expiry guard or depend on a possibly stale
+  // sign-in grant after the emulator's lengthy startup.
+  const proof = await write('POST', '/api/step-up/password', token, {
+    password: PASSWORD, scope: 'destructive-admin',
+  });
+  assert(proof.stepUp?.scope === 'destructive-admin' && typeof proof.stepUp?.token === 'string',
+    'D2L01 destructive-admin proof required');
+  await write('PUT', `/api/servers/${serverId}/channels/${channelId}/expiry`, token,
+    { expiresAt: Date.now() + 2 * 60 * 60 * 1000 }, proof.stepUp.token);
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const pg = require('../../server/node_modules/pg');
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const r = await client.query(`UPDATE channels SET "expiresAt" = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - 1000
+      WHERE _id = $1 AND "serverId" = $2 AND "expiryVersion" > 0`, [channelId, serverId]);
+    if (r.rowCount !== 1) throw new Error('D2L01 expiry seed did not update exactly one channel');
   } finally { await client.end(); }
 }
 
@@ -410,7 +459,12 @@ async function devToolsHttpProbe(appPid) {
   }
 }
 
-async function webViewAttachEvidence() {
+async function readAttachCrashClock() {
+  if (MODE !== 'android') return null;
+  return readAndroidCrashClock(androidFailureShell);
+}
+
+async function webViewAttachEvidence(crashWindowStart = null) {
   // All outputs below are held only in memory. Do NOT write raw dumpsys,
   // process records, Unix sockets, crash lines or arbitrary Playwright errors
   // to CI logs/artifacts: they can contain private identities and paths.
@@ -419,7 +473,7 @@ async function webViewAttachEvidence() {
     activity: 'dumpsys activity activities',
     processes: 'dumpsys activity processes',
     sockets: 'cat /proc/net/unix',
-    crash: 'logcat -d -b crash -t 100',
+    crash: 'logcat -d -b crash -v epoch -t 200',
   };
   const inputs = {};
   const probeAvailable = {};
@@ -433,17 +487,20 @@ async function webViewAttachEvidence() {
     }
   }));
   const os = summarizeWebViewAttachEvidence(inputs, PKG);
+  const appCrash = await collectAndroidJavaCrashEvidence(androidFailureShell, PKG,
+    crashWindowStart, inputs.crash);
   const devtoolsHttp = await devToolsHttpProbe(inputs.pid);
   return {
     probeAvailable,
     ...os,
+    appCrash,
     devtoolsHttp,
     // A reachable /json/list is NOT proof that Playwright attached to a page.
     // Keep original L03 FAIL; no retries or timeout extension.
   };
 }
 
-async function attachPage({ timeout = 60_000 } = {}) {
+async function attachPage({ timeout = 60_000, crashWindowStart = null } = {}) {
   if (MODE === 'dryrun') return page;
   try {
     const webview = await device.webView({ pkg: PKG }, { timeout });
@@ -452,7 +509,7 @@ async function attachPage({ timeout = 60_000 } = {}) {
     page = p;
     return p;
   } catch (err) {
-    const evidence = await webViewAttachEvidence();
+    const evidence = await webViewAttachEvidence(crashWindowStart);
     // Only fixed categories leave this diagnostic boundary. The original
     // Playwright message can contain device or URL paths and must not leak.
     const category = /Timeout/.test(String(err?.name ?? '')) ? 'timeout' : 'attach-failed';
@@ -535,45 +592,7 @@ async function fontProviderStage(stage) {
  */
 async function androidPressureEvidence(label) {
   if (MODE !== 'android') return null;
-  const outputs = {};
-  const commands = {
-    cpu: 'cat /proc/pressure/cpu',
-    memory: 'cat /proc/pressure/memory',
-    io: 'cat /proc/pressure/io',
-    pid: `pidof ${PKG}`,
-    // Android emulators can expose no per-cgroup/global PSI from adb shell.
-    // These kernel totals are a separately labelled FALLBACK, not PSI.
-    loadavg: 'cat /proc/loadavg',
-    meminfo: 'cat /proc/meminfo',
-  };
-  for (const [key, command] of Object.entries(commands)) {
-    try {
-      const value = await sh(command);
-      if (key === 'pid') {
-        outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
-      } else if (key === 'loadavg') {
-        const match = /^(\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?) \d+\/\d+ \d+$/.exec(value);
-        outputs.kernelLoadavg = match ? match.slice(1, 4).map(Number) : 'unavailable';
-      } else if (key === 'meminfo') {
-        const total = /^MemTotal:\s+(\d+) kB$/m.exec(value);
-        const available = /^MemAvailable:\s+(\d+) kB$/m.exec(value);
-        outputs.kernelMemTotalKb = total ? Number(total[1]) : 'unavailable';
-        outputs.kernelMemAvailableKb = available ? Number(available[1]) : 'unavailable';
-      } else {
-        // Only allow the precisely defined kernel pressure text format.
-        const lines = value.split('\n').filter(line =>
-          /^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+$/.test(line));
-        outputs[key] = lines.length > 0 ? lines.slice(0, 2).join(' | ').slice(0, 280) : 'unavailable';
-      }
-    } catch {
-      if (key === 'meminfo') {
-        outputs.kernelMemTotalKb = 'unavailable';
-        outputs.kernelMemAvailableKb = 'unavailable';
-      } else {
-        outputs[key === 'loadavg' ? 'kernelLoadavg' : key] = 'unavailable';
-      }
-    }
-  }
+  const outputs = await collectKernelPressure(androidFailureShell);
   const item = { label, ...outputs };
   (facts.androidPressureEvidence ??= []).push(item);
   log('Android OS PSI', JSON.stringify(item));
@@ -582,16 +601,16 @@ async function androidPressureEvidence(label) {
 
 
 const platform = {
-  async coldLaunch(extra = '') {
+  async coldLaunch(extra = '', { shell = sh } = {}) {
     if (MODE === 'dryrun') { await page.goto(API); return { totalTimeMs: null }; }
-    await sh(`am force-stop ${PKG}`);
-    const out = await sh(`am start -W -n ${ACTIVITY} ${extra}`);
+    await shell(`am force-stop ${PKG}`);
+    const out = await shell(`am start -W -n ${ACTIVITY} ${extra}`);
     return summarizeAndroidColdLaunch(out);
   },
-  async home() { if (MODE === 'dryrun') return; await sh('input keyevent KEYCODE_HOME'); },
-  async foreground() {
+  async home(shell = sh) { if (MODE === 'dryrun') return; await shell('input keyevent KEYCODE_HOME'); },
+  async foreground(shell = sh) {
     if (MODE === 'dryrun') return { totalTimeMs: null };
-    const out = await sh(`am start -W -n ${ACTIVITY}`);
+    const out = await shell(`am start -W -n ${ACTIVITY}`);
     return { totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null, launchState: (/LaunchState:\s*(\w+)/.exec(out) || [])[1] ?? null };
   },
   /**
@@ -618,7 +637,7 @@ const platform = {
     throw new Error(`process survived am kill x${tries} and SIGKILL (${out.slice(0, 120)}); ${state}`);
   },
   async forceStop() { if (MODE === 'dryrun') throw new Skip('force-stop needs a device'); await sh(`am force-stop ${PKG}`); },
-  async deepLink(url, { cold = false } = {}) {
+  async deepLink(url, { cold = false, shell = sh } = {}) {
     if (MODE === 'dryrun') throw new Skip('deep links need the native shell');
     if (cold) {
       // After force-stop Android marks the package stopped. Starting only by
@@ -627,11 +646,11 @@ const platform = {
       // inherits a closed Playwright page. An explicit component still delivers
       // the VIEW intent data, while guaranteeing MainActivity is actually
       // created for the cold-start contract we are measuring.
-      await sh(`am force-stop ${PKG}`);
+      await shell(`am force-stop ${PKG}`);
       await sleep(500);
-      return sh(`am start -W -a android.intent.action.VIEW -d '${url}' -n ${ACTIVITY}`);
+      return shell(`am start -W -a android.intent.action.VIEW -d '${url}' -n ${ACTIVITY}`);
     }
-    return sh(`am start -W -a android.intent.action.VIEW -d '${url}' ${PKG}`);
+    return shell(`am start -W -a android.intent.action.VIEW -d '${url}' ${PKG}`);
   },
   async network(on) {
     if (MODE === 'dryrun') { await page.context().setOffline(!on); return; }
@@ -818,6 +837,56 @@ async function productExitCheckpoint(label) {
   }
 }
 
+/**
+ * Device wall clock paired with the host instant it was read at:
+ * { epochMs, hostMs, precision }. Milliseconds when toybox date supports %N,
+ * else whole seconds (offsets are then good to about 1 s). Null if unreadable.
+ */
+async function deviceClockOrigin() {
+  if (MODE !== 'android') return null;
+  const hostBefore = Date.now();
+  const precise = parseDeviceEpoch(await sh('date +%s.%N').catch(() => ''));
+  const hostAfter = Date.now();
+  if (precise?.precision === 'ms') return { ...precise, hostMs: Math.round((hostBefore + hostAfter) / 2) };
+  const hostMs = Date.now();
+  const coarse = parseDeviceEpoch(await sh('date +%s').catch(() => ''));
+  return coarse ? { ...coarse, hostMs } : null;
+}
+
+const ANR_EVENT_LOG = 'logcat -b events -d -v epoch -s am_anr:I am_kill:I am_proc_died:I am_proc_start:I';
+
+/**
+ * ANR03: keep this package's ANR/kill/death/start event-log lines, read at
+ * checkpoints so a rotating buffer cannot drop early ones before the end.
+ * Memory only; never throws, never changes a check's outcome.
+ */
+async function collectAnrEvents() {
+  if (MODE !== 'android') return false;
+  try {
+    for (const line of (await androidFailureShell(ANR_EVENT_LOG)).split(/\r?\n/)) {
+      if (line.includes(PKG)) anrEventLines.add(line);
+    }
+    anrEventReads++;
+    return true;
+  } catch {
+    anrEventReadFailures++;
+    return false;
+  }
+}
+
+/** ANR03: is an ANR dialog for the Bridge process on screen? Booleans only. */
+async function anrDialogSample(label) {
+  if (MODE !== 'android') return null;
+  let sample;
+  try {
+    sample = { label, ...inspectAnrDialogWindows(await androidFailureShell('dumpsys window windows'), PKG) };
+  } catch {
+    sample = { label, available: false, anrDialogs: 0, focusedOnAnrDialog: null };
+  }
+  anrDialogSamples.push(sample);
+  return sample;
+}
+
 /** Connect the Android device (or the dryrun desktop page) and record safe device facts. */
 async function connectDevice() {
   if (MODE === 'android') {
@@ -845,6 +914,7 @@ async function connectDevice() {
     const deviceSeconds = Number(await sh('date +%s'));
     journeyStartedEpochMs = Number.isSafeInteger(deviceSeconds) && deviceSeconds > 0
       ? deviceSeconds * 1000 : null;
+    anrOrigin = await deviceClockOrigin();
     log('device', JSON.stringify(facts.device));
   } else {
     const browser = await chromium.launch();
@@ -1440,6 +1510,75 @@ async function runUpstreamWebViewControls() {
       await sh('am force-stop ' + PKG).catch(() => {});
     }
   });
+
+  // AN00 (#209): ANR mechanics on THIS image, deterministically. A debug
+  // Activity blocks its own main thread right after its first traversal, as a
+  // cold start's first frame would; a key event sent during the stall cannot
+  // be consumed either. Recorded: whether and when Android declares an ANR,
+  // whether its dialog is still up after the app recovered, and what the same
+  // HOME press L01 uses then does to the process (AOSP: the dialog's
+  // ACTION_CLOSE_SYSTEM_DIALOGS handler kills the app, "user request after
+  // error", exit reason 6). Tests the L01 reading of #209's reason-6 exits.
+  // AN00 lets the app recover while the ANR is being reported; AN00-L keeps it
+  // blocked well past the dialog. Measurement only.
+  const measureAn00 = (id, stallMs) => measure(id, `main thread blocked ${stallMs / 1000} s after the first frame: ANR declaration, dialog lifetime, effect of HOME`, async () => {
+    if (MODE !== 'android') throw new Skip('native Activity required');
+    const activity = 'com.bridge.app.MainThreadStallControlActivity';
+    await sh('am force-stop ' + PKG);
+    const origin = await deviceClockOrigin();
+    assert(origin, 'device clock unavailable; cannot place the ANR on a timeline');
+    const controlStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+    // No -W: the stalled main thread may not report the launch complete.
+    const started = await sh(`am start -n ${PKG}/${activity} --el stallMs ${stallMs}`);
+    assert(!/Error/.test(started), 'stall control Activity failed to launch');
+    let controlPid = null;
+    let markers = parseStallControlMarkers('', null);
+    const readMarkers = async () => parseStallControlMarkers(await androidFailureShell(
+      'logcat -d -v brief --pid ' + controlPid + " -s BridgeStallControl:I '*:S'"), controlPid);
+    for (const deadline = Date.now() + 15_000; Date.now() < deadline && !markers.began;) {
+      await sleep(250);
+      controlPid = await pid().catch(() => null);
+      if (/^[0-9]{1,8}$/.test(String(controlPid))) markers = await readMarkers().catch(() => markers);
+    }
+    assert(markers.began, 'stall control process never began its stall');
+    const stallBeganHostMs = Date.now();
+    // Not awaited here: injection into a blocked window may wait for it.
+    const injection = sh('input keyevent KEYCODE_DPAD_DOWN').catch(() => null);
+    await sleep(stallMs + 4_000);
+    await Promise.race([injection, sleep(5_000)]);
+    markers = await readMarkers().catch(() => markers);
+    const aliveBeforeHome = (await pid().catch(() => null)) === controlPid;
+    const dialogBeforeHome = inspectAnrDialogWindows(
+      await androidFailureShell('dumpsys window windows').catch(() => ''), PKG);
+    await platform.home();
+    await sleep(3_000);
+    const aliveAfterHome = (await pid().catch(() => null)) === controlPid;
+    const timeline = parseAnrEventTimeline(await androidFailureShell(ANR_EVENT_LOG).catch(() => ''), PKG, origin.epochMs);
+    const stallBeganAtMs = stallBeganHostMs - origin.hostMs;
+    // Only this control's process: the last Bridge process started in the window.
+    const lastStart = [...timeline.events].reverse().find(e => e.type === 'am_proc_start');
+    const anr = timeline.anrs.find(a => a.process === lastStart?.process) ?? null;
+    let exit = { windowValid: false, matchingExit: false, reasonCode: null, subreasonCode: null };
+    if (!aliveAfterHome) {
+      const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+      try {
+        const exits = await androidFailureExits();
+        if (exits.available) {
+          exit = summarizeFreshControlProcessExit(exits.exits, controlPid, PKG, controlStartedAt, controlEndedAt);
+        }
+      } catch { /* unknown stays unknown */ }
+    }
+    await sh('am force-stop ' + PKG).catch(() => null);
+    return { stallMs, originPrecision: origin.precision, stallEnded: markers.ended,
+      timelineAvailable: timeline.available,
+      anrDeclared: anr !== null, anrReasonClass: anr?.reasonClass ?? null,
+      anrAfterStallBeganMs: anr ? anr.atMs - stallBeganAtMs : null,
+      aliveBeforeHome, dialogBeforeHome, aliveAfterHome,
+      killAfterAnrMs: anr?.killAfterMs ?? null, killReasonClass: anr?.killReasonClass ?? null,
+      exitReasonCode: exit.reasonCode, exitSubreasonCode: exit.subreasonCode };
+  });
+  await measureAn00('AN00', 7_000);
+  await measureAn00('AN00-L', 20_000);
 }
 
 async function main() {
@@ -1470,7 +1609,9 @@ async function main() {
   const privateChannelId = privateChannel._id || privateChannel.id || privateChannel.channel?._id;
   const peerSock = await openSocket(peer.token);
   peerSock.emit('channel:join', { channelId, serverId });
-  Object.assign(facts, { deviceUser: me.username, serverId, channelId, otherId, voiceId, privateChannelId });
+  // IDs and generated account names are needed in memory for the journey,
+  // never in the public CI evidence artifact. Assertions below retain the
+  // local bindings; `facts` contains only bounded diagnostic projections.
 
   if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
   await connectDevice();
@@ -1504,7 +1645,11 @@ async function main() {
     assert(splashGone, 'native splash still covering the app');
     // Stage one: immediately after first UI render, before login or channels.
     await fontProviderStage('first-ui-before-login');
-    return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
+    // CI evidence is public: retain the environment contract, not URLs that
+    // might carry a private host or credentials.
+    return { coldLaunchTotalMs: launch.totalTimeMs,
+      packagedOrigin: await page.evaluate(() => location.origin === 'https://localhost'),
+      apiConfigured: await page.evaluate(() => Boolean(globalThis.BRIDGE_API)) };
   });
 
   // #209: repeated COLD starts on the ordinary Bridge Activity, after the
@@ -1560,6 +1705,8 @@ async function main() {
 
   // PD01 evidence: read the exit history while it still holds every startup exit.
   await productExitCheckpoint('after-startup');
+  await collectAnrEvents();
+  await anrDialogSample('after-startup');
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
@@ -1638,13 +1785,14 @@ async function main() {
       const out = await sh(`dumpsys notification | grep -m4 "bridge_default"`).catch(() => '');
       return out.includes('bridge_default') ? out : null;
     }, { timeout: 15_000, message: 'bridge_default channel registered' });
-    return { channel: lines.split('\n')[0].trim().slice(0, 200) };
+    return { channelRegistered: lines.includes('bridge_default') };
   });
 
   await check('A03', 'server + channel list render and a channel opens', async () => {
     await openServer(serverId);
     await openChannel(channelId);
-    return { active: await activeChannel() };
+    assert((await activeChannel()) === channelId, 'A03 expected channel did not become active');
+    return { expectedChannelActive: true };
   });
 
   await check('M01', 'send a channel message from the composer; it persists server-side', async () => {
@@ -1652,7 +1800,7 @@ async function main() {
     await sendFromComposer(needle);
     await until(async () => (await channelHas(me.token, channelId, needle)).length === 1, { message: 'message persisted once' });
     await until(() => visibleMessage(needle), { message: 'message rendered' });
-    return { needle };
+    return { persistedOnce: true, rendered: true };
   });
 
   await check('M02', 'live message from another user renders while foregrounded', async () => {
@@ -1673,6 +1821,9 @@ async function main() {
 
   await check('L01', 'background 20 s → original channel and missed message survive hot resume', async () => {
     await androidPressureEvidence('before-L01');
+    // ANR03: an ANR dialog still up here is closed by the HOME press below,
+    // and AOSP then kills the app with REASON_ANR ("user request after error").
+    await anrDialogSample('before-L01-home');
     const pidBefore = await pid();
     await platform.home();
     await sleep(3_000);
@@ -1708,6 +1859,56 @@ async function main() {
     log('L02 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
     await assertVisibleAfterResume(needle, 'L02', 60_000);
     return { visibleAfterMs: Date.now() - t0, pidStable: pidBefore === pidAfter, channelPreserved: true };
+  });
+
+  // P7 D2 lifecycle. Two product contracts, both measured on the device:
+  //  1. A channel another device creates appears in the ALREADY-LOADED list (server-emitted
+  //     `channels:changed`, server id only). Before it, nothing was emitted and the list stayed
+  //     stale; this step is what failed in the first D2L01 attempt.
+  //  2. A channel that expires while the app is suspended is gone on resume: not listed, not
+  //     active, its unsent draft not left on the device, and the server refuses its history.
+  //     The app is backgrounded, so it may miss `channel:expired`; the resume refetch must cover it.
+  // The original channel is reopened at the end so the journeys after this one start unchanged.
+  await check('D2L01', 'channel created elsewhere appears live; channel expiring while suspended is gone on resume', async () => {
+    const created = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-gecici', type: 'text' });
+    const doomedId = created._id || created.id || created.channel?._id;
+    assert(typeof doomedId === 'string' && doomedId, 'D2L01 channel was not created');
+    const t0 = Date.now();
+    await until(() => page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomedId),
+      { timeout: 15_000, message: 'D2L01 channel created by another device appears without a manual reload' });
+    const liveListMs = Date.now() - t0;
+
+    await openChannel(doomedId);
+    const draft = `android-d2-draft-${Date.now().toString(36)}`;
+    await page.fill('#msg-input', draft);
+    await sleep(1_500);  // let the draft store persist it
+
+    await platform.home();
+    await sleep(3_000);
+    await expireChannelNow(serverId, doomedId, me.token);
+    const history = await http('GET', `/api/channels/${doomedId}/messages?limit=1`, { token: me.token });
+    assert(history.status === 404, `D2L01 server still serves the expired channel's history (HTTP ${history.status})`);
+    await sleep(5_000);
+
+    const fg = await platform.foreground();
+    if (MODE === 'dryrun') {
+      // No native shell in the dry run: send the same signal Capacitor's appStateChange sends.
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } })));
+    }
+    const t1 = Date.now();
+    await attachPage();
+    await until(() => page.evaluate((cid) => !document.querySelector(`.ch-item[data-id="${cid}"]`), doomedId),
+      { timeout: 30_000, message: 'D2L01 expired channel removed from the list after resume' });
+    await until(async () => (await activeChannel()) !== doomedId,
+      { timeout: 15_000, message: 'D2L01 expired channel no longer active after resume' });
+    const goneAfterMs = Date.now() - t1;
+    await until(() => page.evaluate((cid) => !Object.keys(localStorage).some((k) => k.includes(cid)), doomedId),
+      { timeout: 15_000, message: 'D2L01 no local storage key still references the expired channel' });
+    const draftVisible = await page.evaluate((d) => (document.querySelector('#msg-input')?.value ?? '') === d, draft);
+    assert(!draftVisible, 'D2L01 the expired channel draft is still in the composer');
+
+    await openChannel(channelId);
+    return { liveListMs, goneAfterResumeMs: goneAfterMs, launchState: fg.launchState ?? null };
   });
 
   await check('L03', 'process killed while backgrounded → relaunch restores session, channel and missed messages', async () => {
@@ -1746,6 +1947,7 @@ async function main() {
   });
 
   await productExitCheckpoint('after-lifecycle');
+  await collectAnrEvents();
 
   await check('N01', 'offline: banner shows, composed message is held, delivered exactly once on reconnect', async () => {
     await openServer(serverId);
@@ -1805,7 +2007,7 @@ async function main() {
     }, peer.username);
     await until(() => page.evaluate((n) => (document.querySelector('.dm-panel')?.textContent || '').includes(n), needle), { timeout: 20_000, message: 'DM message visible' });
     await page.keyboard.press('Escape').catch(() => {});
-    return { needle };
+    return { dmRendered: true };
   });
 
   // K01 had an honest red Android API 34 emulator result (run 38160936435).
@@ -1841,8 +2043,8 @@ async function main() {
       timeout: 5_000, message: 'dialog closed by back with IME hidden',
     });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
-    assert(top.includes(PKG), `app left the foreground after back: ${top}`);
-    return { top, initialImeVisible, imeHiddenBeforeBack: true };
+    assert(top.includes(PKG), 'K01 app left foreground after Back');
+    return { appStillForeground: true, initialImeVisible, imeHiddenBeforeBack: true };
   });
 
   await check('K02', 'Android Back first hides a visible soft keyboard, then closes Settings on a second press', async () => {
@@ -1860,32 +2062,36 @@ async function main() {
       timeout: 5_000, message: 'K02 second Android Back closes Settings',
     });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
-    assert(top.includes(PKG), `K02 app left foreground: ${top}`);
+    assert(top.includes(PKG), 'K02 app left foreground after Back');
     return { tap, firstBackHidIme: true, secondBackClosedSettings: true };
   });
 
   await check('DL01', 'warm deep link bridge://channel/<id> opens that channel', async () => {
     await openChannel(otherId).catch(() => {});
-    const raw = await platform.deepLink(`bridge://channel/${channelId}`);
+    await platform.deepLink(`bridge://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'deep-linked channel active' });
-    return { am: raw.split('\n').slice(-2).join(' | ') };
+    return { deepLinkOpened: true };
   });
 
   await check('DL04', 'the app-owned scheme com.bridge.app://channel/<id> opens that channel (the link format that also works on iOS)', async () => {
     await openChannel(otherId).catch(() => {});
-    const raw = await platform.deepLink(`com.bridge.app://channel/${channelId}`);
+    await platform.deepLink(`com.bridge.app://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'com.bridge.app link opened the channel' });
-    return { am: raw.split('\n').slice(-2).join(' | ') };
+    return { deepLinkOpened: true };
   });
 
   await check('DL02', 'cold deep link bridge://channel/<id> opens that channel after session restore', async () => {
+    // Same-device clock BEFORE launch: an immediate startup crash must not
+    // be excluded by starting observation only once CDP attachment begins.
+    // A failed clock probe does not change this journey's strict verdict.
+    const crashWindowStart = await readAttachCrashClock();
     await platform.deepLink(`bridge://channel/${otherId}`, { cold: true });
-    await attachPage();
+    await attachPage({ crashWindowStart });
     await until(() => appVisible(), { timeout: 45_000, message: 'app after cold deep link' });
     await until(() => activeChannel().then((c) => c === otherId), { timeout: 30_000, message: 'cold deep-linked channel active' });
-    return {};
+    return { crashClockAvailable: crashWindowStart !== null };
   });
 
   await check('DL03', 'deep link to a channel the user cannot access does not reveal it', async () => {
@@ -1896,7 +2102,7 @@ async function main() {
     const after = await activeChannel();
     const leaked = await page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"]`), privateChannelId);
     assert(after !== privateChannelId && !leaked, 'inaccessible channel became visible through a deep link');
-    return { before, after };
+    return { deniedChannelNotVisible: true, activeChannelChanged: before !== after };
   });
 
   await check('P01', 'microphone permission denied in the real Android sheet → voice join tells the user', async () => {
@@ -1914,7 +2120,7 @@ async function main() {
       const t = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].map((e) => e.textContent || '').join(' | ');
       return /mikrofon|microphone/i.test(t) ? t : null;
     }), { timeout: 25_000, message: 'microphone denial explained in the UI' });
-    return { osSheet: sheet, shown: text.slice(0, 200) };
+    return { osSheet: sheet, denialExplained: Boolean(text) };
   });
 
   await check('P03', 'microphone permission granted → voice join sends audio (SFU outbound RTP)', async () => {
@@ -1942,7 +2148,11 @@ async function main() {
     await attachPage();
     const after = await outboundAudio();
     const silenced = /silenced[:=]\s*true/i.test(recording);
-    return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent, osReportsSilenced: silenced, audioDump: recording.slice(0, 1200), resumeMs: fg.totalTimeMs };
+    // The Android audio dump contains UID, session, device and patch metadata;
+    // retain only the measurement's bounded signal and explicit probe status.
+    return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent,
+      audioProbeAvailable: Boolean(recording.trim()),
+      osReportsSilenced: recording.trim() ? silenced : null, resumeMs: fg.totalTimeMs };
   });
 
   await check('V02', 'voice survives a 10 s network loss: the connection recovers and audio flows again', async () => {
@@ -1980,7 +2190,7 @@ async function main() {
     const text = await until(() => alertText(/kamera|camera/), { timeout: 25_000, message: 'camera denial explained in the UI' });
     const videoOn = await page.evaluate(() => document.getElementById('vc-video')?.getAttribute('aria-pressed'));
     assert(videoOn !== 'true', 'camera toggle claims to be on after the permission was denied');
-    return { osSheet: sheet, shown: text.slice(0, 200) };
+    return { osSheet: sheet, denialExplained: Boolean(text), toggleRemainedOff: true };
   });
 
   await check('P07', 'camera permission granted → video is sent (emulated camera, outbound video RTP)', async () => {
@@ -2154,12 +2364,14 @@ async function main() {
     await sleep(12_000);
     const alive = await pid();
     const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
-    assert(alive, `app process died after launch with notification permission granted\n${crash.slice(-1500)}`);
+    const crashHints = { fatalException: /FATAL EXCEPTION/.test(crash),
+      nativeSignal: /signal\s+\d+|SIGSEGV|SIGABRT/.test(crash) };
+    assert(alive, 'app process died after notification permission grant; safe crash flags: ' + JSON.stringify(crashHints));
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app visible' });
     const status = await page.evaluate(() => window.bridgePush?.status?.() ?? 'no-bridgePush');
     assert(status === 'unavailable', `a build without FCM must report push as unavailable, got ${status}`);
-    return { pid: alive, status, launchMs: launch.totalTimeMs };
+    return { processAlive: true, status, launchMs: launch.totalTimeMs };
   });
 
   // Last: a crash here would end the process the remaining checks need.
@@ -2175,10 +2387,12 @@ async function main() {
     await sleep(8_000);
     const after = await pid();
     const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
-    assert(after && after === before, `app process ended after sign-out (before ${before}, after ${after})\n${crash.slice(-1500)}`);
+    const crashHints = { fatalException: /FATAL EXCEPTION/.test(crash),
+      nativeSignal: /signal\s+\d+|SIGSEGV|SIGABRT/.test(crash) };
+    assert(after && after === before, 'app process changed after sign-out; safe crash flags: ' + JSON.stringify(crashHints));
     await attachPage();
     await until(() => authVisible(), { timeout: 20_000, message: 'sign-in screen after sign-out' });
-    return { pid: after };
+    return { processStable: true };
   });
 
   await check('ANR01', 'Android OS never reported an app-not-responding event during these journeys', async () => {
@@ -2253,12 +2467,45 @@ async function main() {
   // ANR02 (#209): for every FATAL ANR the OS recorded for this package during
   // the journeys, the app reads its own ApplicationExitInfo trace and reduces
   // the "main" thread to fixed enums: idle looper vs binder call vs lock wait,
-  // and Bridge / Capacitor / WebView / framework owner. Idle-looper means the
-  // input never reached a blocked app. MEASURED only: ANR01 above stays the
+  // and Bridge / Capacitor / WebView / framework owner, plus separate top
+  // Java-frame and first-owner operations. A sampled frame does not prove
+  // the cause or duration of a stall. MEASURED only: ANR01 above stays the
   // asserting gate, and zero fatal ANRs here never excuses an ANR01 failure.
   // Coverage limits: non-fatal ANRs leave no exit record, and Android keeps
   // only 16 exit records per package (config_app_exit_info_history_list_size),
   // so early-journey exits can be evicted by later force-stops.
+  // ANR03 (#209): the system event log's own timeline for the Bridge process:
+  // when each ANR was declared, during which check, and what ended that
+  // process (kill reason, delay). ApplicationExitInfo alone records only the
+  // exit, so a reason-6 exit at L01 cannot tell an ANR during L01 from an
+  // earlier ANR whose dialog the L01 HOME press closed. Measurement only.
+  await measure('ANR03', 'system ANR timeline: when each Bridge ANR was declared, during which check, and what ended that process', async () => {
+    if (MODE !== 'android') throw new Skip('Android event log requires a real Android runtime');
+    const finalRead = await collectAnrEvents();
+    await anrDialogSample('end');
+    const base = { originPrecision: anrOrigin?.precision ?? null, finalRead,
+      eventReads: anrEventReads, eventReadFailures: anrEventReadFailures,
+      dialogSamples: anrDialogSamples };
+    if (!anrOrigin) return { ...base, available: false, coverage: 'unknown', reason: 'device-clock-unavailable' };
+    // Bound the observation to this journey's current instant. An older ANR
+    // still in logcat must not become a new ANR03 occurrence.
+    const endOffsetMs = Math.max(0, Date.now() - anrOrigin.hostMs);
+    const timeline = parseAnrEventTimeline([...anrEventLines].join('\n'), PKG, anrOrigin.epochMs, 64, endOffsetMs);
+    if (!timeline.available) return { ...base, available: false, coverage: 'unknown',
+      reason: 'no-bridge-events-in-window', unparsedLines: timeline.unparsedLines,
+      preOriginEvents: timeline.preOriginEvents ?? 0, postWindowEvents: timeline.postWindowEvents ?? 0 };
+    const coverage = anrEventReadFailures || !finalRead || timeline.coverage === 'partial'
+      ? 'partial' : 'observed-only';
+    const steps = stepStarts.map(step => ({ id: step.id, atMs: step.hostMs - anrOrigin.hostMs }));
+    const anrs = timeline.anrs.map(anr => ({ ...anr, step: stepAtOffset(steps, anr.atMs),
+      killStep: anr.killAfterMs === null ? null : stepAtOffset(steps, anr.atMs + anr.killAfterMs) }));
+    return { ...base, available: true, coverage, events: timeline.events.length,
+      processes: new Set(timeline.events.map(e => e.process)).size,
+      unparsedLines: timeline.unparsedLines, truncated: timeline.truncated,
+      preOriginEvents: timeline.preOriginEvents, postWindowEvents: timeline.postWindowEvents,
+      anrCount: anrs.length, anrs };
+  });
+
   await measure('ANR02', 'app-local main-thread classification of OS-recorded fatal ANRs', async () => {
     if (MODE !== 'android') throw new Skip('Android ApplicationExitInfo required');
     assert(journeyStartedEpochMs !== null, 'ANR02 device journey start time unavailable');
@@ -2287,6 +2534,186 @@ async function main() {
       await sh('am force-stop ' + PKG).catch(() => {});
     }
   });
+
+  // EX01 runs AFTER every product verdict and ANR/exit checkpoint. It cannot
+  // warm product startup, change L01 timing or add expected deaths to PD01.
+  // Unlike a repeated CI run, this is one fixed, bounded experiment. Stop at
+  // the first failure and preserve its process before any subsequent launch.
+  if (MODE === 'android') {
+    let expectedChannel = channelId;
+    facts.androidLifecycleExperiment = await runLifecycleReproduction({
+      prepare: async ({ signal, step }) => {
+        assert(facts.device?.qemu === '1', 'EX01 requires an emulator');
+        const shell = async command => {
+          signal.throwIfAborted();
+          const raw = await androidFailureShell(command);
+          signal.throwIfAborted();
+          return raw;
+        };
+        await step('launch', () => platform.coldLaunch('', { shell }));
+        await step('attach', () => attachPage());
+        await step('restore', () => until(() => authVisible(), { timeout: 45_000, message: 'EX01 signed-out baseline' }));
+        await step('restore', () => login(me.username, me.id));
+        await step('restore', () => openServer(serverId));
+        await step('restore', () => openChannel(channelId));
+        // Assert that the EX01 fixture was truly saved BEFORE force-stop.
+        // Otherwise a test setup failure would look like Android data loss.
+        await step('restore', async () => {
+          const persisted = await page.evaluate(({ user, server, expected }) =>
+            localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server) === expected,
+            { user: me.id, server: serverId, expected: channelId });
+          facts.ex01PreferenceSavedBeforeColdLaunch = persisted === true;
+          assert(persisted === true, 'EX01 channel preference missing before process restart');
+        });
+      },
+      clock: readAttachCrashClock,
+      pressure: () => collectKernelPressure(androidFailureShell),
+      run: async (phase, cycle, { signal, step }) => {
+        const shell = async command => {
+          signal.throwIfAborted();
+          const raw = await androidFailureShell(command);
+          signal.throwIfAborted();
+          return raw;
+        };
+        let beforePid;
+        let launchState;
+        if (phase === 'hot-resume') {
+          beforePid = await shell(`pidof ${PKG}`);
+          await step('background', () => platform.home(shell));
+          await step('background', () => sleep(20_000));
+          const launch = await step('resume', () => platform.foreground(shell));
+          launchState = launch.launchState;
+        } else if (phase === 'cold-start') {
+          // No waiting or storage writes: sample immediately BEFORE Android's
+          // force-stop, to distinguish a late in-process overwrite from
+          // a process-kill/WebView persistence rollback.
+          facts.ex01ColdStartPreStop = await page.evaluate(({ user, server, expected }) => {
+            const value = localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server);
+            return {
+              available: true,
+              preferencePresent: value !== null,
+              preferenceMatches: value === expected,
+              activeChannelMatches: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
+            };
+          }, { user: me.id, server: serverId, expected: expectedChannel })
+            .catch(() => ({ available: false }));
+          const launch = await step('launch', () => platform.coldLaunch('', { shell }));
+          launchState = launch.launchState;
+          beforePid = await shell(`pidof ${PKG}`);
+        } else {
+          // Alternate the target, so stale active-channel state cannot pass.
+          expectedChannel = cycle % 2 ? otherId : channelId;
+          const raw = await step('launch', () => platform.deepLink(`bridge://channel/${expectedChannel}`, { cold: true, shell }));
+          launchState = summarizeAndroidColdLaunch(raw).launchState;
+          beforePid = await shell(`pidof ${PKG}`);
+        }
+        await step('attach', () => attachPage());
+        await step('session', () => until(() => appVisible(), { timeout: 45_000, message: 'EX01 session restored' }));
+        await step('channel', () => until(async () => (await activeChannel()) === expectedChannel,
+          { timeout: 30_000, message: 'EX01 expected channel restored' }));
+        // Observe delayed death after actual UI, as in CS01. No second launch.
+        await step('settle', () => sleep(2000));
+        const afterPid = await shell(`pidof ${PKG}`);
+        const focused = await step('focus', () => page.evaluate(() => document.hasFocus()));
+        return { beforePid, afterPid, launchState, focused,
+          uiVisible: await step('restore', () => appVisible()),
+          channelMatched: (await step('restore', () => activeChannel())) === expectedChannel };
+      },
+      observe: start => observeLifecycleWindow(androidFailureShell, PKG, start),
+      failureEvidence: async start => ({
+        preStop: facts.ex01ColdStartPreStop ?? { available: false },
+        ui: await page.evaluate(({ expected, user, server }) => {
+          const visible = id => {
+            const element = document.getElementById(id);
+            return Boolean(element && getComputedStyle(element).display !== 'none' && element.getBoundingClientRect().height > 0);
+          };
+          return { available: true, appVisible: visible('app'), authVisible: visible('auth-screen'),
+            anyActiveChannel: Boolean(document.querySelector('.ch-item.active')),
+            expectedChannelActive: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
+            rememberedChannelMatches: localStorage.getItem(`bridge:last-navigation:v1:channel:${user}:${server}`) === expected,
+            bootNavigation: window.__bridgeNavigationProbeV1?.inspect(user, server, expected) ?? { available: false },
+            focused: document.hasFocus() };
+        }, { expected: expectedChannel, user: me.id, server: serverId }).catch(() => ({ available: false })),
+        // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original
+        // error is deliberately omitted; it can contain URLs and identities.
+        attach: await webViewAttachEvidence(start),
+        events: await observeLifecycleWindow(androidFailureShell, PKG, start),
+      }),
+    });
+    log('EX01 separate lifecycle experiment', JSON.stringify(facts.androidLifecycleExperiment));
+    // EX02 is a separate comparison, never a retry or replacement for EX01.
+    // Pause app JavaScript, verify browser storage, then stop once. This
+    // removes a late app write from the pre-stop interval without a sleep or
+    // a product persistence change. The original EX01 failure remains gating.
+    if (pausedPreferenceControlApplies(facts.androidLifecycleExperiment)) {
+      let session = null;
+      let controlPage = null;
+      let pauseControl = null;
+      const controlStart = await readAttachCrashClock();
+      facts.androidPausedPreferenceControl = await runPausedPreferenceControl({
+        emulatorDebug: facts.device?.qemu === '1' && PKG === 'com.bridge.app.debug',
+        select: async ({ step }) => {
+          await step('server', () => openServer(serverId));
+          await step('channel', () => openChannel(expectedChannel));
+        },
+        readBefore: async ({ step }) => step('read', () => page.evaluate(({ user, server, expected }) => {
+          const value = localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server);
+          return { available: true, preferenceMatches: value === expected,
+            activeChannelMatches: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected };
+        }, { user: me.id, server: serverId, expected: expectedChannel })),
+        pause: async context => {
+          const { step } = context;
+          controlPage = page;
+          session = await step('session', () => controlPage.context().newCDPSession(controlPage));
+          await step('storage-domain', () => session.send('DOMStorage.enable'));
+          pauseControl = createDebuggerStoragePause(session);
+          return pauseControl.pause(context);
+        },
+        readPaused: async ({ step }) => {
+          // Raw entries (including other local values) stay in this scope.
+          // Only the exact expected key's presence/equality can leave it.
+          const key = 'bridge:last-navigation:v1:channel:' + me.id + ':' + serverId;
+          return readPausedPreference(pauseControl, async () => {
+            const response = await step('read', () => session.send('DOMStorage.getDOMStorageItems', {
+              storageId: { securityOrigin: 'https://localhost', isLocalStorage: true },
+            }));
+            return response.entries;
+          }, key, expectedChannel);
+        },
+        coldLaunch: async ({ signal }) => {
+          if (!pauseControl?.isPaused()) throw new Error('control is no longer paused');
+          return platform.coldLaunch('', { shell: async command => {
+            signal.throwIfAborted();
+            const raw = await androidFailureShell(command);
+            signal.throwIfAborted();
+            return raw;
+          } });
+        },
+        readBoot: async ({ step }) => {
+          await step('attach', () => attachPage({ crashWindowStart: controlStart }));
+          await step('probe-ready', () => until(() => page.evaluate(() =>
+            typeof window.__bridgeNavigationProbeV1?.inspect === 'function'),
+          { timeout: 15_000, message: 'EX02 early navigation probe ready' }));
+          return step('probe', () => page.evaluate(({ user, server, expected }) =>
+            window.__bridgeNavigationProbeV1.inspect(user, server, expected),
+          { user: me.id, server: serverId, expected: expectedChannel }));
+        },
+        cleanup: async context => {
+          const { step } = context;
+          if (!session) return;
+          try {
+            if (pauseControl) await pauseControl.release(context, controlPage?.isClosed() === true);
+          } finally {
+            try { await step('detach', () => session.detach()); }
+            catch { if (controlPage && !controlPage.isClosed()) throw new Error('control cleanup unavailable'); }
+          }
+        },
+      });
+    } else {
+      facts.androidPausedPreferenceControl = { case: 'EX02', status: 'NOT_APPLICABLE', reason: 'no-matching-storage-failure' };
+    }
+    log('EX02 independent debugger-paused storage comparison', JSON.stringify(facts.androidPausedPreferenceControl));
+  }
 
   peerSock.close();
 }
@@ -2324,5 +2751,5 @@ main()
     for (const r of results) console.log(`${r.status.padEnd(8)} ${r.id.padEnd(7)} ${r.title}${r.error ? `\n          ↳ ${r.error.split('\n')[0]}` : ''}${r.reason ? `\n          ↳ ${r.reason}` : ''}${r.detail ? `\n          ↳ ${JSON.stringify(r.detail)}` : ''}`);
     console.log(`TOTAL pass=${summary.totals.pass} fail=${summary.totals.fail} skipped=${summary.totals.skipped} measured=${summary.totals.measured} (skipped and measured are never counted as pass)`);
     try { if (device) await device.close(); } catch {}
-    process.exit(summary.totals.fail > 0 ? 1 : 0);
+    process.exit(summary.totals.fail > 0 || facts.androidLifecycleExperiment?.status === 'FAIL' ? 1 : 0);
   });

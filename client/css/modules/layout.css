@@ -338,6 +338,9 @@
 .channel-header .ch-h-name { font-weight: 700; font-size: 15px; }
 .channel-header .ch-h-divider { width: 1px; height: 20px; background: var(--border-strong); margin: 0 var(--space-1); }
 .channel-header .ch-h-topic { color: var(--text-3); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+/* P7 D2: an expiring channel's absolute deletion time (role="note", set by ChannelListManager). */
+.channel-header .ch-h-expiry { flex: 0 1 auto; max-width: 45%; color: var(--text-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.channel-header .ch-h-expiry[data-soon="true"] { color: var(--warning, var(--danger)); font-weight: 600; }
 .channel-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 #btn-header-more { display: none; }
 .header-more-menu {

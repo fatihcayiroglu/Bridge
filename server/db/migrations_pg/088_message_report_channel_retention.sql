@@ -1,0 +1,23 @@
+-- 088: P7 D2 x B5 — moderation reports outlive their channel (owner decision, #321).
+--
+-- message_reports."channelId" referenced channels(_id) ON DELETE CASCADE, so an
+-- expired channel's cleanup, or an owner deleting the channel, erased every
+-- report filed in it together with the evidence snapshot migration 085 keeps.
+-- Ephemeral channels became a way to make harassment reports disappear.
+--
+-- The channel foreign key is dropped; "channelId" keeps the id the report was
+-- filed in. Retention then follows 085's policy, not the channel's lifetime:
+--   * open report: evidence kept;
+--   * resolved/dismissed: evidence kept for MESSAGE_REPORT_EVIDENCE_RETENTION_DAYS
+--     (default 90), then scrubbed by jobs/reportEvidenceRetention.ts; the
+--     minimal report row (reason, status, timestamps, ids) stays.
+-- What is NOT kept for a report: the conversation, attachment bytes, object
+-- URLs or E2EE ciphertext (085 snapshots only bounded text, author, type,
+-- times, file name/type). The expiry worker and ordinary channel deletion still
+-- remove the channel's messages.
+--
+-- Unchanged: the serverId foreign key (deleting the server deletes its reports,
+-- tenant ownership), the reporterId CASCADE and resolvedBy SET NULL user keys,
+-- 085's author-erasure trigger, and every index (idx_message_reports_channel_open
+-- still serves the per-channel queue filter).
+ALTER TABLE message_reports DROP CONSTRAINT IF EXISTS "message_reports_channelId_fkey";

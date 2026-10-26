@@ -311,6 +311,10 @@ class ServerRepository {
 
         if (has('members', 'serverId')) await del('members', 'DELETE FROM members WHERE "serverId"=$1');
         if (has('channels', 'serverId')) await del('channels', 'DELETE FROM channels WHERE "serverId"=$1');
+        // channel_object_release_outbox rows are deliberately retained too: they
+        // are the durable queue of stored objects of expired channels still to be
+        // deleted (migration 089). Dropping them with the server would orphan
+        // those objects; the expiry worker finishes and prunes them.
         // channel_expiry_tombstones are deliberately retained, even on server
         // deletion: stale offline/federated snapshots must not re-create prior
         // channel IDs. Migration 084 intentionally gives them no FK to servers

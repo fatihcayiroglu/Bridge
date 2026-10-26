@@ -2,7 +2,8 @@ package com.bridge.app;
 
 // Android #209: DEBUG-only, end-of-journey reader of this package's OWN fatal
 // ANR records (ApplicationExitInfo REASON_ANR, Android 11+). Each trace is
-// reduced in memory by AnrTraceClassifier; only fixed enums are logged.
+// reduced in memory by AnrTraceClassifier; only fixed enums are logged,
+// including separate operations for the top Java frame and first owner.
 // The trace itself, PIDs, timestamps and process names never leave this
 // process. Started by the harness with --el sinceEpochMs <device ms>.
 public final class AnrTraceProbeActivity extends android.app.Activity {
@@ -62,7 +63,8 @@ public final class AnrTraceProbeActivity extends android.app.Activity {
                 }
                 AnrTraceClassifier.Result result = AnrTraceClassifier.classify(trace);
                 android.util.Log.i(TAG, "stage=exit traceAvailable=" + (trace != null)
-                        + " " + result.marker());
+                        + " " + result.marker() + " " + result.operationMarker()
+                        + " " + result.graphicsMarker(AnrTraceClassifier.classifyRenderThread(trace)));
             }
         } catch (RuntimeException e) {
             android.util.Log.i(TAG, "stage=done supported=true error=true anrExits=" + anrs
