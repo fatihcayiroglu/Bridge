@@ -2684,6 +2684,8 @@ async function main() {
             // #490: counters, states and booleans only (no IDs or values).
             durability: window.__bridgeNavigationDurabilityV1?.status() ?? { native: 'missing' },
             durableExpected: window.__bridgeNavigationDurabilityV1?.inspectChannel(user, server, expected) ?? 'missing',
+            // #491: explicit deep-link intent stages vs automatic restores (stage names/counts only).
+            intents: window.__bridgeNavigationIntentV1?.status() ?? { available: false },
             focused: document.hasFocus() };
         }, { expected: expectedChannel, user: me.id, server: serverId }).catch(() => ({ available: false })),
         // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original

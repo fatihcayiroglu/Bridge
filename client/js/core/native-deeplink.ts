@@ -24,6 +24,7 @@ import { routeDesktopDeepLink, type DeepLinkDeps, CHANNEL_LOOKUP_SERVER_LIMIT } 
 import { t } from './i18n/index.ts';
 import { createLogger } from './logger.ts';
 import { navigationOwner } from './navigation-selection.ts';
+import { beginIntent, noteIntentStage } from './navigation-intent-diagnostics.ts';
 
 const log = createLogger('NativeDeepLink');
 
@@ -100,7 +101,11 @@ async function serverChannels(deps: DeepLinkDeps, serverId: string): Promise<Arr
 }
 
 export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeepLinkDeps, timeoutMs = SHELL_READY_WAIT_MS): Promise<boolean> {
-  if (!(await waitFor(() => deps.ready(), timeoutMs))) return false;
+  const channelLink = link.kind === 'channel';
+  if (!(await waitFor(() => deps.ready(), timeoutMs))) {
+    if (channelLink) noteIntentStage('shell-not-ready');
+    return false;
+  }
   // Cold start: the boot load may still be in flight. `loadServers()` resolves once the list
   // reflects the server (ServerSwitcher queues behind an in-flight load); bounded, never forever.
   if (deps.servers().length === 0) {
@@ -128,12 +133,17 @@ export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeep
       const ordered = link.serverId
         ? [...servers.filter((s) => s._id === link.serverId), ...servers.filter((s) => s._id !== link.serverId)]
         : servers;
+      noteIntentStage('dispatched', servers.length);
       for (const server of ordered.slice(0, CHANNEL_LOOKUP_SERVER_LIMIT)) {
         const channels = await serverChannels(deps, server._id as string);
         if (channels.some((channel) => channel?._id === link.channelId)) {
-          return Boolean(await deps.navigateToChannel(link.channelId, link.messageId, server));
+          noteIntentStage('lookup-found');
+          const navigated = Boolean(await deps.navigateToChannel(link.channelId, link.messageId, server));
+          noteIntentStage(navigated ? 'navigated' : 'not-navigated');
+          return navigated;
         }
       }
+      noteIntentStage('lookup-missing');
       return unavailable();
     }
   }
@@ -181,8 +191,15 @@ function listen(target: EventTarget, type: string, handler: EventListener): void
 }
 
 function dispatch(link: NativeDeepLink, deps: NativeDeepLinkDeps): void {
-  if (!deps.signedIn()) { waiting.push({ link, at: Date.now() }); return; }
-  void routeNativeDeepLink(link, deps).catch((err) => log.warn('Deep link could not be routed', err));
+  if (!deps.signedIn()) {
+    if (link.kind === 'channel') noteIntentStage('queued-for-sign-in');
+    waiting.push({ link, at: Date.now() });
+    return;
+  }
+  void routeNativeDeepLink(link, deps).catch((err) => {
+    if (link.kind === 'channel') noteIntentStage('route-error');
+    log.warn('Deep link could not be routed', err);
+  });
 }
 
 /**
@@ -198,6 +215,7 @@ export function initNativeDeepLinks(deps: NativeDeepLinkDeps = registryDeps): vo
     if (!Array.isArray(queue)) return;
     for (const payload of queue.splice(0)) {
       const link = parseNativeDeepLink(payload);
+      if (link?.kind === 'channel') beginIntent();
       if (link) dispatch(link, deps);
       else log.warn('Ignored an unsupported deep link payload');
     }

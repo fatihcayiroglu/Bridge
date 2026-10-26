@@ -320,6 +320,66 @@ describe('#490 Android: restoration from the acknowledged native store', () => {
     expect(recordNavigation).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
   });
 
+  it('a deep link arriving while the native read is pending wins over the remembered channel', async () => {
+    let open!: () => void;
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    disk.set(key('user-1', 'srv-1'), 'second');
+    mockApiFetch.mockResolvedValue(okResponse(three));
+    await requestLoad('srv-1');
+    await drainPending();
+    // List rendered, restore decision still waiting on the native read.
+    const navigated = BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'third');
+    await drainPending();
+    open();
+    await drainPending();
+    await expect(navigated).resolves.toBe(true);
+    await vi.waitFor(() => expect(active()).toBe('third'));
+    await drainPending();
+    expect(active()).toBe('third');
+  });
+
+  it('a deep link while identity is still unknown wins over the later remembered restore', async () => {
+    let open!: () => void;
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    BridgeRegistry.unregister('getMe');
+    disk.set(key('user-1', 'srv-1'), 'second');
+    mockApiFetch.mockResolvedValue(okResponse(three));
+    await requestLoad('srv-1');
+    open();
+    await drainPending();
+    await vi.waitFor(() => expect(active()).toBe('first')); // provisional pre-auth fallback
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    const navigated = BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'third');
+    await drainPending();
+    open();
+    await drainPending();
+    await expect(navigated).resolves.toBe(true);
+    await drainPending();
+    expect(active()).toBe('third');
+  });
+
+  it('a deep link that arrives before the channel list exists is honoured after the native read', async () => {
+    let open!: () => void;
+    readGate = new Promise<void>(resolve => { open = resolve; });
+    disk.set(key('user-1', 'srv-1'), 'second');
+    let releaseList!: () => void;
+    const listGate = new Promise<void>(resolve => { releaseList = resolve; });
+    mockApiFetch.mockImplementation(async (raw: string) => {
+      if (new URL(String(raw)).pathname.endsWith('/channels')) await listGate;
+      return okResponse(new URL(String(raw)).pathname.endsWith('/categories') ? [] : three);
+    });
+    await requestLoad('srv-1');
+    const navigated = BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'third', undefined, { _id: 'srv-1' });
+    releaseList();
+    await drainPending();
+    open();
+    await drainPending();
+    await expect(navigated).resolves.toBe(true);
+    expect(active()).toBe('third');
+  });
+
   it('a selection is mirrored to native storage and acknowledged', async () => {
     mockApiFetch.mockResolvedValue(okResponse(three));
     rememberTextChannel('user-1', 'srv-1', 'third');
