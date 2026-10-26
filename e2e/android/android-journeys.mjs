@@ -25,6 +25,8 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers } from './exit-diagnostics.mjs';
 import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
+import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-reproduction.mjs';
+import { collectKernelPressure } from './pressure-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -588,45 +590,7 @@ async function fontProviderStage(stage) {
  */
 async function androidPressureEvidence(label) {
   if (MODE !== 'android') return null;
-  const outputs = {};
-  const commands = {
-    cpu: 'cat /proc/pressure/cpu',
-    memory: 'cat /proc/pressure/memory',
-    io: 'cat /proc/pressure/io',
-    pid: `pidof ${PKG}`,
-    // Android emulators can expose no per-cgroup/global PSI from adb shell.
-    // These kernel totals are a separately labelled FALLBACK, not PSI.
-    loadavg: 'cat /proc/loadavg',
-    meminfo: 'cat /proc/meminfo',
-  };
-  for (const [key, command] of Object.entries(commands)) {
-    try {
-      const value = await sh(command);
-      if (key === 'pid') {
-        outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
-      } else if (key === 'loadavg') {
-        const match = /^(\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?) \d+\/\d+ \d+$/.exec(value);
-        outputs.kernelLoadavg = match ? match.slice(1, 4).map(Number) : 'unavailable';
-      } else if (key === 'meminfo') {
-        const total = /^MemTotal:\s+(\d+) kB$/m.exec(value);
-        const available = /^MemAvailable:\s+(\d+) kB$/m.exec(value);
-        outputs.kernelMemTotalKb = total ? Number(total[1]) : 'unavailable';
-        outputs.kernelMemAvailableKb = available ? Number(available[1]) : 'unavailable';
-      } else {
-        // Only allow the precisely defined kernel pressure text format.
-        const lines = value.split('\n').filter(line =>
-          /^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+$/.test(line));
-        outputs[key] = lines.length > 0 ? lines.slice(0, 2).join(' | ').slice(0, 280) : 'unavailable';
-      }
-    } catch {
-      if (key === 'meminfo') {
-        outputs.kernelMemTotalKb = 'unavailable';
-        outputs.kernelMemAvailableKb = 'unavailable';
-      } else {
-        outputs[key === 'loadavg' ? 'kernelLoadavg' : key] = 'unavailable';
-      }
-    }
-  }
+  const outputs = await collectKernelPressure(androidFailureShell);
   const item = { label, ...outputs };
   (facts.androidPressureEvidence ??= []).push(item);
   log('Android OS PSI', JSON.stringify(item));
@@ -635,16 +599,16 @@ async function androidPressureEvidence(label) {
 
 
 const platform = {
-  async coldLaunch(extra = '') {
+  async coldLaunch(extra = '', { shell = sh } = {}) {
     if (MODE === 'dryrun') { await page.goto(API); return { totalTimeMs: null }; }
-    await sh(`am force-stop ${PKG}`);
-    const out = await sh(`am start -W -n ${ACTIVITY} ${extra}`);
+    await shell(`am force-stop ${PKG}`);
+    const out = await shell(`am start -W -n ${ACTIVITY} ${extra}`);
     return summarizeAndroidColdLaunch(out);
   },
-  async home() { if (MODE === 'dryrun') return; await sh('input keyevent KEYCODE_HOME'); },
-  async foreground() {
+  async home(shell = sh) { if (MODE === 'dryrun') return; await shell('input keyevent KEYCODE_HOME'); },
+  async foreground(shell = sh) {
     if (MODE === 'dryrun') return { totalTimeMs: null };
-    const out = await sh(`am start -W -n ${ACTIVITY}`);
+    const out = await shell(`am start -W -n ${ACTIVITY}`);
     return { totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null, launchState: (/LaunchState:\s*(\w+)/.exec(out) || [])[1] ?? null };
   },
   /**
@@ -671,7 +635,7 @@ const platform = {
     throw new Error(`process survived am kill x${tries} and SIGKILL (${out.slice(0, 120)}); ${state}`);
   },
   async forceStop() { if (MODE === 'dryrun') throw new Skip('force-stop needs a device'); await sh(`am force-stop ${PKG}`); },
-  async deepLink(url, { cold = false } = {}) {
+  async deepLink(url, { cold = false, shell = sh } = {}) {
     if (MODE === 'dryrun') throw new Skip('deep links need the native shell');
     if (cold) {
       // After force-stop Android marks the package stopped. Starting only by
@@ -680,11 +644,11 @@ const platform = {
       // inherits a closed Playwright page. An explicit component still delivers
       // the VIEW intent data, while guaranteeing MainActivity is actually
       // created for the cold-start contract we are measuring.
-      await sh(`am force-stop ${PKG}`);
+      await shell(`am force-stop ${PKG}`);
       await sleep(500);
-      return sh(`am start -W -a android.intent.action.VIEW -d '${url}' -n ${ACTIVITY}`);
+      return shell(`am start -W -a android.intent.action.VIEW -d '${url}' -n ${ACTIVITY}`);
     }
-    return sh(`am start -W -a android.intent.action.VIEW -d '${url}' ${PKG}`);
+    return shell(`am start -W -a android.intent.action.VIEW -d '${url}' ${PKG}`);
   },
   async network(on) {
     if (MODE === 'dryrun') { await page.context().setOffline(!on); return; }
@@ -2569,6 +2533,79 @@ async function main() {
     }
   });
 
+  // EX01 runs AFTER every product verdict and ANR/exit checkpoint. It cannot
+  // warm product startup, change L01 timing or add expected deaths to PD01.
+  // Unlike a repeated CI run, this is one fixed, bounded experiment. Stop at
+  // the first failure and preserve its process before any subsequent launch.
+  if (MODE === 'android') {
+    let expectedChannel = channelId;
+    facts.androidLifecycleExperiment = await runLifecycleReproduction({
+      prepare: async ({ signal, step }) => {
+        assert(facts.device?.qemu === '1', 'EX01 requires an emulator');
+        const shell = async command => {
+          signal.throwIfAborted();
+          const raw = await androidFailureShell(command);
+          signal.throwIfAborted();
+          return raw;
+        };
+        await step('launch', () => platform.coldLaunch('', { shell }));
+        await step('attach', () => attachPage());
+        await step('restore', () => until(() => authVisible(), { timeout: 45_000, message: 'EX01 signed-out baseline' }));
+        await step('restore', () => login(me.username, me.id));
+        await step('restore', () => openServer(serverId));
+        await step('restore', () => openChannel(channelId));
+      },
+      clock: readAttachCrashClock,
+      pressure: () => collectKernelPressure(androidFailureShell),
+      run: async (phase, cycle, { signal, step }) => {
+        const shell = async command => {
+          signal.throwIfAborted();
+          const raw = await androidFailureShell(command);
+          signal.throwIfAborted();
+          return raw;
+        };
+        let beforePid;
+        let launchState;
+        if (phase === 'hot-resume') {
+          beforePid = await shell(`pidof ${PKG}`);
+          await step('background', () => platform.home(shell));
+          await step('background', () => sleep(20_000));
+          const launch = await step('resume', () => platform.foreground(shell));
+          launchState = launch.launchState;
+        } else if (phase === 'cold-start') {
+          const launch = await step('launch', () => platform.coldLaunch('', { shell }));
+          launchState = launch.launchState;
+          beforePid = await shell(`pidof ${PKG}`);
+        } else {
+          // Alternate the target, so stale active-channel state cannot pass.
+          expectedChannel = cycle % 2 ? otherId : channelId;
+          const raw = await step('launch', () => platform.deepLink(`bridge://channel/${expectedChannel}`, { cold: true, shell }));
+          launchState = summarizeAndroidColdLaunch(raw).launchState;
+          beforePid = await shell(`pidof ${PKG}`);
+        }
+        await step('attach', () => attachPage());
+        await step('restore', () => until(() => appVisible(), { timeout: 45_000, message: 'EX01 session restored' }));
+        await step('restore', () => until(async () => (await activeChannel()) === expectedChannel,
+          { timeout: 30_000, message: 'EX01 expected channel restored' }));
+        // Observe delayed death after actual UI, as in CS01. No second launch.
+        await step('settle', () => sleep(2000));
+        const afterPid = await shell(`pidof ${PKG}`);
+        const focused = await step('focus', () => page.evaluate(() => document.hasFocus()));
+        return { beforePid, afterPid, launchState, focused,
+          uiVisible: await step('restore', () => appVisible()),
+          channelMatched: (await step('restore', () => activeChannel())) === expectedChannel };
+      },
+      observe: start => observeLifecycleWindow(androidFailureShell, PKG, start),
+      failureEvidence: async start => ({
+        // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original
+        // error is deliberately omitted; it can contain URLs and identities.
+        attach: await webViewAttachEvidence(start),
+        events: await observeLifecycleWindow(androidFailureShell, PKG, start),
+      }),
+    });
+    log('EX01 separate lifecycle experiment', JSON.stringify(facts.androidLifecycleExperiment));
+  }
+
   peerSock.close();
 }
 
@@ -2605,5 +2642,5 @@ main()
     for (const r of results) console.log(`${r.status.padEnd(8)} ${r.id.padEnd(7)} ${r.title}${r.error ? `\n          ↳ ${r.error.split('\n')[0]}` : ''}${r.reason ? `\n          ↳ ${r.reason}` : ''}${r.detail ? `\n          ↳ ${JSON.stringify(r.detail)}` : ''}`);
     console.log(`TOTAL pass=${summary.totals.pass} fail=${summary.totals.fail} skipped=${summary.totals.skipped} measured=${summary.totals.measured} (skipped and measured are never counted as pass)`);
     try { if (device) await device.close(); } catch {}
-    process.exit(summary.totals.fail > 0 ? 1 : 0);
+    process.exit(summary.totals.fail > 0 || facts.androidLifecycleExperiment?.status === 'FAIL' ? 1 : 0);
   });
