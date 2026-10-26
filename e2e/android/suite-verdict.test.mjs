@@ -11,7 +11,7 @@ const commit = 'a'.repeat(40);
 const completeProduct = () => ({ suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR',
   results: [...PRODUCT_CHECKS.map(id => ({ id, status: 'PASS' })),
     ...PRODUCT_MEASUREMENTS.map(id => ({ id, status: 'MEASURED' }))],
-  totals: { pass: 36, fail: 0, skipped: 0, measured: 7 } });
+  totals: { pass: PRODUCT_CHECKS.length, fail: 0, skipped: 0, measured: PRODUCT_MEASUREMENTS.length } });
 
 test('summary CLI rejects missing, malformed and structurally empty evidence with a nonzero exit', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bridge-evidence-verdict-'));
@@ -27,7 +27,7 @@ test('summary CLI rejects missing, malformed and structurally empty evidence wit
 
 test('verdict accepts the complete native inventory without converting measurements to PASS', () => {
   assert.deepEqual(assessSuiteEvidence(completeProduct(), { expectedCommit: commit }), { status: 'PASS', reason: null });
-  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 7);
+  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 8); // #209 adds SF01 (measurement only)
 });
 
 test('every omitted, failed, skipped or measurement-only mandatory check is rejected', () => {

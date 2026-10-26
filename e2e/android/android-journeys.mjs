@@ -29,6 +29,7 @@ import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-re
 import { pausedPreferenceControlApplies, runPausedPreferenceControl, readPausedPreference } from './paused-preference-control.mjs';
 import { createDebuggerStoragePause } from './debugger-storage-pause.mjs';
 import { collectKernelPressure } from './pressure-evidence.mjs';
+import { parseChoreographerSkips, summarizeStartupSkips } from './frame-skip-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -1668,6 +1669,14 @@ async function main() {
     };
     const baselineAnrs = await anrCount();
     assert(baselineAnrs === 0, 'an OS ANR was already recorded before repeated cold starts');
+    // #209: Bridge's own main-thread stalls for this exact PID (counts only).
+    // Evidence, never part of this check's verdict: a failed read is null.
+    const startupSkips = async appPid => {
+      try {
+        return parseChoreographerSkips(await androidFailureShell(
+          "logcat -d -v brief --pid " + appPid + " -s Choreographer:I '*:S'"), appPid);
+      } catch { return null; }
+    };
     const samples = [];
     // Fixed and small on purpose; stress must not consume the entire emulator
     // CI budget or silently redefine later L01 / FD01 acceptance.
@@ -1691,6 +1700,7 @@ async function main() {
         totalTimeMs: launch.totalTimeMs,
         pidStable: finalPid === initialPid,
         anrCount: newAnrs,
+        skippedFrames: await startupSkips(initialPid),
       });
       facts.androidColdStartSamples = samples;
       assert(finalPid === initialPid,
@@ -1707,6 +1717,12 @@ async function main() {
   await productExitCheckpoint('after-startup');
   await collectAnrEvents();
   await anrDialogSample('after-startup');
+
+  // #209: measurement only. Choreographer reports stalls >= 30 frames.
+  await measure('SF01', 'cold-start main-thread stalls reported by Choreographer for the Bridge PID (measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android Choreographer required');
+    return summarizeStartupSkips(facts.androidColdStartSamples);
+  });
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();

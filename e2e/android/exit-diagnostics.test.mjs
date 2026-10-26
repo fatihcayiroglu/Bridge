@@ -2356,7 +2356,7 @@ test('job summary keeps CR00 separate and fails missing, stale or non-emulator c
   const product = { suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR',
     results: [...PRODUCT_CHECKS.map(id => ({ id, status: 'PASS' })),
       ...PRODUCT_MEASUREMENTS.map(id => ({ id, status: 'MEASURED' }))],
-    totals: { pass: 36, fail: 0, skipped: 0, measured: 7 },
+    totals: { pass: PRODUCT_CHECKS.length, fail: 0, skipped: 0, measured: PRODUCT_MEASUREMENTS.length },
     facts: { androidLifecycleExperiment: experiment } };
   const control = { case: 'CR00', commit, status: 'PASS', evidenceCategory: 'AUTOMATED / EMULATOR',
     error: 'private owner@example.com token secret' };
@@ -2374,12 +2374,12 @@ test('job summary keeps CR00 separate and fails missing, stale or non-emulator c
         encoding: 'utf8', env: { ...process.env, GITHUB_SHA: commit, ANDROID_JOURNEY_SUITE: 'product' } });
       assert.equal(run.status, expectedStatus, run.stderr);
       assert.match(run.stdout, /CR00 Java crash diagnostic calibration/);
-      assert.match(run.stdout, /Totals: pass=36 fail=0 skipped=0 measured=7/);
+      assert.match(run.stdout, new RegExp(`Totals: pass=${PRODUCT_CHECKS.length} fail=0 skipped=0 measured=${PRODUCT_MEASUREMENTS.length}`));
       assert.doesNotMatch(run.stdout, /owner@|token|secret|private/);
       assert.equal(formatCrashControlSummary(product, record).status, expectedStatus === 0 ? 'PASS' : 'FAIL');
     }
     // A different profile's report never borrows a product CR00 PASS.
     assert.equal(formatCrashControlSummary({ ...product, suite: 'upstream-webview-controls' }, control).status, 'FAIL');
-    assert.equal(JSON.parse(read(evidencePath, 'utf8')).results.length, 43);
+    assert.equal(JSON.parse(read(evidencePath, 'utf8')).results.length, 44); // 36 checks + 8 measurements (#209 SF01)
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
