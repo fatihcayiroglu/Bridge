@@ -2584,8 +2584,8 @@ async function main() {
           beforePid = await shell(`pidof ${PKG}`);
         }
         await step('attach', () => attachPage());
-        await step('restore', () => until(() => appVisible(), { timeout: 45_000, message: 'EX01 session restored' }));
-        await step('restore', () => until(async () => (await activeChannel()) === expectedChannel,
+        await step('session', () => until(() => appVisible(), { timeout: 45_000, message: 'EX01 session restored' }));
+        await step('channel', () => until(async () => (await activeChannel()) === expectedChannel,
           { timeout: 30_000, message: 'EX01 expected channel restored' }));
         // Observe delayed death after actual UI, as in CS01. No second launch.
         await step('settle', () => sleep(2000));
@@ -2597,6 +2597,17 @@ async function main() {
       },
       observe: start => observeLifecycleWindow(androidFailureShell, PKG, start),
       failureEvidence: async start => ({
+        ui: await page.evaluate(({ expected, user, server }) => {
+          const visible = id => {
+            const element = document.getElementById(id);
+            return Boolean(element && getComputedStyle(element).display !== 'none' && element.getBoundingClientRect().height > 0);
+          };
+          return { available: true, appVisible: visible('app'), authVisible: visible('auth-screen'),
+            anyActiveChannel: Boolean(document.querySelector('.ch-item.active')),
+            expectedChannelActive: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
+            rememberedChannelMatches: localStorage.getItem(`bridge:last-navigation:v1:channel:${user}:${server}`) === expected,
+            focused: document.hasFocus() };
+        }, { expected: expectedChannel, user: me.id, server: serverId }).catch(() => ({ available: false })),
         // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original
         // error is deliberately omitted; it can contain URLs and identities.
         attach: await webViewAttachEvidence(start),
