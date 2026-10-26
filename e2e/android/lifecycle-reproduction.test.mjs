@@ -170,7 +170,7 @@ test('EX01 records pre-force-stop preference and channel equality before cold st
   assert.ok(source.includes('preStop: facts.ex01ColdStartPreStop ?? { available: false }'));
 });
 
-test('EX01 attributes multiple focus records to their display without relaxing strict first-entry gate', async () => {
+test('EX01 only accepts the explicitly top-focused display and fails closed on ambiguous focus', async () => {
   const launcher = 'mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher}';
   const dumpsys = top => [
     'WINDOW MANAGER DISPLAY CONTENTS', `mTopFocusedDisplayId=${top}`,
@@ -178,7 +178,8 @@ test('EX01 attributes multiple focus records to their display without relaxing s
     ' Display: mDisplayId=0', `  ${window}`,
   ].join('\n');
   const primary = await observeLifecycleWindow(shell('', dumpsys(0)), pkg, start);
-  assert.equal(primary.nativeWindowFocused, false); // Do not convert a secondary entry into PASS.
+  assert.equal(primary.nativeWindowFocused, true); // OS explicitly marks the Bridge-owned display as top-focused.
+  assert.equal(primary.focusDecisionSource, 'top-display');
   assert.equal(primary.focusOwner, 'launcher');
   assert.equal(primary.focusEntries, 2);
   assert.equal(primary.firstFocusDisplayId, 1);
@@ -190,6 +191,7 @@ test('EX01 attributes multiple focus records to their display without relaxing s
   assert.doesNotMatch(JSON.stringify(primary), /Launcher|com.android|MainActivity|mCurrentFocus/);
   const secondary = await observeLifecycleWindow(shell('', dumpsys(1)), pkg, start);
   assert.equal(secondary.nativeWindowFocused, false);
+  assert.equal(secondary.focusDecisionSource, 'top-display');
   assert.equal(secondary.topFocusedWindowIsMain, false);
   assert.equal(secondary.defaultDisplayWindowIsMain, true);
   const unscoped = await observeLifecycleWindow(shell('', [launcher, window].join('\n')), pkg, start);
@@ -197,6 +199,23 @@ test('EX01 attributes multiple focus records to their display without relaxing s
   assert.equal(unscoped.topFocusedDisplayId, null);
   assert.equal(unscoped.firstFocusDisplayId, null);
   assert.equal(unscoped.topFocusedWindowIsMain, null);
+  assert.equal(unscoped.nativeWindowFocused, false);
+  assert.equal(unscoped.focusDecisionSource, 'unresolved');
+  const missingTop = await observeLifecycleWindow(shell('', dumpsys(0).replace('mTopFocusedDisplayId=0', '')), pkg, start);
+  assert.equal(missingTop.nativeWindowFocused, false);
+  assert.equal(missingTop.focusDecisionSource, 'unresolved');
+  const duplicateTop = await observeLifecycleWindow(shell('', [
+    'mTopFocusedDisplayId=0', ' Display: mDisplayId=0', ` ${window}`, ` ${window}`,
+  ].join('\n')), pkg, start);
+  assert.equal(duplicateTop.nativeWindowFocused, false);
+  assert.equal(duplicateTop.topFocusedWindowIsMain, null);
+  const topMissingWindow = await observeLifecycleWindow(shell('', [
+    'mTopFocusedDisplayId=1', ' Display: mDisplayId=0', ` ${window}`,
+  ].join('\n')), pkg, start);
+  assert.equal(topMissingWindow.nativeWindowFocused, false);
+  const loneUnscoped = await observeLifecycleWindow(shell('', window), pkg, start);
+  assert.equal(loneUnscoped.nativeWindowFocused, true);
+  assert.equal(loneUnscoped.focusDecisionSource, 'unscoped-single');
 });
 
 test('EX01 classifies foreign/system/own focus without leaking components or weakening the focus gate', async () => {
