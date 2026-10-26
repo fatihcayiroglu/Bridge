@@ -1,5 +1,9 @@
 # EX01: isolate preference state across the Android stop interval
 
+The lifecycle-freeze strategy below failed its actual Android freeze-event wait
+in run 40325425203. It is superseded by the [debugger-pause control](P7_EX02_DEBUGGER_PAUSE_CONTROL_20261026.md).
+The original failed experiments and their limitations remain part of the evidence.
+
 Third experiment [40312295839](https://github.com/fatihcayiroglu/Bridge/actions/runs/40312295839)
 failed original EX01 channel restoration. Immediately pre-stop the preference
 and active channel matched. The earliest instrumented boot had the key but a
