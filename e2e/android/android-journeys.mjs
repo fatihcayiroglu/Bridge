@@ -2554,6 +2554,15 @@ async function main() {
         await step('restore', () => login(me.username, me.id));
         await step('restore', () => openServer(serverId));
         await step('restore', () => openChannel(channelId));
+        // Assert that the EX01 fixture was truly saved BEFORE force-stop.
+        // Otherwise a test setup failure would look like Android data loss.
+        await step('restore', async () => {
+          const persisted = await page.evaluate(({ user, server, expected }) =>
+            localStorage.getItem('bridge:last-navigation:v1:channel:' + user + ':' + server) === expected,
+            { user: me.id, server: serverId, expected: channelId });
+          facts.ex01PreferenceSavedBeforeColdLaunch = persisted === true;
+          assert(persisted === true, 'EX01 channel preference missing before process restart');
+        });
       },
       clock: readAttachCrashClock,
       pressure: () => collectKernelPressure(androidFailureShell),
@@ -2606,6 +2615,7 @@ async function main() {
             anyActiveChannel: Boolean(document.querySelector('.ch-item.active')),
             expectedChannelActive: document.querySelector('.ch-item.active')?.getAttribute('data-id') === expected,
             rememberedChannelMatches: localStorage.getItem(`bridge:last-navigation:v1:channel:${user}:${server}`) === expected,
+            bootNavigation: window.__bridgeNavigationProbeV1?.inspect(user, server, expected) ?? { available: false },
             focused: document.hasFocus() };
         }, { expected: expectedChannel, user: me.id, server: serverId }).catch(() => ({ available: false })),
         // Reuse #470's exact AndroidRuntime/OS-exit correlation. The original
