@@ -233,3 +233,15 @@ test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () 
   assert.doesNotMatch(cs01, /assert\([^)]*(pageTiming|rendererOverlap)/);
   assert.match(source, /renderer: summarizeRendererOverlap\(facts\.androidColdStartSamples\)/);
 });
+
+test('#209 SF03 reduced-motion A/B always restores the setting and never asserts on stalls', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const sf03 = source.slice(source.indexOf("await measure('SF03'"), source.indexOf("await productExitCheckpoint('after-reduced-motion')"));
+  assert.ok(source.indexOf("await measure('SF03'") > source.indexOf("await measure('SF01'"));
+  assert.ok(source.indexOf("await measure('SF03'") < source.indexOf("await check('A02'"));
+  assert.match(sf03, /settings put global animator_duration_scale 0/);
+  assert.match(sf03, /\} finally \{\s+await sh\([^]*settings delete global animator_duration_scale/);
+  assert.match(sf03, /matchMedia\('\(prefers-reduced-motion: reduce\)'\)/);
+  assert.match(sf03, /reducedMotionSeen/);
+  assert.doesNotMatch(sf03, /assert\(/);
+});

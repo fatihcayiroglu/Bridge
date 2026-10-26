@@ -27,7 +27,7 @@ test('summary CLI rejects missing, malformed and structurally empty evidence wit
 
 test('verdict accepts the complete native inventory without converting measurements to PASS', () => {
   assert.deepEqual(assessSuiteEvidence(completeProduct(), { expectedCommit: commit }), { status: 'PASS', reason: null });
-  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 9); // #209 adds SF01 and SF02 (measurements only)
+  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 10); // #209 adds SF01, SF02 and SF03 (measurements only)
 });
 
 test('every omitted, failed, skipped or measurement-only mandatory check is rejected', () => {

@@ -1681,6 +1681,39 @@ async function main() {
   // intermittent FocusEvent ANR seen in run 39017377880. This is an ASSERTING
   // check (not a measurement-only pseudo-pass), and the later ANR01 still
   // scans the entire session, even if CS01 itself fails.
+  // #209: Bridge's own main-thread stalls for this exact PID (counts only).
+  // Evidence, never part of this check's verdict: a failed read is null.
+  const startupSkips = async appPid => {
+    try {
+      return parseChoreographerSkips(await androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s Choreographer:I '*:S'"), appPid);
+    } catch { return null; }
+  };
+  const startupStalls = async appPid => {
+    try {
+      return parseStallProbe(await androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
+    } catch { return null; }
+  };
+  // #209 phase attribution: host instants mapped onto the device clock, then
+  // each probe stall is assigned to the phase its dispatch began in.
+  const startupStallTimeline = async appPid => {
+    try {
+      return parseStallProbeTimeline(await androidFailureShell(
+        "logcat -d -v epoch --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
+    } catch { return null; }
+  };
+  const startupStallPhases = (timeline, origin, hostMarks) => {
+    if (!origin || !timeline) return null;
+    const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+    const marks = Object.fromEntries(Object.entries(hostMarks).map(([k, v]) => [k, toDevice(v)]));
+    return attributeStallPhases(timeline, marks, origin.precision);
+  };
+  // Renderer-side timing (numbers only) read after the UI is visible; both
+  // sides use the device wall clock, so no host mapping is involved.
+  const startupPageTiming = async () => {
+    try { return await page.evaluate(collectPageTiming); } catch { return null; }
+  };
   await check('CS01', 'three additional cold starts retain the app PID and report no Android ANR', async () => {
     if (MODE !== 'android') throw new Skip('actual Android ActivityManager required');
     const anrCount = async () => {
@@ -1692,39 +1725,6 @@ async function main() {
     };
     const baselineAnrs = await anrCount();
     assert(baselineAnrs === 0, 'an OS ANR was already recorded before repeated cold starts');
-    // #209: Bridge's own main-thread stalls for this exact PID (counts only).
-    // Evidence, never part of this check's verdict: a failed read is null.
-    const startupSkips = async appPid => {
-      try {
-        return parseChoreographerSkips(await androidFailureShell(
-          "logcat -d -v brief --pid " + appPid + " -s Choreographer:I '*:S'"), appPid);
-      } catch { return null; }
-    };
-    const startupStalls = async appPid => {
-      try {
-        return parseStallProbe(await androidFailureShell(
-          "logcat -d -v brief --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
-      } catch { return null; }
-    };
-    // #209 phase attribution: host instants mapped onto the device clock, then
-    // each probe stall is assigned to the phase its dispatch began in.
-    const startupStallTimeline = async appPid => {
-      try {
-        return parseStallProbeTimeline(await androidFailureShell(
-          "logcat -d -v epoch --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
-      } catch { return null; }
-    };
-    const startupStallPhases = (timeline, origin, hostMarks) => {
-      if (!origin || !timeline) return null;
-      const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
-      const marks = Object.fromEntries(Object.entries(hostMarks).map(([k, v]) => [k, toDevice(v)]));
-      return attributeStallPhases(timeline, marks, origin.precision);
-    };
-    // Renderer-side timing (numbers only) read after the UI is visible; both
-    // sides use the device wall clock, so no host mapping is involved.
-    const startupPageTiming = async () => {
-      try { return await page.evaluate(collectPageTiming); } catch { return null; }
-    };
     const samples = [];
     // Fixed and small on purpose; stress must not consume the entire emulator
     // CI budget or silently redefine later L01 / FD01 acceptance.
@@ -1781,6 +1781,56 @@ async function main() {
     if (MODE !== 'android') throw new Skip('actual Android Choreographer required');
     return summarizeStartupSkips(facts.androidColdStartSamples);
   });
+
+  // #209 SF03: A/B of the first screen's continuous compositor work. SF02
+  // found the renderer's main thread mostly idle during Bridge's cold-start
+  // render stalls; the auth screen animates three 90px-blurred blobs forever
+  // (auth.css `.auth-blob`), and stops when prefers-reduced-motion matches.
+  // Chromium reports that when Android's animator duration scale is 0. Same
+  // evidence as CS01 under reduced motion; whether the page actually saw it is
+  // recorded per start. The setting is always restored. Measurement only.
+  await measure('SF03', 'cold-start main-thread stalls with reduced motion (animator scale 0; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android settings and stall probe required');
+    const original = String(await sh('settings get global animator_duration_scale')).trim();
+    const samples = [];
+    try {
+      await sh('settings put global animator_duration_scale 0');
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const origin = await deviceClockOrigin().catch(() => null);
+        await platform.coldLaunch();
+        const hostMarks = { displayed: Date.now() };
+        const appPid = await pid();
+        await attachPage();
+        hostMarks.attached = Date.now();
+        await until(async () => (await authVisible()) || (await appVisible()), {
+          timeout: 45_000,
+          message: `visible UI after reduced-motion cold start ${attempt}`,
+        });
+        hostMarks.visible = Date.now();
+        const reducedMotion = await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+          .catch(() => null);
+        const pageTiming = await startupPageTiming();
+        await sleep(2000);
+        const stallTimeline = await startupStallTimeline(appPid);
+        samples.push({ attempt, reducedMotion,
+          skippedFrames: await startupSkips(appPid),
+          mainThreadStalls: await startupStalls(appPid),
+          stallPhases: startupStallPhases(stallTimeline, origin, hostMarks),
+          pageTiming: compactPageTiming(pageTiming),
+          rendererOverlap: rendererOverlap(stallTimeline, pageTiming) });
+      }
+    } finally {
+      await sh(/^[0-9]{1,3}(\.[0-9]{1,3})?$/.test(original)
+        ? `settings put global animator_duration_scale ${original}`
+        : 'settings delete global animator_duration_scale').catch(() => {});
+    }
+    return { coldStarts: samples.length, reducedMotionSeen: samples.filter(row => row.reducedMotion === true).length,
+      baseline: 'CS01 / SF01 / SF02 in this run (normal motion)',
+      frames: summarizeStartupSkips(samples), probe: summarizeStartupStallProbe(samples),
+      phases: summarizeStallPhases(samples), renderer: summarizeRendererOverlap(samples) };
+  });
+  await productExitCheckpoint('after-reduced-motion');
+  await collectAnrEvents();
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
