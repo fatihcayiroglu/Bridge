@@ -56,6 +56,28 @@ test('a preference created after boot is reported as changed, not unchanged', ()
   assert.equal(result.expectedNow, true);
   assert.equal(result.changedSinceBoot, true);
 });
+test('early snapshot distinguishes channel-only rollback from server-key rollback without exposing values', () => {
+  const serverPreference = 'bridge:last-navigation:v1:server:user-1';
+  const s = storage([[preference, 'stale-channel'], [serverPreference, 'server-1']]);
+  const p = boot(s);
+  let result = p.inspect('user-1', 'server-1', 'expected');
+  assert.equal(result.expectedAtBoot, false);
+  assert.equal(result.serverKeyAtBoot, true);
+  assert.equal(result.serverExpectedAtBoot, true);
+  assert.equal(result.serverExpectedNow, true);
+  assert.equal(result.serverChangedSinceBoot, false);
+  s.setItem(serverPreference, 'private-other-server');
+  result = p.inspect('user-1', 'server-1', 'expected');
+  assert.equal(result.serverExpectedAtBoot, true);
+  assert.equal(result.serverExpectedNow, false);
+  assert.equal(result.serverChangedSinceBoot, true);
+  assert.doesNotMatch(JSON.stringify(result), /stale-channel|private|user-1|server-1/);
+  const missing = boot(storage([[preference, 'stale-channel']]))
+    .inspect('user-1', 'server-1', 'expected');
+  assert.equal(missing.serverKeyAtBoot, false);
+  assert.equal(missing.serverExpectedAtBoot, false);
+  assert.equal(missing.serverChangedSinceBoot, false);
+});
 test('probe fails closed for blocked, unknown or oversized localStorage', () => {
   assert.equal(boot({ get length() { throw Error('private'); } }).inspect('user','server','c').available, false);
   assert.equal(boot({ length: 513, key() { throw Error('unexpected'); } }).inspect('user','server','c').available, false);
