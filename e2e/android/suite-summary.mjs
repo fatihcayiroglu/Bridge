@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { LIFECYCLE_PHASES, lifecycleObservationPasses } from './lifecycle-reproduction.mjs';
+import { assessSuiteEvidence } from './suite-verdict.mjs';
 import path from 'node:path';
 
 const SUITE_HEADINGS = {
@@ -79,6 +80,14 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     evidence = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   } catch { /* reported as a missing run below */ }
   process.stdout.write(formatSuiteSummary(evidence));
+  const verdict = assessSuiteEvidence(evidence, {
+    expectedCommit: process.env.GITHUB_SHA ?? null,
+    expectedSuite: process.env.ANDROID_JOURNEY_SUITE || 'product',
+  });
+  if (verdict.status !== 'PASS') {
+    process.stdout.write('\n**Evidence verdict: FAIL (' + verdict.reason + ').**\n');
+    process.exitCode = 1;
+  }
   if (evidence?.suite === 'product') {
     let control = null;
     try {
