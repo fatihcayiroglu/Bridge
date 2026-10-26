@@ -23,7 +23,8 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers, parseAndroidCrashClock, summarizeAndroidJavaCrashes } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers } from './exit-diagnostics.mjs';
+import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -456,9 +457,7 @@ async function devToolsHttpProbe(appPid) {
 
 async function readAttachCrashClock() {
   if (MODE !== 'android') return null;
-  try {
-    return parseAndroidCrashClock(await androidFailureShell('date +%s.%N,%Y-%m-%dT%H:%M:%S,%z'));
-  } catch { return null; }
+  return readAndroidCrashClock(androidFailureShell);
 }
 
 async function webViewAttachEvidence(crashWindowStart = null) {
@@ -484,16 +483,8 @@ async function webViewAttachEvidence(crashWindowStart = null) {
     }
   }));
   const os = summarizeWebViewAttachEvidence(inputs, PKG);
-  let crashExits = null;
-  let crashWindowEnd = null;
-  if (crashWindowStart && /^[A-Za-z][A-Za-z0-9_.]{0,119}$/.test(PKG)) {
-    try {
-      crashExits = parseApplicationExits(await androidFailureShell(`dumpsys activity exit-info ${PKG}`), 32);
-    } catch { /* missing OS corroboration stays unknown */ }
-    crashWindowEnd = await readAttachCrashClock();
-  }
-  const appCrash = summarizeAndroidJavaCrashes(inputs.crash, PKG,
-    crashWindowStart, crashWindowEnd, crashExits);
+  const appCrash = await collectAndroidJavaCrashEvidence(androidFailureShell, PKG,
+    crashWindowStart, inputs.crash);
   const devtoolsHttp = await devToolsHttpProbe(inputs.pid);
   return {
     probeAvailable,

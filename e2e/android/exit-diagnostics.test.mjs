@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readAndroidCrashClock, collectAndroidJavaCrashEvidence } from './java-crash-probe.mjs';
 import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers, parseAndroidCrashClock, summarizeAndroidJavaCrashes } from './exit-diagnostics.mjs';
 
 test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit descriptions', () => {
@@ -2167,10 +2168,158 @@ test('DL02 captures its own clock before cold launch and preserves strict origin
   assert.match(dl02, /timeout: 30_000/);
   const evidence = code.slice(code.indexOf('async function webViewAttachEvidence('), code.indexOf('async function pid()'));
   assert.match(evidence, /logcat -d -b crash -v epoch -t 200/);
-  assert.match(evidence, /parseApplicationExits\(await androidFailureShell\(`dumpsys activity exit-info \$\{PKG\}`\), 32\)/);
-  assert.match(evidence, /const appCrash = summarizeAndroidJavaCrashes\(inputs.crash, PKG,/);
+  assert.match(evidence, /const appCrash = await collectAndroidJavaCrashEvidence\(androidFailureShell, PKG,/);
+  const probe = readFileSync(new URL('./java-crash-probe.mjs', import.meta.url), 'utf8');
+  assert.match(probe, /parseApplicationExits\(await shell\(`dumpsys activity exit-info \$\{pkg\}`\), 32\)/);
+  assert.match(probe, /return summarizeAndroidJavaCrashes\(rawCrashLog, pkg, start, end, exits\)/);
   assert.doesNotMatch(evidence, /JSON\.stringify\((?:inputs|crashExits|crashWindowStart|crashWindowEnd)\)|log\((?:inputs|crashExits)/);
   assert.match(evidence, /timeout = 60_000/);
   assert.match(evidence, /throw new Error\(`Android WebView attach/);
   assert.match(evidence, /\{ cause: err \}/);
+});
+
+test('Java crash probe shares the real parser, closes the device window after OS reading and keeps failed probes unknown', async () => {
+  const calls = [];
+  const endRaw = (crashBaseMs / 1000 + 61) + '.000000000,2026-10-26T00:01:01,+0000';
+  const ownRaw = `ApplicationExitInfo #0:\n timestamp=${crashClock(1500).localAt.replace('T', ' ')}\n pid=5101 process=${crashPackage} reason=4 (CRASH)\n subreason=0 (UNKNOWN)\n description=owner@example.com private`;
+  const shell = async command => {
+    calls.push(command);
+    if (command.startsWith('dumpsys activity exit-info ')) return ownRaw;
+    if (command === 'date +%s.%N,%Y-%m-%dT%H:%M:%S,%z') return endRaw;
+    throw new Error('unexpected raw private command');
+  };
+  const result = await collectAndroidJavaCrashEvidence(shell, crashPackage, crashClock(), javaCrashLog());
+  assert.deepEqual(result, crashSummary());
+  assert.deepEqual(calls, [`dumpsys activity exit-info ${crashPackage}`, 'date +%s.%N,%Y-%m-%dT%H:%M:%S,%z']);
+  assert.doesNotMatch(JSON.stringify(result), /5101|179297|owner@|private|com\.bridge/);
+  const failed = async () => { throw new Error('private device paths and user data'); };
+  assert.equal(await readAndroidCrashClock(failed), null);
+  const unknown = await collectAndroidJavaCrashEvidence(failed, crashPackage, crashClock(), javaCrashLog());
+  assert.equal(unknown.windowValid, false);
+  assert.equal(unknown.exitInfoAvailable, false);
+  assert.equal(unknown.coverage, 'unknown');
+  calls.length = 0;
+  assert.equal((await collectAndroidJavaCrashEvidence(shell, crashPackage, null, javaCrashLog())).coverage, 'unknown');
+  assert.equal((await collectAndroidJavaCrashEvidence(shell, 'bad package; rm', crashClock(), javaCrashLog())).coverage, 'unknown');
+  assert.deepEqual(calls, []);
+});
+
+test('CR00 is a debug-only post-product real-emulator control using the same evidence pipeline', () => {
+  const android = new URL('../../mobile/android/app/src/', import.meta.url);
+  assert.match(readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8'), /android:name="com\.bridge\.app\.JavaCrashControlActivity"/);
+  assert.doesNotMatch(readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8'), /JavaCrashControlActivity/);
+  assert.ok(readFileSync(new URL('debug/java/com/bridge/app/JavaCrashControlActivity.java', android), 'utf8').length > 0);
+  const control = readFileSync(new URL('./java-crash-control.mjs', import.meta.url), 'utf8');
+  assert.match(control, /collectAndroidJavaCrashEvidence\(shell, pkg, start, raw\)/);
+  assert.equal((control.match(/shell\(`am start -n/g) || []).length, 1);
+  assert.ok(control.indexOf("new ControlFailure('not-emulator')") < control.indexOf('shell(`am force-stop'));
+  assert.match(control, /actual\.exception !== 'illegal-state'/);
+  assert.match(control, /process\.exitCode = result\.status === 'PASS' \? 0 : 1/);
+  assert.doesNotMatch(control, /console\.(?:log|error)\((?:raw|error)|error\.(?:message|stack)|logcat -c/);
+  const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
+  assert.ok(runner.indexOf('node android/java-crash-control.mjs') > runner.indexOf('node android/android-journeys.mjs'));
+  assert.match(runner, /"\$status" -eq 0 && "\$control_status" -ne 0/);
+});
+
+test('runner propagates both product and CR00 failures (shell contract, not Android acceptance)', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync: read, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-crash-runner-'));
+  try {
+    const bin = join(root, 'bin');
+    mkdirSync(bin); mkdirSync(join(root, 'e2e'));
+    writeFileSync(join(bin, 'adb'), '#!/bin/sh\nexit 0\n');
+    writeFileSync(join(bin, 'node'), `#!/bin/sh
+printf '%s\\n' "$1" >> "$CONTROL_RUNNER_CALLS"
+case "$1" in
+ android/android-journeys.mjs) exit "$PRODUCT_TEST_EXIT";;
+ android/java-crash-control.mjs) exit "$CONTROL_TEST_EXIT";;
+ *) exit 99;;
+esac
+`);
+    chmodSync(join(bin, 'adb'), 0o755); chmodSync(join(bin, 'node'), 0o755);
+    const script = new URL('./run-emulator-journeys.sh', import.meta.url).pathname;
+    for (const [product, control, profile, expected] of [
+      [0, 0, 'product', 0], [17, 0, 'product', 17], [0, 23, 'product', 23],
+      [17, 23, 'product', 17], [0, 23, 'unknown-defaults-to-product', 23],
+      [0, 23, 'upstream-webview-controls', 0],
+    ]) {
+      const callsFile = join(root, 'calls'); writeFileSync(callsFile, '');
+      const run = spawnSync('bash', [script], { cwd: root, encoding: 'utf8',
+        env: { ...process.env, PATH: bin + ':' + process.env.PATH, APK_PATH: join(root, 'fixture.apk'),
+          CONTROL_RUNNER_CALLS: callsFile, PRODUCT_TEST_EXIT: String(product), CONTROL_TEST_EXIT: String(control),
+          ANDROID_JOURNEY_SUITE: profile } });
+      assert.equal(run.status, expected, run.stdout + run.stderr);
+      assert.deepEqual(read(callsFile, 'utf8').trim().split('\n'), profile === 'upstream-webview-controls'
+        ? ['android/android-journeys.mjs'] : ['android/android-journeys.mjs', 'android/java-crash-control.mjs']);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CR00 rejects physical devices and production packages before any mutating adb call (CLI guard unit test)', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, copyFileSync, readFileSync: read, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-crash-cli-guard-'));
+  try {
+    const bin = join(root, 'bin'); mkdirSync(bin);
+    for (const file of ['java-crash-control.mjs', 'java-crash-probe.mjs', 'exit-diagnostics.mjs']) {
+      copyFileSync(new URL('./' + file, import.meta.url), join(root, file));
+    }
+    writeFileSync(join(bin, 'adb'), '#!/bin/sh\nprintf "%s\\n" "$2" >> "$CRASH_GUARD_CALLS"\nprintf "0\\n"\n');
+    chmodSync(join(bin, 'adb'), 0o755);
+    const callsFile = join(root, 'calls');
+    for (const [pkg, failure, expectedCalls] of [
+      ['com.bridge.app.debug', 'not-emulator', ['getprop ro.kernel.qemu', 'getprop ro.boot.qemu']],
+      ['com.bridge.app', 'invalid-debug-package', []],
+    ]) {
+      writeFileSync(callsFile, '');
+      const run = spawnSync(process.execPath, [join(root, 'java-crash-control.mjs')], { cwd: root, encoding: 'utf8',
+        env: { ...process.env, PATH: bin + ':' + process.env.PATH, ANDROID_PKG: pkg, CRASH_GUARD_CALLS: callsFile } });
+      assert.equal(run.status, 1, run.stdout + run.stderr);
+      const result = JSON.parse(read(join(root, 'results/java-crash-control.json'), 'utf8'));
+      assert.equal(result.status, 'FAIL');
+      assert.equal(result.failure, failure);
+      assert.equal(result.evidenceCategory, 'UNKNOWN');
+      assert.equal(result.evidence, null);
+      const calls = read(callsFile, 'utf8').trim();
+      assert.deepEqual(calls ? calls.split('\n') : [], expectedCalls);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('job summary keeps CR00 separate and fails missing, stale or non-emulator calibration evidence', async () => {
+  const { formatCrashControlSummary } = await import('./suite-summary.mjs');
+  const { mkdtempSync, writeFileSync, readFileSync: read, rmSync, existsSync, unlinkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const commit = 'a'.repeat(40);
+  const product = { suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR', results: [] };
+  const control = { case: 'CR00', commit, status: 'PASS', evidenceCategory: 'AUTOMATED / EMULATOR',
+    error: 'private owner@example.com token secret' };
+  const root = mkdtempSync(join(tmpdir(), 'bridge-crash-summary-'));
+  try {
+    const evidencePath = join(root, 'android-evidence.json');
+    const controlPath = join(root, 'java-crash-control.json');
+    writeFileSync(evidencePath, JSON.stringify(product));
+    for (const [record, expectedStatus] of [[control, 0], [null, 1],
+      [{ ...control, commit: 'b'.repeat(40) }, 1], [{ ...control, status: 'SKIPPED' }, 1],
+      [{ ...control, evidenceCategory: 'AUTOMATED / REAL DEVICE' }, 1], [{ ...control, case: 'other' }, 1]]) {
+      if (existsSync(controlPath)) unlinkSync(controlPath);
+      if (record) writeFileSync(controlPath, JSON.stringify(record));
+      const run = spawnSync(process.execPath, [new URL('./suite-summary.mjs', import.meta.url).pathname, evidencePath], { encoding: 'utf8' });
+      assert.equal(run.status, expectedStatus, run.stderr);
+      assert.match(run.stdout, /CR00 Java crash diagnostic calibration/);
+      assert.match(run.stdout, /Totals: pass=0 fail=0 skipped=0 measured=0/);
+      assert.doesNotMatch(run.stdout, /owner@|token|secret|private/);
+      assert.equal(formatCrashControlSummary(product, record).status, expectedStatus === 0 ? 'PASS' : 'FAIL');
+    }
+    // A different profile's report never borrows a product CR00 PASS.
+    assert.equal(formatCrashControlSummary({ ...product, suite: 'upstream-webview-controls' }, control).status, 'FAIL');
+    assert.equal(JSON.parse(read(evidencePath, 'utf8')).results.length, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

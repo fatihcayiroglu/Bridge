@@ -60,20 +60,46 @@ Missing or rotated records cannot prove there was no crash.
 
 All 87 original journey assertion lines and all 82 original parser tests remain.
 DL02 retains the 60-second attachment deadline and its original channel/session
-assertions. No retries, cold-recovery substitution, skips, product code, native
-Android source, dependencies or workflow changes are introduced. The additional
+assertions. No retries, cold-recovery substitution, skips, product code,
+production Android source or dependencies are introduced. The additional
 clock/ADB reads add observation overhead; recurrence frequency is not a causal
 experiment. Probe failures leave unknown evidence and preserve the original FAIL.
 
-The parser suite now has **96 tests**, all passing with zero skips/todo cases.
+The parser/contract suite now has **101 tests**, all passing with zero skips/todo cases.
 It covers timezone and epoch consistency, foreign processes, emitter/identity/OS
 PID mismatches, stale/future records, exact-window narrowing, OS reason matching,
 PID reuse, interleaving, unknown/spoofed classes, bounded records/causes/input,
 truncated records, privacy and harness wiring. Deliberately removing OS
 corroboration, exact-window narrowing or process equality each caused relevant
-negative-control tests to fail. Original code was restored and 96/96 passed.
+negative-control tests to fail. Original code was restored and the full suite passed.
 The production client build and mobile Jest **142/142**, with no skipped or todo
 tests, also passed locally; the build ran before the packaged-shell tests.
+
+### CR00: real-emulator calibration after product acceptance
+
+A debug-only `JavaCrashControlActivity` finishes its empty Activity and posts a
+known `IllegalStateException` on its main thread after 500 ms. It initializes
+no Bridge/WebView and reads no user data. CR00 refuses production package names
+and devices that do not identify themselves as emulators, before any mutating
+ADB command. The release manifest has no control and the release variant
+compiles without its debug source set.
+
+The emulator runner invokes CR00 **after** the product runner has exited and
+written its evidence. It cannot warm the initial startup, change an earlier
+ANR window or insert an expected crash into the product exit ledger. It launches
+the control once and waits for asynchronous OS recording; it never relaunches,
+clears logs or injects mock evidence. It requires one OS-correlated main-thread
+`illegal-state` record through the exact shared probe/parser used by DL02.
+
+CR00 writes a separate, enum-only `java-crash-control.json` with its own status;
+it is not counted as a product journey PASS. The CI job fails when either
+product journeys or CR00 fail, preserving the original product exit code if
+both fail. Shell-contract tests verify this matrix, including running CR00
+after a product failure. CLI guard unit tests verify physical devices and
+production packages are rejected without force-stop/start calls. These local
+stub-based contracts are not native acceptance; actual CR00 requires CI.
+The job summary reports CR00 separately and fails missing, stale, mismatched or
+non-emulator control evidence; it never inflates the product PASS count.
 
 Real-device exception attribution still needs an actual recurrence; synthetic
 parser fixtures and a green emulator journey do not establish the failure's
