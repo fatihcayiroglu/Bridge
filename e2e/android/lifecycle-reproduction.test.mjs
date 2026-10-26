@@ -169,3 +169,26 @@ test('EX01 records pre-force-stop preference and channel equality before cold st
   assert.ok(coldBranch >= 0 && preStop > coldBranch && forceStop > preStop);
   assert.ok(source.includes('preStop: facts.ex01ColdStartPreStop ?? { available: false }'));
 });
+
+test('EX01 classifies foreign/system/own focus without leaking components or weakening the focus gate', async () => {
+  for (const [owner, windowText] of [
+    ['bridge-main', window],
+    ['bridge-other', `mCurrentFocus=Window{abc u0 ${pkg}/com.bridge.app.OtherActivity}`],
+    ['system-ui', 'mCurrentFocus=Window{abc u0 com.android.systemui/com.android.systemui.SomePanel}'],
+    ['launcher', 'mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher}'],
+    ['other', 'mCurrentFocus=Window{abc u0 private.example/.SecretActivity}'],
+    ['unknown', 'mCurrentFocus=null'],
+  ]) {
+    const row = await observeLifecycleWindow(shell('', windowText), pkg, start);
+    assert.equal(row.focusOwner, owner);
+    assert.equal(row.nativeWindowFocused, owner === 'unknown' ? null : owner === 'bridge-main');
+    assert.doesNotMatch(JSON.stringify(row), /SecretActivity|SomePanel|Launcher|OtherActivity|private\.example/);
+  }
+  const many = await observeLifecycleWindow(shell('', [
+    'mCurrentFocus=Window{abc u0 private.example/.OtherActivity}', window,
+  ].join('\n')), pkg, start);
+  assert.equal(many.focusEntries, 2);
+  assert.equal(many.focusOwner, 'other');
+  assert.equal(many.ownMainInSecondaryEntry, true);
+  assert.equal(many.nativeWindowFocused, false);
+});
