@@ -2450,6 +2450,9 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "Нет установленных ботов или вебхуков",
   "automation_link_exemption_save_failed": "Не удалось сохранить исключение интеграции.",
   "automation_link_exemption_saved": "Исключение интеграции сохранено.",
+  "native_auth_consent_title": "Войти в приложение Bridge?",
+  "native_auth_consent_message": "Продолжайте, только если вы начали вход из приложения Bridge на этом устройстве. Приложение войдёт как {name}.",
+  "native_auth_consent_continue": "Продолжить в приложении",
 };
 
 export default translations;

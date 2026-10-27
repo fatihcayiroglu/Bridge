@@ -187,6 +187,14 @@ export function makeMediaToken(user: UserLike): string {
   );
 }
 
+/** Seconds until the access-token lifetime ends, as a client-facing hint. */
+export function accessTokenLifetimeSeconds(token: string): number {
+  const decoded = jwt.decode(token) as { exp?: unknown; iat?: unknown } | null;
+  return decoded && Number.isInteger(decoded.exp) && Number.isInteger(decoded.iat)
+    ? Math.max(0, (decoded.exp as number) - (decoded.iat as number))
+    : 0;
+}
+
 export function makeToken(user: UserLike): string {
   const flags = Array.isArray(user.flags) ? user.flags : [];
   const adminByClaims = Boolean(user.isAdmin) || user.role === 'admin' || flags.includes('admin');
@@ -209,6 +217,14 @@ export function makeToken(user: UserLike): string {
 // This allows true rotation: using a token once invalidates it.
 // family: her giriş oturumuna yeni bir UUID atanır — token zinciri izlenir.
 export async function makeRefreshToken(user: UserLike): Promise<string> {
+  return (await makeRefreshSession(user)).token;
+}
+
+/**
+ * Same as makeRefreshToken, and also reports the new session's family so a
+ * caller can later revoke exactly this session chain (native code replay).
+ */
+export async function makeRefreshSession(user: UserLike): Promise<{ token: string; family: string }> {
   const token = crypto.randomBytes(48).toString('hex');
   const family = crypto.randomUUID
     ? crypto.randomUUID()
@@ -223,7 +239,7 @@ export async function makeRefreshToken(user: UserLike): Promise<string> {
     family,
     tokenVersion: parseTokenVersion(user.tokenVersion),
   });
-  return token;
+  return { token, family };
 }
 
 export interface RotateResult {
@@ -367,6 +383,12 @@ export async function revokeRefreshSession(rawToken: string): Promise<string | n
   const row = await Auth.findRefreshToken(hash) as { userId?: unknown } | null;
   await Auth.revokeRefreshToken(hash);
   return row && typeof row.userId === 'string' && row.userId ? row.userId : null;
+}
+
+/** Ends one refresh session chain (every rotation of one sign-in). */
+export async function revokeRefreshFamily(family: string): Promise<void> {
+  if (typeof family !== 'string' || !family) return;
+  await Auth.revokeByFamily(family);
 }
 
 export async function revokeAllRefreshTokens(userId: string): Promise<void> {
