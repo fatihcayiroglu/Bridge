@@ -161,6 +161,126 @@ reviews, exact-head checks, multi-node/media failures, unresolved product-policy
 decisions and external-device gates remain outstanding. No merge or deployment
 was performed.
 
+## Evidence update — 2026-10-27 afternoon
+
+Supplements the checkpoints above; nothing here is acceptance. No merge, no
+deployment; #375 and `main` are untouched.
+
+### Multi-node SFU ownership (#503 `13e6fef2`)
+
+- `scenarios=sfu` [40502887882](https://github.com/fatihcayiroglu/Bridge/actions/runs/40502887882):
+  9 PASS / 0 FAIL / 0 skipped / 2 INFO on PostgreSQL 18.6, Redis 8.0.5 and
+  moto S3 with three Bridge processes. Every SFU verdict rests on observed
+  router events delivered over harness-only IPC (no channel ids in routine
+  logs):
+  - SFU-01: one router per race, creator observed in 6/6 races.
+  - SFU-06: `intervals=A[3059ms] B[open] overlaps=[] anomalies=0`.
+  - SFU-08: `intervals=A[open] overlaps=[] anomalies=0`.
+  - SFU-04 `routers=none` counts only because every node acknowledged the
+    IPC flush barrier.
+- Full matrix [40503812552](https://github.com/fatihcayiroglu/Bridge/actions/runs/40503812552):
+  per-node job 93 PASS / 2 FAIL\* / 14 INFO, 0 skipped; shared job green.
+  The FAIL\* rows are UP-02 and UP-06, the documented per-node upload
+  limitations, **not fixed**. #502's earlier full run 40489599746 was
+  89 PASS / 6 FAIL including the four SFU evidence gaps.
+- Open: review of the `BRIDGE_SFU_EVIDENCE_IPC=1` hook. SFU-02's detail
+  line still prints two disposable lab UUIDs.
+
+### iOS I07 (#502 `64b1c215`, diagnostics in #504 `3aa15253`)
+
+- #502's exact-head [iOS 40495735869](https://github.com/fatihcayiroglu/Bridge/actions/runs/40495735869)
+  remains **FAIL** (I07-XCUITest: no OS confirmation within 30 s). I07 passed
+  on the SwiftPM build of `7f574386`.
+- That run's smoke misattributed a modal. SpringBoard set
+  `systemModalAlert` on Bridge's scene 3 s after launch, 25 s **before** the
+  URL was opened, and the app's deactivation reason 13 was never removed. The
+  smoke still reported I07 UNVERIFIED as if that were the open confirmation.
+  #504 fixes the classification: a modal logged only before the URL request
+  is now FAIL. I07 also records the category of any system alert up before
+  the request (and at timeout), never its text, and accepts nothing.
+- On #504's head, with product code identical to `64b1c215`, runs
+  [40503639823](https://github.com/fatihcayiroglu/Bridge/actions/runs/40503639823)
+  and [40506367411](https://github.com/fatihcayiroglu/Bridge/actions/runs/40506367411)
+  both passed I07-XCUITest, the smoke I07 and D2L01-iOS. The I07 failure is
+  **intermittent**, not deterministic for the source build.
+- Lead (unproven): `tccd` logs `Handling access request to
+  kTCCServiceMicrophone` from Bridge about 4 s after every launch, before the
+  web app is ready. No Bridge JS calls a media API at startup and no native
+  plugin touches the audio session at load, so it most likely comes from
+  WKWebView. In the passing runs it produced no prompt.
+- Four of four runs on #504's head passed (40503639823, 40506367411,
+  40520392524, 40520397225). No failure has been caught with attribution yet.
+
+### Android N02 reconnect resync (#505)
+
+- #497's [40470478921](https://github.com/fatihcayiroglu/Bridge/actions/runs/40470478921)
+  N02 failure remains the only failure; its cause is **not established**.
+- #505 now records where a resync stops, counting history requests inside the
+  page. The packaged app routes REST through CapacitorHttp, so Playwright's
+  network events cannot see them; #505's first version was blind to this,
+  which is corrected in `b8858503`.
+- Valid evidence from four passing runs: 1 reconnect event, 1 history
+  request with status 200, message visible after 2.2–3.4 s. These passes are
+  not a fix.
+- A product gap that produces N02's symptom is fixed in draft #506
+  (`e75ddaab`). A network failure of the post-reconnect re-read was never
+  retried while the socket stayed up; REST uses CapacitorHttp and the socket
+  its own WebSocket, so the re-read can fail right after a network change.
+  It is now retried after 1/2/4 s while the socket is connected. 2 of 5 new
+  tests fail before the change; the client suite passes 5,824 tests with 0
+  skipped and the coverage gates. It is not shown to be the cause of the one
+  N02 failure.
+
+### Android #209 cold-start ANR
+
+- Reproduced on #505 `46fecc44` ([40513437976](https://github.com/fatihcayiroglu/Bridge/actions/runs/40513437976)):
+  - CS01 cold start 2 hit an ANR, category `input_dispatch_timeout` on a focus
+    event, with the main thread in `Native / graphics / frame-sync`.
+  - L01 and ANR01 failed as a consequence.
+  - The base had passed twice earlier the same day.
+- Environment: the CI emulator uses `-gpu swiftshader_indirect` (every frame is
+  rasterised in software on the host). SF05's plain WebView loading the same
+  content tracks the Capacitor activity run by run, so runner speed sets most of
+  the variance.
+- A code-size cause was ruled out for the higher stalls on the #497 line versus
+  the #495 line: CSS identical, +22 KB JS, and Chromium at 6× throttle gives the
+  same first paint, boot long task and DOM size for both heads.
+- #499's first version (restore two frames after DOMContentLoaded) showed no
+  reduction. `a60f0064` keeps effects off until the page has window focus (or
+  first input, or a 10 s fallback) and records the trigger.
+- Measured on `720a8f3a` (#505 `46fecc44` + `a60f0064`): runs 40520286564,
+  40520292316 and 40520298322, 0 ANRs (one run failed DL02, the
+  cold-deep-link class #501 addresses).
+  - In **all 9** cold starts the trigger was `focused-at-load`: the window
+    had focus before DOMContentLoaded. The focus event that times out in every
+    #209 ANR is handled before Bridge's content exists. That matches the ANR
+    run, whose largest stalls were `before-displayed` (6,544 ms) and
+    `displayed-to-attached`.
+  - CSS deferral cannot act there. SF02/CS01 stay within the baseline range
+    (5 runs, 1 ANR); SF06's drop (2.6–3.7 s to 1.3–1.9 s) is the plain-WebView
+    control, which never gets focus.
+  - #499 is **not** a #209 fix. The next candidates are pre-content: Activity
+    creation, WebView provider init and splash frames under software
+    rendering.
+- #209 stays **OPEN**. The physical device remains EXTERNAL.
+
+### Media IMP-04
+
+- Failed once on `ca49e0b2` ([40470505863](https://github.com/fatihcayiroglu/Bridge/actions/runs/40470505863)):
+  A→B video dropped to 0 fps under the severe 150 kbit/s profile and did not
+  recover within 90 s pre-squeeze, 20 s squeeze and 90 s post-squeeze, while
+  audio and B→A continued.
+- Passed on `d0a20228` (full resolution again after 20 s) and in the scheduled
+  run on `main` (40485237274).
+- The lab runs through the real SFU. The client never pauses consumers for
+  bandwidth, so recovery is the SFU's downlink congestion control, and the lab
+  records no consumer-layer or estimate state. **Root cause not established**;
+  the next step is SFU-side consumer layer/score evidence.
+- Separately, `webrtc.ts`'s P2P bitrate loop reads `packetsLost` from
+  `outbound-rtp`, which never carries it, so its loss branches cannot fire.
+  That path is not used in the SFU lab and only raises the cap; it is
+  recorded, not changed.
+
 ## Where the work is
 
 - **`main` `c061d72f`** (2026-10-23) is the last merge. Since then nothing has
@@ -257,12 +377,12 @@ and the Prometheus labels (#385).
 | Corrupt local DB, storage pressure, local search boundaries | client unit suites only (`local-first-*`, `outbox-store-*`); no real-browser test yet |
 | Quality Gate green on the final P7 head | dispatched on #497 |
 | Real PostgreSQL / Redis / S3, zero skips | local 454 pass / 0 fail / 14 skipped (S3 only, no MinIO locally); CI decides |
-| Android acceptance (CS01, L01–L04, ANR01, EX01, NAVSTORE, D2L01, PD01) | #495 `648d8b3c` all PASS; `21a1958a` failed CS01/L01/ANR01 on an ANR. **#209 open** |
+| Android acceptance (CS01, L01–L04, ANR01, EX01, NAVSTORE, D2L01, PD01) | **FAIL, intermittent**: #209 ANR reproduced on #505 `46fecc44` (40513437976; CS01/L01/ANR01). ANR-free runs on #505 `0abe3b01`/`b8858503` and #495 `139024f6` (×2; the second failed DL02) do not clear it. **#209 open** |
 | Android physical device | EXTERNAL: procedure in `P7_ANDROID_209_DEVICE_STARTUP_PROCEDURE_20261027.md`, not performed |
-| iOS | simulator only; I07 UNVERIFIED (#425 adds the native confirmation path); physical device EXTERNAL |
+| iOS | Simulator only. #502 exact-head I07-XCUITest **FAIL** (40495735869); I07 passed twice on #504 with identical product code (intermittent). Physical device EXTERNAL |
 | Desktop Windows / macOS / Linux X11 / Wayland | dispatched on #497; physical GNOME/KDE EXTERNAL (#396, #416) |
 | Browsers Chromium / Firefox / WebKit | Quality Gate E2E; WebKit edit/delete flake (#496 evidence in #497), cause not established |
-| Federation, self-host, multi-node, media, abuse, step-up labs | dispatched on #497 |
+| Federation, self-host, multi-node, media, abuse, step-up labs | #497 `ca49e0b2`: federation, self-host, abuse and step-up green; media FAIL (IMP-04, cause open); multi-node FAIL (SFU evidence gap, closed by #503: sfu 9/9, full 93 PASS / 2 FAIL\* known UP-02/UP-06) |
 | Post-merge `main` green | requires the owner's merge decisions |
 | #494 visual change | OWNER: artifact and options on #494 |
 
