@@ -132,6 +132,14 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- #209 SF05: Bridge's packaged web content (assets/public) in a plain
+         WebView WITHOUT Capacitor, to separate page cost from Capacitor
+         start-up. Same https://localhost origin. Debug only. -->
+    <activity
+      android:name="com.bridge.app.WebViewBridgeContentBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
   </application>
 
 </manifest>

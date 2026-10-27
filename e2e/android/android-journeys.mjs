@@ -3021,6 +3021,53 @@ async function main() {
       applied, reloads, processExit, probeMalformed: timeline?.malformed ?? null };
   });
 
+  // #209 SF05: #494 (gradients) removed the warm and steady-state stalls,
+  // yet cold starts still show 3-4 s render dispatches that begin before the
+  // Activity is displayed or before the page is reachable. A bare WebView
+  // stays under 0.4 s (CS00). SF05 separates Bridge's page from Capacitor
+  // start-up: cold starts alternating MainActivity (Capacitor + Bridge) with
+  // a DEBUG-only Activity loading the same packaged assets in a plain WebView
+  // without Capacitor, each observed for the same fixed window with the same
+  // Choreographer and stall-probe evidence. The control reports when its page
+  // finished loading, so an empty page cannot pass for a cheap one. Runs last;
+  // bounded per stage; measurement only.
+  await measure('SF05', 'cold-start stalls: Capacitor MainActivity vs Bridge content in a plain WebView (alternating; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android cold starts and stall probe required');
+    const step = boundedStage('SF05');
+    const OBSERVE_MS = 8_000;
+    const CONTENT = 'com.bridge.app.WebViewBridgeContentBaselineActivity';
+    const samples = [];
+    const plan = [1, 2, 3].flatMap(attempt => [{ attempt, kind: 'capacitor-main' }, { attempt, kind: 'plain-webview-content' }]);
+    for (const { attempt, kind } of plan) {
+      const tag = `${kind}-${attempt}`;
+      await step(`stop-${tag}`, () => sh(`am force-stop ${PKG}`), 20_000);
+      const out = await step(`launch-${tag}`, () => sh(`am start -W -n ${kind === 'capacitor-main' ? ACTIVITY : `${PKG}/${CONTENT}`}`), 60_000);
+      const appPid = await step(`pid-${tag}`, () => pid(), 20_000);
+      await sleep(OBSERVE_MS);
+      const finished = kind === 'capacitor-main' ? null : await step(`page-${tag}`, () => androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s BridgeContentControl:I '*:S'"), 20_000)
+        .then(raw => {
+          const m = /event=page-finished ms=([0-9]{1,6})/.exec(String(raw));
+          return m ? Number(m[1]) : null;
+        }).catch(() => null);
+      samples.push({ attempt, kind, launched: /Status: ok/.test(String(out)),
+        pageFinishedMs: finished,
+        skippedFrames: await startupSkips(appPid), mainThreadStalls: await startupStalls(appPid) });
+    }
+    await step('stop-final', () => sh(`am force-stop ${PKG}`), 20_000).catch(() => {});
+    const byKind = Object.fromEntries(['capacitor-main', 'plain-webview-content'].map(kind => {
+      const rows = samples.filter(row => row.kind === kind);
+      return [kind, { launched: rows.filter(row => row.launched).length, frames: summarizeStartupSkips(rows),
+        probe: summarizeStartupStallProbe(rows) }];
+    }));
+    const contentRows = samples.filter(row => row.kind === 'plain-webview-content');
+    return { observeMs: OBSERVE_MS, order: 'alternating, capacitor-main first',
+      contentPageFinished: contentRows.filter(row => Number.isFinite(row.pageFinishedMs)).length,
+      contentPageFinishedMaxMs: Math.max(0, ...contentRows.map(row => row.pageFinishedMs ?? 0)),
+      applied: samples.every(row => row.launched) && contentRows.every(row => Number.isFinite(row.pageFinishedMs)),
+      byKind };
+  });
+
   peerSock.close();
 }
 

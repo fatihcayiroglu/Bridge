@@ -278,7 +278,7 @@ test('#209 SF03 windows count stalls by start and refuse an uncovered window', (
 
 test('#209 SF04 is a same-process warm-reload ABA, verified per reload, bounded and run last', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const sf04 = source.slice(source.indexOf("await measure('SF04'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  const sf04 = source.slice(source.indexOf("await measure('SF04'"), source.indexOf("await measure('SF05'"));
   assert.ok(source.indexOf("await measure('SF04'") > source.indexOf("await measure('SF03'"));
   assert.match(sf04, /\['normal-a', false\], \['blobs-hidden', true\], \['normal-b', false\]/);
   // Hidden from document start, only while the flag is set; the flag is always cleared.
@@ -296,4 +296,27 @@ test('#209 SF04 is a same-process warm-reload ABA, verified per reload, bounded 
   assert.doesNotMatch(sf04, /settings (put|delete)/);
   assert.doesNotMatch(sf04, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.[a-zA-Z]+|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
   assert.doesNotMatch(sf04, /assert\(/);
+});
+
+test('#209 SF05 alternates Capacitor and plain-WebView Bridge content cold starts, proves the page loaded, runs last', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const sf05 = source.slice(source.indexOf("await measure('SF05'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  assert.ok(source.indexOf("await measure('SF05'") > source.indexOf("await measure('SF04'"));
+  assert.match(sf05, /\[1, 2, 3\]\.flatMap\(attempt => \[\{ attempt, kind: 'capacitor-main' \}, \{ attempt, kind: 'plain-webview-content' \}\]\)/);
+  assert.match(sf05, /com\.bridge\.app\.WebViewBridgeContentBaselineActivity/);
+  // Same fixed window and evidence for both kinds.
+  assert.match(sf05, /await sleep\(OBSERVE_MS\);/);
+  assert.match(sf05, /skippedFrames: await startupSkips\(appPid\), mainThreadStalls: await startupStalls\(appPid\)/);
+  // An unloaded control page cannot pass for a cheap one.
+  assert.match(sf05, /contentRows\.every\(row => Number\.isFinite\(row\.pageFinishedMs\)\)/);
+  assert.match(sf05, /const step = boundedStage\('SF05'\);/);
+  assert.doesNotMatch(sf05, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.[a-zA-Z]+|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
+  assert.doesNotMatch(sf05, /assert\(/);
+  const control = readFileSync(new URL('../../mobile/android/app/src/debug/java/com/bridge/app/WebViewBridgeContentBaselineActivity.java', import.meta.url), 'utf8');
+  assert.doesNotMatch(control, /com\.getcapacitor|addJavascriptInterface/);
+  assert.match(control, /if \(path\.contains\("\.\."\)\) return null;/);
+  assert.match(control, /"event=page-finished ms=" \+ Math\.min\(/);
+  const manifest = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml', import.meta.url), 'utf8');
+  assert.match(manifest, /android:name="com\.bridge\.app\.WebViewBridgeContentBaselineActivity"/);
+  assert.doesNotMatch(readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml', import.meta.url), 'utf8'), /WebViewBridgeContentBaselineActivity/);
 });
