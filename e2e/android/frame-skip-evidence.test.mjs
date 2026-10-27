@@ -300,7 +300,7 @@ test('#209 SF04 is a same-process warm-reload ABA, verified per reload, bounded 
 
 test('#209 SF05 alternates Capacitor and plain-WebView Bridge content cold starts, proves the page loaded, runs last', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const sf05 = source.slice(source.indexOf("await measure('SF05'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  const sf05 = source.slice(source.indexOf("await measure('SF05'"), source.indexOf("await measure('SF06'"));
   assert.ok(source.indexOf("await measure('SF05'") > source.indexOf("await measure('SF04'"));
   assert.match(sf05, /\[1, 2, 3\]\.flatMap\(attempt => \[\{ attempt, kind: 'capacitor-main' \}, \{ attempt, kind: 'plain-webview-content' \}\]\)/);
   assert.match(sf05, /com\.bridge\.app\.WebViewBridgeContentBaselineActivity/);
@@ -319,4 +319,22 @@ test('#209 SF05 alternates Capacitor and plain-WebView Bridge content cold start
   const manifest = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml', import.meta.url), 'utf8');
   assert.match(manifest, /android:name="com\.bridge\.app\.WebViewBridgeContentBaselineActivity"/);
   assert.doesNotMatch(readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml', import.meta.url), 'utf8'), /WebViewBridgeContentBaselineActivity/);
+});
+
+test('#209 SF06 cold-starts fixed CSS variants in two opposite rounds and counts only confirmed starts', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const sf06 = source.slice(source.indexOf("await measure('SF06'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  assert.ok(source.indexOf("await measure('SF06'") > source.indexOf("await measure('SF05'"));
+  assert.match(sf06, /const VARIANTS = \['none', 'no-filters', 'no-shadows', 'no-effects'\];/);
+  assert.match(sf06, /\[\.\.\.VARIANTS, \.\.\.\[\.\.\.VARIANTS\]\.reverse\(\)\]/);
+  assert.match(sf06, /--es variant \$\{variant\}/);
+  assert.match(sf06, /variantConfirmed: logged === variant/);
+  assert.match(sf06, /row\.launched && row\.variantConfirmed && Number\.isFinite\(row\.pageFinishedMs\)/);
+  assert.match(sf06, /const step = boundedStage\('SF06'\);/);
+  assert.doesNotMatch(sf06, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.[a-zA-Z]+|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
+  assert.doesNotMatch(sf06, /assert\(/);
+  const control = readFileSync(new URL('../../mobile/android/app/src/debug/java/com/bridge/app/WebViewBridgeContentBaselineActivity.java', import.meta.url), 'utf8');
+  // Only fixed CSS is ever injected; an unknown extra falls back to "none".
+  assert.match(control, /return variantCss\(variant\) != null \? variant : "none";/);
+  assert.match(control, /"event=variant name=" \+ variant/);
 });

@@ -3068,6 +3068,49 @@ async function main() {
       byKind };
   });
 
+  // #209 SF06: the first frame of a fresh process still costs 3-6 s on this
+  // emulator after #494 (integration run 40460571063: an input-focus ANR in
+  // CS01, its 5.8 s render stall beginning before the Activity was displayed;
+  // SF05 put most of the cost in Bridge's page, not Capacitor). SF06 cold-
+  // starts the plain-WebView Bridge-content control with first-screen CSS
+  // effect classes disabled from the first parse (variant extra, fixed list),
+  // in two rounds of opposite order, with the same fixed window and evidence
+  // as SF05. A start counts only when the control logged the requested
+  // variant and its page finished. Runs last; bounded; measurement only.
+  await measure('SF06', 'cold-start stalls of Bridge content with first-screen CSS effects disabled (debug control; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android cold starts and stall probe required');
+    const step = boundedStage('SF06');
+    const OBSERVE_MS = 8_000;
+    const CONTENT = 'com.bridge.app.WebViewBridgeContentBaselineActivity';
+    const VARIANTS = ['none', 'no-filters', 'no-shadows', 'no-effects'];
+    const plan = [...VARIANTS, ...[...VARIANTS].reverse()].map((variant, index) => ({ round: index < VARIANTS.length ? 1 : 2, variant }));
+    const samples = [];
+    for (const { round, variant } of plan) {
+      const tag = `${variant}-${round}`;
+      await step(`stop-${tag}`, () => sh(`am force-stop ${PKG}`), 20_000);
+      const out = await step(`launch-${tag}`, () => sh(`am start -W -n ${PKG}/${CONTENT} --es variant ${variant}`), 60_000);
+      const appPid = await step(`pid-${tag}`, () => pid(), 20_000);
+      await sleep(OBSERVE_MS);
+      const control = await step(`control-${tag}`, () => androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s BridgeContentControl:I '*:S'"), 20_000).catch(() => '');
+      const logged = (/event=variant name=([a-z-]{1,20})/.exec(String(control)) || [])[1] ?? null;
+      const finished = /event=page-finished ms=([0-9]{1,6})/.exec(String(control));
+      samples.push({ round, variant, launched: /Status: ok/.test(String(out)),
+        variantConfirmed: logged === variant, pageFinishedMs: finished ? Number(finished[1]) : null,
+        skippedFrames: await startupSkips(appPid), mainThreadStalls: await startupStalls(appPid) });
+    }
+    await step('stop-final', () => sh(`am force-stop ${PKG}`), 20_000).catch(() => {});
+    const byVariant = Object.fromEntries(VARIANTS.map(variant => {
+      const rows = samples.filter(row => row.variant === variant);
+      return [variant, { starts: rows.length, confirmed: rows.filter(row => row.variantConfirmed).length,
+        frames: summarizeStartupSkips(rows), probe: summarizeStartupStallProbe(rows),
+        perStartMaxMs: rows.map(row => row.mainThreadStalls?.maxMs ?? null) }];
+    }));
+    return { observeMs: OBSERVE_MS, order: 'two rounds, second reversed',
+      applied: samples.every(row => row.launched && row.variantConfirmed && Number.isFinite(row.pageFinishedMs)),
+      byVariant };
+  });
+
   peerSock.close();
 }
 
