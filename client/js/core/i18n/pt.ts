@@ -2482,6 +2482,23 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "Nenhum bot ou webhook instalado",
   "automation_link_exemption_save_failed": "Não foi possível salvar a exceção da integração.",
   "automation_link_exemption_saved": "Exceção da integração salva.",
+  "raid_title": "Proteção contra invasões",
+  "raid_status_unavailable": "Não foi possível consultar o estado da proteção.",
+  "raid_updated": "Proteção atualizada.",
+  "raid_current_level": "Nível atual: {level}",
+  "raid_level_off": "Desligado",
+  "raid_level_balanced": "Equilibrado",
+  "raid_level_strict": "Rigoroso",
+  "raid_active_until": "Resposta ativa até {time}.",
+  "raid_inactive": "Nenhuma resposta ativa.",
+  "raid_threshold": "Mais de {count} contas distintas em {seconds} segundos acionam uma resposta de {minutes} minutos.",
+  "raid_strict_effect": "Novas entradas são recusadas; contas recentes ficam temporariamente impedidas de publicar.",
+  "raid_balanced_effect": "Novas entradas continuam permitidas; contas recentes ficam temporariamente impedidas de publicar.",
+  "raid_off_effect": "A resposta automática está desligada.",
+  "raid_level_control": "Nível de proteção",
+  "raid_clear": "Encerrar resposta atual",
+  "raid_change_hint": "Desligar ou encerrar também remove os bloqueios de publicação criados por esta resposta.",
+  "raid_refresh": "Atualizar estado",
 };
 
 export default translations;

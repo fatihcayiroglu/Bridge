@@ -39,6 +39,21 @@
   const PERM_BAN_MEMBERS     = 1 << 5;
   const PERM_TIMEOUT_MEMBERS = 1 << 7;
   const PERM_MANAGE_MESSAGES = 1 << 9;
+  const PERM_MANAGE_SERVER = 1 << 3;
+
+  type RaidLevel = 'off' | 'balanced' | 'strict';
+  interface RaidStatus {
+    level: RaidLevel;
+    active: boolean;
+    lockdownUntil: number | null;
+    policy: {
+      windowMs: number;
+      maxUniqueAccounts: number;
+      lockdownMs: number;
+      refuseJoins: boolean;
+      youngAccountMs: number;
+    } | null;
+  }
 
   interface BanRow {
     userId?: string;
@@ -79,6 +94,8 @@
   let bans       = $state<BanRow[]>([]);
   let members    = $state<MemberRow[]>([]);
   let reports    = $state<ReportRow[]>([]);
+  let raidStatus = $state<RaidStatus | null>(null);
+  let raidError = $state('');
   let loading    = $state(true);
   let error      = $state('');
   let notice     = $state('');
@@ -92,7 +109,8 @@
   let canKick    = $derived(hasPerm(perms, PERM_KICK_MEMBERS));
   let canTimeout = $derived(hasPerm(perms, PERM_TIMEOUT_MEMBERS));
   let canReports = $derived(hasPerm(perms, PERM_MANAGE_MESSAGES) || reports.length > 0);
-  let canAnything = $derived(canBan || canKick || canTimeout || canReports);
+  let canRaid = $derived(hasPerm(perms, PERM_MANAGE_SERVER));
+  let canAnything = $derived(canBan || canKick || canTimeout || canReports || canRaid);
 
   const TIMEOUT_PRESETS = $derived.by(() => [
     { label: t("ui_5_dakika", "5 dakika"), minutes: 5 },
@@ -110,6 +128,32 @@
     return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString() : '';
   }
 
+  function raidLevelLabel(level: RaidLevel): string {
+    switch (level) {
+      case 'off': return t('raid_level_off', 'Off');
+      case 'balanced': return t('raid_level_balanced', 'Balanced');
+      case 'strict': return t('raid_level_strict', 'Strict');
+    }
+  }
+
+  function parseRaidStatus(value: unknown): RaidStatus | null {
+    if (!value || typeof value !== 'object') return null;
+    const row = value as Record<string, unknown>;
+    if (row.level !== 'off' && row.level !== 'balanced' && row.level !== 'strict') return null;
+    if (typeof row.active !== 'boolean') return null;
+    if (row.lockdownUntil !== null && (typeof row.lockdownUntil !== 'number' || !Number.isSafeInteger(row.lockdownUntil) || row.lockdownUntil < 0)) return null;
+    if (row.active && (row.level === 'off' || row.lockdownUntil === null)) return null;
+    if (row.level === 'off') {
+      if (row.policy !== null) return null;
+      return row as unknown as RaidStatus;
+    }
+    if (!row.policy || typeof row.policy !== 'object') return null;
+    const policy = row.policy as Record<string, unknown>;
+    if (!['windowMs', 'maxUniqueAccounts', 'lockdownMs', 'youngAccountMs'].every(key =>
+      typeof policy[key] === 'number' && Number.isSafeInteger(policy[key]) && Number(policy[key]) >= 0) || typeof policy.refuseJoins !== 'boolean') return null;
+    return row as unknown as RaidStatus;
+  }
+
   async function load(): Promise<void> {
     loading = true;
     error = '';
@@ -119,6 +163,23 @@
       // olmayan bir Error sınıflandırılamaz ve genel yedek metin döner.
       if (!serverId) { error = t("ssm_no_server", "Sunucu seçilmedi."); return; }
       perms = await fetchMyPermissions(serverId);
+
+      raidStatus = null;
+      raidError = '';
+      if (hasPerm(perms, PERM_MANAGE_SERVER)) {
+        try {
+          const raidRes = await apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/raid-protection`);
+          if (!isStillCurrentServer(serverId)) return;
+          if (raidRes.ok) {
+            raidStatus = parseRaidStatus(await raidRes.json());
+            if (!raidStatus) raidError = t('raid_status_unavailable', 'Raid protection status could not be read.');
+          } else if (raidRes.status !== 403) {
+            raidError = safeApiErrorMessage(raidRes, t('raid_status_unavailable', 'Raid protection status could not be read.'), { report: true });
+          }
+        } catch (cause) {
+          raidError = safeApiErrorMessage(cause, t('raid_status_unavailable', 'Raid protection status could not be read.'), { report: true });
+        }
+      }
 
       // Üye listesi KANONİK kaynaktan okunur; bu panel ikinci bir üye
       // sahibi kurmaz ve kendi listesini çekmez.
@@ -239,6 +300,15 @@
       }));
   }
 
+  async function updateRaidProtection(change: { level: RaidLevel } | { clearLockdown: true }): Promise<void> {
+    if (!canRaid || !raidStatus) return;
+    const ok = await run('raid', t('raid_updated', 'Raid protection updated.'), () =>
+      apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/raid-protection`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(change),
+      }));
+    if (ok) await load();
+  }
+
   const REPORT_REASON_LABELS: Record<string, string> = $derived.by(() => ({
     spam: t('report_reason_spam', 'Spam'),
     harassment: t('report_reason_harassment', 'Taciz'),
@@ -327,6 +397,46 @@
     {#if error}<p class="mod-error" role="alert">{error}</p>{/if}
     {#if notice}<p class="mod-notice" role="status">{notice}</p>{/if}
 
+    {#if canRaid}
+      <section class="mod-section" aria-labelledby="mod-raid-title">
+        <h3 id="mod-raid-title">{t('raid_title', 'Raid protection')}</h3>
+        {#if raidError}<p class="mod-error" role="alert">{raidError}</p>{/if}
+        {#if raidStatus}
+          <p class="mod-muted">{t('raid_current_level', 'Current level: {level}', { level: raidLevelLabel(raidStatus.level) })}</p>
+          {#if raidStatus.active}
+            <p class="mod-notice" role="status">{t('raid_active_until', 'Raid response active until {time}.', { time: whenOf(raidStatus.lockdownUntil) })}</p>
+          {:else}
+            <p class="mod-muted">{t('raid_inactive', 'No active raid response.')}</p>
+          {/if}
+          {#if raidStatus.policy}
+            <p class="mod-muted">{t('raid_threshold', 'More than {count} distinct accounts joining in {seconds} seconds triggers a {minutes} minute response.', {
+              count: raidStatus.policy.maxUniqueAccounts,
+              seconds: raidStatus.policy.windowMs / 1000,
+              minutes: raidStatus.policy.lockdownMs / 60000,
+            })}</p>
+            <p class="mod-muted">{raidStatus.policy.refuseJoins
+              ? t('raid_strict_effect', 'New joins are refused while active; recent young accounts are held from posting.')
+              : t('raid_balanced_effect', 'New joins remain open; recent young accounts are held from posting.')}</p>
+          {:else}
+            <p class="mod-muted">{t('raid_off_effect', 'Automatic raid response is disabled.')}</p>
+          {/if}
+          <div class="mod-group" role="group" aria-label={t('raid_level_control', 'Raid protection level')}>
+            {#each ['off', 'balanced', 'strict'] as level (level)}
+              <button type="button" class="mod-btn" aria-pressed={raidStatus.level === level} disabled={busyId !== '' || raidStatus.level === level}
+                onclick={() => void updateRaidProtection({ level: level as RaidLevel })}>{raidLevelLabel(level as RaidLevel)}</button>
+            {/each}
+            {#if raidStatus.active}
+              <button type="button" class="mod-btn mod-btn-warn" disabled={busyId !== ''}
+                onclick={() => void updateRaidProtection({ clearLockdown: true })}>{t('raid_clear', 'End current raid response')}</button>
+            {/if}
+          </div>
+          <p class="mod-muted">{t('raid_change_hint', 'Changing to Off or ending the response also releases posting holds placed by this raid response.')}</p>
+        {/if}
+        <button type="button" class="mod-btn" disabled={busyId !== ''} onclick={() => void load()}>{t('raid_refresh', 'Refresh raid status')}</button>
+      </section>
+    {/if}
+
+    {#if canBan || canKick || canTimeout}
     <section class="mod-section" aria-labelledby="mod-action-title">
       <h3 id="mod-action-title">{t('mod_member_action', 'Üye işlemi')}</h3>
       <p class="mod-muted">{t('mod_reauth_hint', 'İşlemler sunucuda yeniden yetkilendirilir ve denetim günlüğüne yazılır.')}</p>
@@ -378,6 +488,7 @@
         </div>
       </div>
     </section>
+    {/if}
 
     {#if canReports}
       <section class="mod-section" aria-labelledby="mod-reports-title">

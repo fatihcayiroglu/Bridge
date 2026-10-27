@@ -2482,6 +2482,23 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "Keine installierten Bots oder Webhooks",
   "automation_link_exemption_save_failed": "Integrationsausnahme konnte nicht gespeichert werden.",
   "automation_link_exemption_saved": "Integrationsausnahme gespeichert.",
+  "raid_title": "Raid-Schutz",
+  "raid_status_unavailable": "Status des Raid-Schutzes konnte nicht geladen werden.",
+  "raid_updated": "Raid-Schutz aktualisiert.",
+  "raid_current_level": "Aktuelle Stufe: {level}",
+  "raid_level_off": "Aus",
+  "raid_level_balanced": "Ausgewogen",
+  "raid_level_strict": "Streng",
+  "raid_active_until": "Raid-Reaktion aktiv bis {time}.",
+  "raid_inactive": "Keine aktive Raid-Reaktion.",
+  "raid_threshold": "Mehr als {count} verschiedene Konten in {seconds} Sekunden lösen eine Reaktion für {minutes} Minuten aus.",
+  "raid_strict_effect": "Neue Beitritte werden abgelehnt; junge Konten dürfen vorübergehend nichts posten.",
+  "raid_balanced_effect": "Neue Beitritte bleiben möglich; junge Konten dürfen vorübergehend nichts posten.",
+  "raid_off_effect": "Automatische Raid-Reaktion ist deaktiviert.",
+  "raid_level_control": "Raid-Schutzstufe",
+  "raid_clear": "Aktuelle Raid-Reaktion beenden",
+  "raid_change_hint": "Beim Deaktivieren oder Beenden werden die durch diese Reaktion gesetzten Postsperren aufgehoben.",
+  "raid_refresh": "Raid-Status aktualisieren",
 };
 
 export default translations;
