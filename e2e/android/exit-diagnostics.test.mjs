@@ -2380,6 +2380,6 @@ test('job summary keeps CR00 separate and fails missing, stale or non-emulator c
     }
     // A different profile's report never borrows a product CR00 PASS.
     assert.equal(formatCrashControlSummary({ ...product, suite: 'upstream-webview-controls' }, control).status, 'FAIL');
-    assert.equal(JSON.parse(read(evidencePath, 'utf8')).results.length, 47); // 36 checks + 11 measurements (#209 SF01-SF04)
+    assert.equal(JSON.parse(read(evidencePath, 'utf8')).results.length, 48); // 36 checks + 12 measurements (#209 SF01-SF05)
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
