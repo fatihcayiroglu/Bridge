@@ -271,7 +271,76 @@
       -webkit-user-select: text;
       user-select: text;
     }
+
+    /* ── #209: Android first-frame effect deferral (see the script below) ── */
+    html[data-boot-effects] *, html[data-boot-effects] *::before, html[data-boot-effects] *::after {
+      transition: none !important;
+    }
+    html[data-boot-effects="deferred"] *, html[data-boot-effects="deferred"] *::before, html[data-boot-effects="deferred"] *::after {
+      box-shadow: none !important;
+      text-shadow: none !important;
+      filter: none !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+      animation: none !important;
+    }
   </style>
+  <!-- #209: a fresh Android process spends seconds in its first frames (main
+       thread in graphics frame-sync). Every recorded ANR is an input-dispatch
+       timeout on the window FOCUS event, which Android delivers at cold start
+       and which waits behind those frames. SF06 (runs 40466134118,
+       40467196529) disabled first-screen effects in a plain WebView: shadows,
+       filters and animations each cost part of a frame and together about 45%.
+       Keep them off until the page has received window focus — the app's
+       main thread has then already handled that focus event — or until the
+       first user input. Restoring two frames after DOMContentLoaded (the first
+       version of this change) brought the cost back inside the same cold-start
+       window: two emulator runs on #495 showed no reduction.
+       A bounded fallback restores them if neither happens (a launch behind the
+       lock screen or in the background); transitions return one frame later,
+       so nothing animates in. -->
+  <script>
+  (function () {
+    if (!/\bAndroid\b/.test(navigator.userAgent)) return;
+    // Two input-dispatch ANR windows (5 s each) from navigation start.
+    var FALLBACK_MS = 10000;
+    var root = document.documentElement;
+    var state = { deferred: true, restoredEpochMs: null, trigger: null };
+    window.__bridgeBootEffects = state;
+    root.setAttribute('data-boot-effects', 'deferred');
+    function afterNextFrame(fn) {
+      window.requestAnimationFrame(function () { window.requestAnimationFrame(fn); });
+    }
+    var started = false;
+    var timer = null;
+    var INPUT = ['pointerdown', 'keydown'];
+    function restore(trigger) {
+      if (started) return;
+      started = true;
+      state.trigger = trigger;
+      window.removeEventListener('focus', onFocus);
+      INPUT.forEach(function (type) { window.removeEventListener(type, onInput, true); });
+      if (timer !== null) clearTimeout(timer);
+      afterNextFrame(function () {
+        root.setAttribute('data-boot-effects', 'restoring');
+        afterNextFrame(function () {
+          root.removeAttribute('data-boot-effects');
+          state.restoredEpochMs = Math.round(performance.timeOrigin + performance.now());
+        });
+      });
+    }
+    function onFocus() { restore('focus'); }
+    function onInput() { restore('input'); }
+    window.addEventListener('focus', onFocus);
+    INPUT.forEach(function (type) { window.addEventListener(type, onInput, true); });
+    timer = setTimeout(function () { restore('fallback'); }, Math.max(0, FALLBACK_MS - performance.now()));
+    // A page that loads after the window already has focus: that focus event
+    // was handled before this document existed.
+    function checkFocus() { if (document.hasFocus()) restore('focused-at-load'); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', checkFocus, { once: true });
+    else checkFocus();
+  })();
+  </script>
 </head>
 
 <body>

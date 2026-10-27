@@ -223,6 +223,16 @@ test('#209 renderer overlap separates busy-page stalls from idle-page stalls', (
   assert.equal(summary.rendererBusyMs, 800);
   assert.equal(summary.longFrameMs, null);
   assert.deepEqual(summary.longTasks, { count: 2, totalMs: 1500, maxMs: 1000 });
+  assert.deepEqual([summary.bootEffectsDeferred, summary.bootEffectsRestored], [0, 0]);
+  // The Android shell's first-frame effect deferral is reported per cold start.
+  const deferred = summarizeRendererOverlap([
+    { rendererOverlap: overlap, pageTiming: compactPageTiming({ ...pageTiming, bootEffects: { deferred: true, restored: true, trigger: 'focus' } }) },
+    { rendererOverlap: overlap, pageTiming: compactPageTiming({ ...pageTiming, bootEffects: { deferred: true, restored: false, trigger: null } }) },
+    { rendererOverlap: overlap, pageTiming: compactPageTiming({ ...pageTiming, bootEffects: { deferred: true, restored: true, trigger: 'focused-at-load' } }) },
+  ]);
+  assert.deepEqual([deferred.bootEffectsDeferred, deferred.bootEffectsRestored], [3, 2]);
+  // What ended the deferral: a focus still pending at load ('focus') is the #209 case.
+  assert.deepEqual(deferred.bootEffectsTriggers, { focus: 1, 'focused-at-load': 1 });
 });
 
 test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () => {
