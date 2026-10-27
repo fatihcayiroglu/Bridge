@@ -2947,6 +2947,9 @@ async function main() {
       }
       await step('init-script', () => page.addInitScript(flag => {
         try {
+          // Proof the document-start script ran, and what it saw (135f3fe5:
+          // the blobs still rendered in B, cause unknown).
+          window.__bridgeSf04Init = { ran: true, flagSeen: sessionStorage.getItem(flag) === '1' };
           if (sessionStorage.getItem(flag) !== '1') return;
           const style = document.createElement('style');
           style.textContent = '.auth-blob{display:none!important}';
@@ -2963,6 +2966,8 @@ async function main() {
         const visibleMs = Date.now() - from;
         await sleep(3000);
         const state = await step(`state-${label}`, () => page.evaluate(() => ({
+          initRan: window.__bridgeSf04Init?.ran === true,
+          initFlagSeen: window.__bridgeSf04Init?.flagSeen === true,
           blobs: document.querySelectorAll('.auth-blob').length,
           blobsRendered: [...document.querySelectorAll('.auth-blob')]
             .filter(b => getComputedStyle(b).display !== 'none').length,

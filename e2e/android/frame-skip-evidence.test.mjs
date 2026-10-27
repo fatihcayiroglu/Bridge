@@ -287,6 +287,7 @@ test('#209 SF04 is a same-process warm-reload ABA, verified per reload, bounded 
   // Applied only when the page proves the condition of every reload.
   assert.match(sf04, /reloads\[1\]\.blobsRendered === 0 && reloads\[0\]\.blobsRendered > 0 && reloads\[2\]\.blobsRendered > 0/);
   assert.match(sf04, /row\.probe\.covered/);
+  assert.match(sf04, /initRan: window\.__bridgeSf04Init\?\.ran === true/);
   assert.match(sf04, /classifyAndroidDependencyDeath\(exitRows, appPid\)/);
   assert.match(sf04, /const step = boundedStage\('SF04'\);/);
   assert.doesNotMatch(sf04, /settings (put|delete)/);
