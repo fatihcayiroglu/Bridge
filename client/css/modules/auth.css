@@ -10,10 +10,17 @@
   background: var(--bg-1); z-index: 999;
 }
 .auth-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.auth-blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.18; animation: blobFloat 8s ease-in-out infinite; }
-.b1 { width: 500px; height: 500px; background: var(--brand); top: -150px; left: -150px; }
-.b2 { width: 350px; height: 350px; background: var(--purple); bottom: -100px; right: -100px; animation-delay: 3s; }
-.b3 { width: 250px; height: 250px; background: var(--green); top: 40%; left: 55%; animation-delay: 6s; }
+/* #209: these soft discs were solid circles under `filter: blur(90px)`. On
+   Android emulators (software GL) rasterising that blur cost about 1.9 s of
+   main-thread stalls per page render (SF04, #493), and the cold-start render
+   stalls exceed the 5 s input-dispatch limit. A radial gradient draws the same
+   soft edge without a filter. Each box grows by the blur's reach (2 x 90 px on
+   each side) around the same centre, so the glow covers the same area. */
+.auth-blob { position: absolute; border-radius: 50%; opacity: 0.18; animation: blobFloat 8s ease-in-out infinite;
+  background: radial-gradient(closest-side, var(--blob-color) 0%, transparent 100%); }
+.b1 { --blob-color: var(--brand); width: 860px; height: 860px; top: -330px; left: -330px; }
+.b2 { --blob-color: var(--purple); width: 710px; height: 710px; bottom: -280px; right: -280px; animation-delay: 3s; }
+.b3 { --blob-color: var(--green); width: 610px; height: 610px; top: calc(40% - 180px); left: calc(55% - 180px); animation-delay: 6s; }
 @keyframes blobFloat { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-20px) scale(1.05); } }
 
 .auth-card {
