@@ -8,7 +8,9 @@ is authorized by its tests. Abuse Lab B1 is unchanged.
 
 The configured app now restores a native session or opens system-browser PKCE
 sign-in, lists real communities/channels, reads message history, receives
-Socket.IO events and submits optimistic messages through the memory-only outbox.
+Socket.IO events and submits optimistic messages through the account-scoped
+SQLCipher outbox journal. The encrypted native journal commits a queued message
+before rendering it and commits `sending` before network emission.
 It displays queued/sending/confirmed/failed/unconfirmed state, a connection
 indicator and explicit stable-ID retry. Reconnect flushes unattempted drafts and
 refreshes selected history; uncertain sends are not blindly replayed. Account
@@ -77,10 +79,17 @@ a matching short ACCESS_TOKEN_TTL / BRIDGE_IT_ACCESS_TTL_S server setup.
 
 ## Remaining acceptance
 
-- This outbox is **memory-only**: process termination loses drafts. Durable
-  encrypted local persistence/recovery is not implemented; exactly-once delivery
-  is not claimed. Replay IDs are retained for at most 256 distinct sends per
-  account epoch; reaching that pilot limit is an explicit error.
+- Native drafts are persisted in a SQLCipher database with a per-origin/account
+  device-only SecureStore key. Interrupted sends restore as **unconfirmed**;
+  they require an explicit retry with the original ID. This does not guarantee
+  delivery after loss of the device encryption key, uninstall or data wipe;
+  exactly-once delivery is not claimed.
+- Each account journal has a 100-row bound. On capacity pressure, at most 25
+  of the oldest **server-confirmed** receipts are removed to admit a new draft.
+  Queued, sending, failed and unconfirmed entries are never evicted. A full
+  journal containing no confirmed receipts refuses new messages instead of
+  silently losing them. Server history remains authoritative for confirmed
+  messages whose local receipt was compacted.
 - Node contracts and real backend tests do not exercise native rendering,
   Keychain/Keystore, Custom Tabs/ASWebAuthenticationSession, backup/uninstall,
   permission prompts or real radio interruption. APK/IPA and physical-device

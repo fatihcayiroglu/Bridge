@@ -73,7 +73,23 @@ export function createPersistentOutbox({ coordinator, realtime, createId, openJo
     snapshot,
     async enqueue(input) {
       const { mine, store } = await context();
-      const row = await store.append({ ...input, id: createId() });
+      const candidate = { ...input, id: createId() };
+      let row;
+      try { row = await store.append(candidate); }
+      catch (error) {
+        if (error?.message !== 'OUTBOX_FULL') throw error;
+        // If a send is underway, do not replace its in-memory rows until it
+        // has committed an outcome. Only confirmed receipts may be evicted.
+        if (flight) await flight;
+        if (!current(mine)) throw new Error('SESSION_CHANGED');
+        const removedIds = await store.pruneConfirmed(25);
+        if (!current(mine)) throw new Error('SESSION_CHANGED');
+        if (removedIds.length === 0) throw error; // 100 uncertain drafts: fail closed.
+        const removed = new Set(removedIds);
+        rows = rows.filter(existing => !removed.has(existing.id)); emit();
+        // Preserve the originally allocated ackId across capacity recovery.
+        row = await store.append(candidate);
+      }
       if (!current(mine)) throw new Error('SESSION_CHANGED');
       if (!rows.some(existing => existing.id === row.id)) rows.push({ ...row }); emit(); return row.id;
     },

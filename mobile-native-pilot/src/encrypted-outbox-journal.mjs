@@ -50,6 +50,22 @@ export async function createEncryptedOutboxJournal({ db, keyHex }) {
       if (row && !['queued', 'confirmed'].includes(row.status)) throw new Error('OUTCOME_UNRESOLVED');
       await db.runAsync('DELETE FROM outbox WHERE id = ?', id);
     }),
+    // Release only receipts that have already been acknowledged and durably
+    // marked confirmed. Neither unsent drafts nor unknown-outcome sends may
+    // be evicted to make space. The owner serializes this with all other writes.
+    pruneConfirmed(max = 25) {
+      return serialize(async () => {
+        if (!Number.isInteger(max) || max < 0 || max > 100) throw new Error('INVALID_PRUNE_LIMIT');
+        if (max === 0) return [];
+        const oldest = await db.getAllAsync("SELECT id FROM outbox WHERE status = 'confirmed' ORDER BY seq LIMIT ?", max);
+        if (oldest.length === 0) return [];
+        const ids = oldest.map(row => row.id);
+        const params = ids.map(() => '?').join(', ');
+        const result = await db.runAsync(`DELETE FROM outbox WHERE status = 'confirmed' AND id IN (${params})`, ...ids);
+        if (result.changes !== ids.length) throw new Error('RECEIPT_PRUNE_INCONSISTENT');
+        return ids;
+      });
+    },
     async close() { if (closed) return; closed = true; await chain; await db.closeAsync(); },
   });
 }

@@ -51,3 +51,25 @@ test('account databases isolate identical ackIds and preserve confirmations acro
   const again = await createEncryptedOutboxJournal({ db: sqliteTestPort(aPath), keyHex });
   assert.equal((await again.list())[0].messageId, 'server-A'); await again.close();
 });
+test('capacity compaction removes only oldest server-confirmed receipts and never uncertain messages', async () => {
+  const path = file(), journal = await createEncryptedOutboxJournal({ db: sqliteTestPort(path), keyHex });
+  for (let i = 0; i < 100; i++) {
+    const id = `ack-${i}`;
+    await journal.append({ ...row, id });
+    if (i === 4) { await journal.mark(id, 'sending'); await journal.mark(id, 'unconfirmed'); }
+    else if (i !== 9) { await journal.mark(id, 'sending'); await journal.mark(id, 'confirmed', `server-${i}`); }
+  }
+  await assert.rejects(journal.append({ ...row, id: 'ack-new' }), /OUTBOX_FULL/);
+  const removed = await journal.pruneConfirmed(25);
+  assert.deepEqual(removed, Array.from({ length: 100 }, (_, i) => i).filter(i => i !== 4 && i !== 9).slice(0, 25).map(i => `ack-${i}`));
+  assert.equal((await journal.list()).length, 75);
+  assert.equal((await journal.list()).find(value => value.id === 'ack-4').status, 'unconfirmed');
+  assert.equal((await journal.list()).find(value => value.id === 'ack-9').status, 'queued');
+  await journal.append({ ...row, id: 'ack-new' });
+  await journal.close();
+  const restored = await createEncryptedOutboxJournal({ db: sqliteTestPort(path), keyHex });
+  assert.equal((await restored.list()).length, 76);
+  assert.equal((await restored.list()).find(value => value.id === 'ack-4').status, 'unconfirmed');
+  assert.deepEqual(await restored.pruneConfirmed(0), []);
+  await restored.close();
+});
