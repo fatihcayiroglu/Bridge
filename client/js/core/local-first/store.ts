@@ -13,6 +13,7 @@ import {
 import { isLocalAccountErased } from './erased-accounts.ts';
 
 export const LOCAL_FIRST_RECORD_VERSION = 1;
+export type RecordMutationGuard = () => boolean;
 
 export type LocalFirstNamespace =
   | 'draft'
@@ -37,8 +38,10 @@ export interface LocalFirstRecordBackend {
   readonly kind: string;
   readonly durable: boolean;
   get(id: string): Promise<EncryptedLocalRecord | null>;
-  put(record: EncryptedLocalRecord): Promise<void>;
-  delete(id: string): Promise<void>;
+  // A guard must be checked after asynchronous preparation, immediately
+  // before enqueuing the mutation/transaction, with no intervening await.
+  put(record: EncryptedLocalRecord, isCurrent?: RecordMutationGuard): Promise<void>;
+  delete(id: string, isCurrent?: RecordMutationGuard): Promise<void>;
   listByPrefix(prefix: string): Promise<EncryptedLocalRecord[]>;
   clearPrefix(prefix: string): Promise<void>;
   close?(): void;
@@ -159,13 +162,16 @@ export class EncryptedLocalStore {
     recordId: string,
     value: T,
     updatedAt = Date.now(),
+    isCurrent?: RecordMutationGuard,
   ): Promise<void> {
     if (!Number.isFinite(updatedAt) || updatedAt < 0) throw new Error('updatedAt is invalid');
+    if (isCurrent && !isCurrent()) return;
     const envelope = await this.encrypt(value, localRecordScope(this.userId, namespace, recordId));
     // A write that was already in flight when the account was erased is
     // dropped instead of re-creating a record (see erased-accounts.ts).
     if (isLocalAccountErased(this.userId)) throw new Error('Local data for this account was erased');
-    await this.backend.put({
+    if (isCurrent && !isCurrent()) return;
+    const record: EncryptedLocalRecord = {
       id: localRecordId(this.userId, namespace, recordId),
       userId: this.userId,
       namespace,
@@ -173,7 +179,9 @@ export class EncryptedLocalStore {
       v: LOCAL_FIRST_RECORD_VERSION,
       envelope,
       updatedAt,
-    });
+    };
+    if (isCurrent) await this.backend.put(record, isCurrent);
+    else await this.backend.put(record);
   }
 
   async getJson<T>(namespace: LocalFirstNamespace, recordId: string): Promise<T | null> {
@@ -191,8 +199,10 @@ export class EncryptedLocalStore {
     }
   }
 
-  async delete(namespace: LocalFirstNamespace, recordId: string): Promise<void> {
-    await this.backend.delete(localRecordId(this.userId, namespace, recordId));
+  async delete(namespace: LocalFirstNamespace, recordId: string, isCurrent?: RecordMutationGuard): Promise<void> {
+    const id = localRecordId(this.userId, namespace, recordId);
+    if (isCurrent) await this.backend.delete(id, isCurrent);
+    else await this.backend.delete(id);
   }
 
   async list<T>(
@@ -255,11 +265,13 @@ export class MemoryRecordBackend implements LocalFirstRecordBackend {
     return this.records.get(id) ?? null;
   }
 
-  async put(record: EncryptedLocalRecord): Promise<void> {
+  async put(record: EncryptedLocalRecord, isCurrent?: RecordMutationGuard): Promise<void> {
+    if (isCurrent && !isCurrent()) return;
     this.records.set(record.id, structuredClone(record));
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, isCurrent?: RecordMutationGuard): Promise<void> {
+    if (isCurrent && !isCurrent()) return;
     this.records.delete(id);
   }
 

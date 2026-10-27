@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const apiFetchMock = vi.fn();
 const registryCall = vi.fn();
 const unlockMock = vi.fn();
-const recordMock = vi.fn(async () => undefined);
+const recordMock = vi.fn(async (..._args: unknown[]) => undefined);
 const clearMock = vi.fn(async () => undefined);
 
 vi.mock('../js/core/api-fetch.ts', () => ({ apiFetch: (...args: unknown[]) => apiFetchMock(...args) }));
@@ -94,7 +94,8 @@ describe('P7 offline reload session bootstrap', () => {
     await flush();
     expect(authority.sessionAuthority()).toBe('server');
     expect(events).toEqual(['bridge:auth-local', 'bridge:auth-success']);
-    expect(recordMock).toHaveBeenCalledWith(USER, token(USER._id));
+    expect(recordMock).toHaveBeenCalledWith(USER, token(USER._id), undefined, expect.any(Function));
+    expect((recordMock.mock.calls.at(-1)![3] as () => boolean)()).toBe(true);
   });
 
   it('a failed fetch (no service worker) is treated the same as the offline answer', async () => {
@@ -150,16 +151,35 @@ describe('P7 offline reload session bootstrap', () => {
     const { auth } = await boot();
     const first = token('first-user');
     await auth.startApp(first, { _id: 'first-user', username: 'a' });
-    expect(recordMock).toHaveBeenLastCalledWith({ _id: 'first-user', username: 'a' }, first);
+    expect(recordMock).toHaveBeenLastCalledWith({ _id: 'first-user', username: 'a' }, first, undefined, expect.any(Function));
+    const firstWrite = recordMock.mock.calls.at(-1)![3] as () => boolean;
+    expect(firstWrite()).toBe(true);
     const refreshed = token('first-user') + 'x';
     auth.saveToken(refreshed);
-    expect(recordMock).toHaveBeenLastCalledWith({ _id: 'first-user', username: 'a' }, refreshed);
+    expect(recordMock).toHaveBeenLastCalledWith({ _id: 'first-user', username: 'a' }, refreshed, undefined, expect.any(Function));
+    expect(firstWrite()).toBe(false);
+    const refreshedWrite = recordMock.mock.calls.at(-1)![3] as () => boolean;
+    expect(refreshedWrite()).toBe(true);
 
     await auth.startApp(token('second-user'), { _id: 'second-user' });
     expect(clearMock).toHaveBeenCalledWith('first-user');
+    expect(refreshedWrite()).toBe(false);
+    const secondWrite = recordMock.mock.calls.at(-1)![3] as () => boolean;
+    expect(secondWrite()).toBe(true);
 
     clearMock.mockClear();
     auth.logout();
     expect(clearMock).toHaveBeenCalledWith('second-user');
+    expect(secondWrite()).toBe(false);
+  });
+
+  it('invalidates a delayed grant when another tab removes the canonical token without a local auth event', async () => {
+    const { auth } = await boot();
+    await auth.startApp(token(USER._id), USER);
+    const canWrite = recordMock.mock.calls.at(-1)![3] as () => boolean;
+    expect(canWrite()).toBe(true);
+    localStorage.removeItem('token');
+    localStorage.removeItem('bridge_token');
+    expect(canWrite()).toBe(false);
   });
 });
