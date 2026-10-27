@@ -856,10 +856,19 @@ function bindAuthShellEvents(): void {
   });
 }
 
+/** #209: the session check has resolved; the sign-in screen may paint again (client/index.html). */
+function endSessionRestoreMarker(): void {
+  document.documentElement.removeAttribute('data-session');
+}
+
 async function bootstrapAuthentication(): Promise<void> {
-  if (consumeResetLink()) return;
-  if (!await consumeSsoSessionHandoff()) await restoreSession();
-  consumeEmailVerifiedFlag();
+  try {
+    if (consumeResetLink()) return;
+    if (!await consumeSsoSessionHandoff()) await restoreSession();
+    consumeEmailVerifiedFlag();
+  } finally {
+    endSessionRestoreMarker();
+  }
 }
 
 Object.assign(globalThis as Record<string, unknown>, {

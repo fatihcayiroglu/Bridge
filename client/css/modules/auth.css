@@ -9,6 +9,10 @@
   overflow-y: auto;
   background: var(--bg-1); z-index: 999;
 }
+/* #209: a stored session is being checked (client/index.html sets this before
+   the first paint; auth-compat clears it). Out of layout, the screen and its
+   animated glows are neither painted nor composited. */
+html[data-session="restoring"] .auth-screen { display: none; }
 .auth-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 /* #209: these soft discs were solid circles under `filter: blur(90px)`. On
    Android emulators (software GL) rasterising that blur cost about 1.9 s of
