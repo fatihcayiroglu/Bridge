@@ -144,8 +144,14 @@ function isNetworkError(err: Error): boolean {
 
 // ── Sınıflandırma ────────────────────────────────────────────────────────────
 
+/** The service worker's answer to a failed fetch (client/sw.ts), not a server reply. */
+function isServiceWorkerOffline(response: Response): boolean {
+  return typeof response.headers?.get === 'function' && response.headers.get('X-Bridge-Offline') === '1';
+}
+
 function classify(input: unknown, fallbackKey: string): Omit<ApiErrorInfo, 'message'> {
   if (isResponseLike(input)) {
+    if (isServiceWorkerOffline(input)) return { status: 0, key: 'error_network', severity: 'error', network: true };
     const status = input.status;
     return { status, key: keyForStatus(status, fallbackKey), severity: severityForStatus(status), network: false };
   }

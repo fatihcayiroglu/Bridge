@@ -126,6 +126,15 @@ describe('handleApiError — ağ ve bilinmeyen girişler', () => {
     expect(handleApiError(err('timed out', 'TimeoutError')).network).toBe(true);
   });
 
+  it("the service worker's offline answer is a network error, a real 503 is not", () => {
+    const offline = { ...res(503), headers: new Headers({ 'X-Bridge-Offline': '1' }) } as unknown as Response;
+    const info = handleApiError(offline, { silent: true });
+    expect([info.network, info.status, info.key]).toEqual([true, 0, 'error_network']);
+
+    const server = handleApiError(res(503), { silent: true });
+    expect([server.network, server.status, server.key]).toEqual([false, 503, 'error_server']);
+  });
+
   it('sıradan Error ağ hatası SAYILMAZ, genel metin gösterilir', () => {
     const info = handleApiError(err('beklenmedik durum'));
 
