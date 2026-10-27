@@ -1,0 +1,140 @@
+name: Native pilot real PostgreSQL16 Redis integration
+
+on:
+  pull_request:
+    paths:
+      - 'mobile-native-pilot/**'
+      - 'server/**'
+      - '.github/workflows/native-pilot-backend-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: development
+      HOST: 127.0.0.1
+      PORT: '3001'
+      BASE_URL: https://127.0.0.1:8443
+      ALLOWED_ORIGINS: https://127.0.0.1:8443
+      BRIDGE_IT_ORIGIN: https://127.0.0.1:8443
+      NATIVE_AUTH_REDIRECT_URIS: com.bridge.nativepilot:/oauth
+      BRIDGE_IT_REDIRECT: com.bridge.nativepilot:/oauth
+      DATABASE_URL: postgresql://bridge_it:disposable_ci_only@127.0.0.1:5432/bridge_native_it
+      REDIS_URL: redis://127.0.0.1:6379/0
+      # Only test-volume quotas change; PKCE, cookie, CSRF, JWT, 2FA and reuse
+      # validation remain the real implementation, NODE_ENV is never test.
+      MAX_REG_PER_HOUR: '1000'
+      RL_REGISTER_MAX: '1000'
+      RL_LOGIN_MAX: '1000'
+      RL_REFRESH_MAX: '1000'
+      RL_2FA_MAX: '1000'
+      FEDERATION_ENABLED: 'false'
+      AI_PROVIDER: none
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge_it
+          POSTGRES_PASSWORD: disposable_ci_only
+          POSTGRES_DB: bridge_native_it
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bridge_it -d bridge_native_it"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Verify isolated assembly and real service identities
+        run: |
+          mkdir -p integration-evidence
+          git rev-parse HEAD > integration-evidence/head.txt
+          git merge-base --is-ancestor e7de5d5c957d6d36691de1b501825df6e17599a2 HEAD
+          git merge-base --is-ancestor 51c95a75ae232912806d1208c178eae8c8d61228 HEAD
+          docker exec '${{ job.services.postgres.id }}' psql -U bridge_it -d bridge_native_it -Atc 'SHOW server_version_num' | tee integration-evidence/postgres-version.txt
+          grep -Eq '^16[0-9]{4}$' integration-evidence/postgres-version.txt
+          docker exec '${{ job.services.redis.id }}' redis-cli ping | tee integration-evidence/redis-ping.txt
+          grep -qx PONG integration-evidence/redis-ping.txt
+      - name: Install exact lockfiles and audit without suppressions
+        run: |
+          npm ci --no-fund
+          npm ci --prefix server --no-fund
+          npm ci --prefix mobile-native-pilot --no-fund
+          npm audit --audit-level=high
+          npm audit --prefix server --audit-level=high
+          npm audit --prefix mobile-native-pilot --audit-level=low
+      - name: Build actual backend
+        run: npm run build --prefix server
+      - name: Create ephemeral secrets and a trusted local TLS certificate
+        shell: bash
+        run: |
+          umask 077
+          for key in JWT_SECRET REFRESH_SECRET; do
+            value=$(openssl rand -hex 64)
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=Bridge disposable integration CA' -keyout "$RUNNER_TEMP/it-ca.key" -out "$RUNNER_TEMP/it-ca.crt" 2>/dev/null
+          openssl req -newkey rsa:2048 -nodes -subj '/CN=127.0.0.1' -keyout "$RUNNER_TEMP/it-server.key" -out "$RUNNER_TEMP/it-server.csr" 2>/dev/null
+          printf 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "$RUNNER_TEMP/it-ext.cnf"
+          openssl x509 -req -in "$RUNNER_TEMP/it-server.csr" -CA "$RUNNER_TEMP/it-ca.crt" -CAkey "$RUNNER_TEMP/it-ca.key" -CAcreateserial -days 1 -extfile "$RUNNER_TEMP/it-ext.cnf" -out "$RUNNER_TEMP/it-server.crt" 2>/dev/null
+          echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/it-ca.crt" >> "$GITHUB_ENV"
+          echo "IT_TLS_KEY=$RUNNER_TEMP/it-server.key" >> "$GITHUB_ENV"
+          echo "IT_TLS_CERT=$RUNNER_TEMP/it-server.crt" >> "$GITHUB_ENV"
+      - name: Initialize only disposable database and start real HTTPS backend
+        run: |
+          node server/dist/db/postgres/index.js > integration-evidence/schema.log 2>&1
+          (cd server && node dist/index.js) > integration-evidence/server.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/bridge-it.pid"
+          node mobile-native-pilot/scripts/integration-https-proxy.mjs > integration-evidence/proxy.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/bridge-proxy.pid"
+          for i in $(seq 1 60); do
+            if curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > integration-evidence/health.json 2>/dev/null; then break; fi
+            sleep 1
+          done
+          curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > integration-evidence/health.json
+      - name: Real PKCE session and outbox replay integration (no retries)
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap --test-timeout=180000 mobile-native-pilot/integration/native-auth-backend.it.mjs 2>&1 | tee integration-evidence/native-backend.tap
+          node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            import {classifyNodeRun} from "./mobile-native-pilot/scripts/mutation-result.mjs";
+            const result=classifyNodeRun({stdout:readFileSync("integration-evidence/native-backend.tap","utf8"),status:0});
+            if(result.outcome!=="SURVIVED" || result.counts.tests!==15) throw Error(JSON.stringify(result));
+            console.log(JSON.stringify(result.counts));'
+      - name: Independent database persisted-row and scoped-uniqueness proof
+        run: |
+          docker exec '${{ job.services.postgres.id }}' psql -U bridge_it -d bridge_native_it -Atc "SELECT count(*) FROM messages WHERE content LIKE 'lost-ack-%'" | tee integration-evidence/lost-ack-db-count.txt
+          grep -qx 1 integration-evidence/lost-ack-db-count.txt
+          docker exec '${{ job.services.postgres.id }}' psql -U bridge_it -d bridge_native_it -Atc 'SELECT count(*) FROM (SELECT "userId", "ackId" FROM messages WHERE "ackId" IS NOT NULL GROUP BY "userId", "ackId" HAVING count(*) > 1) AS duplicates' | tee integration-evidence/duplicate-db-count.txt
+          grep -qx 0 integration-evidence/duplicate-db-count.txt
+      - name: Stop owned processes
+        if: always()
+        run: |
+          for file in "$RUNNER_TEMP/bridge-it.pid" "$RUNNER_TEMP/bridge-proxy.pid"; do
+            if test -f "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-backend-first-attempt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: integration-evidence/
+          retention-days: 7
+          if-no-files-found: error
