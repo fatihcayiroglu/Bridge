@@ -37,6 +37,7 @@ import { deflateSync } from 'zlib';
 import type { Page } from '@playwright/test';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 import { startReactionEvidence } from '../helpers/reaction-stage-evidence';
+import { startMutationEvidence } from '../helpers/message-mutation-evidence';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
@@ -143,25 +144,32 @@ test.describe('çapraz tarayıcı — ürün yüzeyi', () => {
   });
 
   // ── Düzenleme ──────────────────────────────────────────────────────────
-  test('DÜZENLE composer’ı doldurur ve içerik güncellenir', async ({ page }) => {
-    await enterChannel(page);
+  test('DÜZENLE composer’ı doldurur ve içerik güncellenir', async ({ page, request }, info) => {
+    // Evidence only (intermittent WebKit failure, Quality Gate 40442636121):
+    // the assertions below are unchanged.
+    const attachEvidence = await startMutationEvidence(page, 'edit');
     const body = `xb-edit-${Date.now().toString(36)}`;
-    await sendFromComposer(page, body);
-    await pace(page);
-    await messageAction(page, body, 'Düzenle');
-
-    await expect(page.locator('[data-composer-mode="edit"]')).toBeVisible({ timeout: 10_000 });
-    // Düzenleme kipinde composer, mesajın MEVCUT içeriğini taşımalıdır.
-    await expect.poll(() => page.locator('#msg-input').inputValue(), { timeout: 5_000 }).toBe(body);
-
     const edited = `${body}-duzenli`;
-    await page.locator('#msg-input').fill(edited);
-    await page.locator('#msg-input').press('Enter');
+    try {
+      await enterChannel(page);
+      await sendFromComposer(page, body);
+      await pace(page);
+      await messageAction(page, body, 'Düzenle');
 
-    const msg = page.locator('.msg', { hasText: edited }).first();
-    await expect(msg).toBeVisible({ timeout: 20_000 });
-    // Ürün düzenlenen mesajı GÖRÜNÜR biçimde işaretler.
-    await expect(msg.locator('.msg-edited').first()).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('[data-composer-mode="edit"]')).toBeVisible({ timeout: 10_000 });
+      // Düzenleme kipinde composer, mesajın MEVCUT içeriğini taşımalıdır.
+      await expect.poll(() => page.locator('#msg-input').inputValue(), { timeout: 5_000 }).toBe(body);
+
+      await page.locator('#msg-input').fill(edited);
+      await page.locator('#msg-input').press('Enter');
+
+      const msg = page.locator('.msg', { hasText: edited }).first();
+      await expect(msg).toBeVisible({ timeout: 20_000 });
+      // Ürün düzenlenen mesajı GÖRÜNÜR biçimde işaretler.
+      await expect(msg.locator('.msg-edited').first()).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await attachEvidence(info, request, token, channelId, body, edited);
+    }
   });
 
   // ── Tepki ──────────────────────────────────────────────────────────────
@@ -189,13 +197,20 @@ test.describe('çapraz tarayıcı — ürün yüzeyi', () => {
   });
 
   // ── Silme ──────────────────────────────────────────────────────────────
-  test('SİL mesajı listeden kaldırır', async ({ page }) => {
-    await enterChannel(page);
+  test('SİL mesajı listeden kaldırır', async ({ page, request }, info) => {
+    // Evidence only (intermittent WebKit failure, Quality Gate 40442636121):
+    // the assertion below is unchanged.
+    const attachEvidence = await startMutationEvidence(page, 'delete');
     const body = `xb-del-${Date.now().toString(36)}`;
-    await sendFromComposer(page, body);
-    await pace(page);
-    await messageAction(page, body, 'Sil');
-    await expect(page.locator('.msg', { hasText: body })).toHaveCount(0, { timeout: 20_000 });
+    try {
+      await enterChannel(page);
+      await sendFromComposer(page, body);
+      await pace(page);
+      await messageAction(page, body, 'Sil');
+      await expect(page.locator('.msg', { hasText: body })).toHaveCount(0, { timeout: 20_000 });
+    } finally {
+      await attachEvidence(info, request, token, channelId, body, null);
+    }
   });
 
   // ── Arama ──────────────────────────────────────────────────────────────
