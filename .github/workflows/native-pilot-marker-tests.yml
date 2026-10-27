@@ -38,6 +38,8 @@ jobs:
           node-version: '22.19.0'
       - name: Install isolated pilot dependencies from the committed lockfile
         run: npm ci --no-fund
+      - name: Expo CLI accepts the zod override (same decisions as zod 3)
+        run: node scripts/check-expo-cli-zod.cjs
       - name: Type-check RN prototype
         run: npm run typecheck
       - name: Export Android JS bundle (not APK)

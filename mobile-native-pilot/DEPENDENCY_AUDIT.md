@@ -1,24 +1,49 @@
 # Native pilot dependency audit
 
 Lockfile: `package-lock.json` (lockfileVersion 3; npm 10.9; Node 22). Expo SDK 57,
-React Native 0.86, React 19.2.3, expo-secure-store ~57.0.4. Installed by `npm ci`
-in CI. This lockfile covers only this isolated pilot. No production dependency
-of the web, server, Electron or Capacitor apps is changed.
+React Native 0.86, React 19.2.3, expo-secure-store, expo-web-browser and expo-crypto
+at the SDK 57 versions. Installed by `npm ci` in CI. This covers only this isolated
+pilot. No production dependency of the web, server, Electron or Capacitor apps
+is changed.
 
-## Open findings (2026-10-27)
+`npm audit --audit-level=high` gates CI. Current result: **0 vulnerabilities**.
 
-`npm audit` reports 3 high entries. All three come from one advisory:
+## Resolved: GHSA-mrhx-c7xc-m3w5 (zod)
 
-| Advisory | Package | Path | Fixed in | Why not fixed here |
-|---|---|---|---|---|
-| [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) (CWE-770, memory exhaustion on oversized constrained collections) | zod 3.25.76 | expo → @expo/cli → zod | zod 4.6.6 | `@expo/cli` (57.x and latest 58.1.16) requires `zod ^3.25.76`, and there is no patched 3.x release. npm's suggested fix is a semver-major **downgrade** to expo 54, which is incompatible with SDK 57. Overriding to zod 4 changes zod's API under the CLI. |
+| | |
+|---|---|
+| Advisory | [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5): memory exhaustion validating oversized constrained collections (CWE-770, high) |
+| Path | expo → @expo/cli → zod 3.25.76 (affected: < 4.6.6) |
+| Upstream | @expo/cli 57.x and the latest 58.1.16 both declare `zod ^3.25.76`. No patched 3.x exists. npm's own suggestion is a downgrade to expo 54, which is incompatible with SDK 57 |
+| Fix | `overrides.zod = 4.6.7` (patched) in `package.json` |
+| Exposure before the fix | Dev CLI / dev server only. A plain-JS Android export contains no zod; the positive control `AppRegistry` is present |
 
-Exposure evidence: zod is used by `@expo/cli`'s development server
-(dev-tools plugin schemas). In a plain-JS Android export
-(`expo export --platform android --no-bytecode`), the positive control
-`AppRegistry` occurs 5 times and `zod`/`ZodError` occur 0 times. The vulnerable
-code is therefore not in the shipped app JavaScript; it runs on developer and CI
-machines that run the Expo CLI.
+### Why the override is safe
 
-The CI audit job stays **failing** until upstream ships a fix or the owner records
-an explicit, dated risk acceptance. It is not suppressed.
+@expo/cli uses zod in two modules:
+- `DevToolsPlugin.schema.js`: plugin configuration and plugin output validation;
+- `createMCPDevToolsExtensionSchema.js`: the MCP tool schema.
+
+The APIs involved are `object`, `string`, `number`, `boolean`, `enum`, `literal`,
+`array`, `union`, `min`, `optional`, `readonly`, `url`, `describe`, `strict`,
+`safeParse`, `error.message` and `error.issues`. All of them exist in zod 4.
+
+`scripts/check-expo-cli-zod.cjs` runs those two modules from the installed
+@expo/cli against 16 accept/reject fixtures (validation, enums, unions, URL,
+strict extra-key refusal, issue messages). Results:
+
+| zod | Decisions as expected |
+|---|---|
+| 3.25.76 (baseline) | 16/16 |
+| 4.6.7 (override) | 16/16 |
+
+CI runs the check after `npm ci`.
+
+With the override, `expo start` serves `/status` 200 and bundles Android 200.
+React Native DevTools fails to start in the root container (Electron sandbox).
+That failure is identical with zod 3, so it is environmental.
+
+Not verified: MCP dev-tool plugins through an external MCP server (none is
+installed here).
+
+Revisit the override when @expo/cli itself depends on a patched zod.
