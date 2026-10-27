@@ -2473,7 +2473,7 @@ const translations: Record<string, string> = {
   "pci_apply_button": "Jetzt anwenden",
   "pci_applied": "Angewendet: {categories} Kategorien, {roles} Rollen und {channels} Kanäle aktualisiert.",
   "pci_refused": "Es wurde nichts angewendet. Die Freigabe ist möglicherweise abgelaufen oder bereits verwendet, oder diese Community hat sich geändert. Prüfe erneut.",
-  "pci_unknown": "Die Verbindung brach vor einer Antwort ab, daher wurde der Import vielleicht angewendet, vielleicht auch nicht. Prüfe erneut, bevor du es wiederholst; eine Freigabe kann nie zweimal angewendet werden.",
+  "pci_unknown": "Das Importergebnis konnte nicht bestätigt werden. Es ist unklar, ob der Import angewendet wurde. Prüfe ihn vor einem erneuten Versuch noch einmal; eine Genehmigung kann niemals zweimal angewendet werden.",
   "pci_proof_needed": "Bestätige zum Fortfahren, dass du es bist.",
   "pci_error": "Etwas ist schiefgelaufen. Versuche es erneut.",
   "pci_review_again": "Erneut prüfen",

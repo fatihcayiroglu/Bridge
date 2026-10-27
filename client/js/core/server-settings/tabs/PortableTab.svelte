@@ -10,7 +10,7 @@
   import { BridgeRegistry } from '../../bridge-registry.js';
   import {
     KINDS, MAX_BUNDLE_BYTES, applyBody, approvalBody, candidates, canonicalOrigin, classify,
-    mappingProblem, parseSignedBundle, renames, reviewBody, structureRows, suggestLinks,
+    mappingProblem, mappingRowLabels, parseSignedBundle, renames, reviewBody, structureRows, suggestLinks,
     type Kind, type Links, type Outcome, type Phase, type PortableStructure, type ReviewInput, type SignedBundle,
   } from '../portable-community-import';
 
@@ -53,6 +53,8 @@
     (expectedOrigin !== bundle.claimed.origin || expectedId !== bundle.claimed.serverId));
   const problem = $derived(bundle && target ? mappingProblem(bundle.rows, target, links) : null);
   const changes = $derived(bundle && target ? renames(bundle.rows, target, links) : []);
+  const sourceLabels = $derived(bundle ? mappingRowLabels(bundle.rows) : null);
+  const targetLabels = $derived(target ? mappingRowLabels(target) : null);
   const blocked = $derived(!!review && (review.unsafeRoleMappings > 0 || review.unsupportedPermissionRows > 0));
 
   function api(): Fetch | null { return BridgeRegistry.get<Fetch>('apiFetch') ?? null; }
@@ -153,7 +155,12 @@
   }
 
   function choose(kind: Kind, sourceId: string, targetId: string): void {
-    const next: Links = { ...links, [kind]: { ...links[kind] } };
+    // Clone into a null-prototype record: assigning a signed '__proto__' ID
+    // to a normal object would invoke its inherited setter instead of mapping it.
+    const next: Links = {
+      ...links,
+      [kind]: Object.assign(Object.create(null) as Record<string, string>, links[kind]),
+    };
     if (targetId) next[kind][sourceId] = targetId; else delete next[kind][sourceId];
     resetFrom('review');
     links = next;
@@ -321,13 +328,13 @@
               <tbody>
                 {#each bundle.rows[kind] as row (row.sourceId)}
                   <tr>
-                    <th scope="row"><label for={`pci-${kind}-${row.sourceId}`}>{row.name}</label></th>
+                    <th scope="row"><label for={`pci-${kind}-${row.sourceId}`}>{sourceLabels?.[kind].get(row.sourceId) ?? row.name}</label></th>
                     <td>
-                      <select id={`pci-${kind}-${row.sourceId}`} value={links[kind][row.sourceId] ?? ''}
+                      <select id={`pci-${kind}-${row.sourceId}`} value={Object.prototype.hasOwnProperty.call(links[kind], row.sourceId) ? links[kind][row.sourceId] : ''}
                         onchange={(e) => choose(kind, row.sourceId, (e.currentTarget as HTMLSelectElement).value)}>
                         <option value="">{t('pci_map_choose')}</option>
                         {#each candidates(kind, row, target) as option (option.sourceId)}
-                          <option value={option.sourceId}>{option.name}</option>
+                          <option value={option.sourceId}>{targetLabels?.[kind].get(option.sourceId) ?? option.name}</option>
                         {/each}
                       </select>
                     </td>
@@ -410,7 +417,8 @@
   .pci-error { color: var(--danger); }
   .pci-warn { color: var(--warning, var(--danger)); }
   .pci-ok { color: var(--success, var(--text-normal)); }
-  .pci-map { width: 100%; border-collapse: collapse; margin-block: var(--space-2); }
+  .pci-map { width: 100%; table-layout: fixed; border-collapse: collapse; margin-block: var(--space-2); }
+  .pci-map select { width: 100%; min-width: 0; }
   .pci-map caption { text-align: start; font-weight: 600; }
   .pci-map th { text-align: start; font-weight: 400; padding-inline-end: var(--space-3); overflow-wrap: anywhere; }
   .pci-check { display: flex; gap: var(--space-2); align-items: flex-start; }

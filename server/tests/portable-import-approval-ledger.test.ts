@@ -32,6 +32,9 @@ function fixture() {
       if (sql.startsWith('INSERT INTO portable_import_approvals')) {
         return { rows: staging ? [{ expires_at: new Date(Date.now() + 60_000) }] : [] };
       }
+      if (sql.startsWith('SELECT token_hash')) {
+        return { rows: claiming ? [{ token_hash: params?.[0], txid: '314', isolation: 'serializable', readonly: 'off' }] : [] };
+      }
       if (sql.startsWith('UPDATE portable_import_approvals')) {
         return { rows: claiming ? [{ token_hash: 'not-the-token' }] : [] };
       }
@@ -140,10 +143,16 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
       pool: f.pool, binding, sourceAttestationExpiresAt: expiry(),
     });
     await claimPortableImportApproval(f.client, approvalToken, binding);
+    const lock = f.statements.find(x => x.sql.startsWith('SELECT token_hash'));
     const update = f.statements.find(x => x.sql.startsWith('UPDATE portable_import_approvals'));
+    expect(lock?.sql).toContain('WHERE token_hash=$1 AND target_server_id=$2 AND owner_id=$3');
+    expect(lock?.sql).toContain('FOR UPDATE');
+    expect(lock?.params).toEqual(update?.params?.slice(0, 3));
+    expect(f.statements.indexOf(lock!)).toBeLessThan(f.statements.indexOf(update!));
     expect(update?.sql).toContain('consumed_at IS NULL');
     expect(update?.sql).toContain('a.target_grant_digest=$6');
     expect(update?.sql).toContain('expires_at > clock_timestamp()');
+    expect(update?.sql).toContain('txid_current()::text=$13');
     expect(update?.sql).toContain('EXISTS (SELECT 1 FROM servers s');
     expect(update?.params).toEqual([
       createHash('sha256').update('bridge-portable-import-approval-v1\n').update(approvalToken).digest('hex'),
@@ -151,10 +160,26 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
         binding.targetTopologyDigest, binding.targetGrantDigest, binding.sourceOrigin, binding.sourceServerId,
         binding.sourceSnapshotId, binding.sourceKeyFingerprint,
         binding.structureDigest, binding.permissionsDigest],
+      '314',
     ]);
     f.denyClaim();
     await expect(claimPortableImportApproval(f.client, approvalToken, binding))
       .rejects.toBeInstanceOf(PortableImportApprovalError);
+  });
+
+  it.each([
+    { txid: '0' }, { txid: 'not-a-transaction' }, { txid: undefined },
+    { isolation: 'read committed' }, { readonly: 'on' }, { token_hash: 'another-approval' },
+  ])('never consumes approval without a valid writable SERIALIZABLE lock: %j', async invalid => {
+    const query = jest.fn(async (_sql: string) => ({ rows: [{
+      token_hash: createHash('sha256').update('bridge-portable-import-approval-v1\n').update('A'.repeat(43)).digest('hex'),
+      txid: '314', isolation: 'serializable', readonly: 'off', ...invalid,
+    }] }));
+    await expect(claimPortableImportApproval({ query }, 'A'.repeat(43), binding))
+      .rejects.toMatchObject({ code: 'PORTABLE_IMPORT_APPROVAL_UNAVAILABLE',
+        message: 'Portable import approval unavailable' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[0]).toContain('FOR UPDATE');
   });
 
   it('rejects tampered token/target before claim and never leaks DB exception', async () => {

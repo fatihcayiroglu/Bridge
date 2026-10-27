@@ -2439,7 +2439,7 @@ const translations: Record<string, string> = {
   "pci_apply_button": "Apply now",
   "pci_applied": "Applied: {categories} categories, {roles} roles and {channels} channels updated.",
   "pci_refused": "Nothing was applied. The approval may have expired or already been used, or this community changed. Review again.",
-  "pci_unknown": "The connection dropped before an answer arrived, so the import may or may not have been applied. Review again before retrying; an approval can never apply twice.",
+  "pci_unknown": "The import result could not be confirmed. It may or may not have been applied. Review again before retrying; an approval can never apply twice.",
   "pci_proof_needed": "Confirm it's you to continue.",
   "pci_error": "Something went wrong. Try again.",
   "pci_review_again": "Review again",

@@ -160,7 +160,7 @@ export async function stagePortableImportApproval(input: {
 }
 
 /**
- * Conditional one-use compare-and-set, for a FUTURE importer only.
+ * Conditional one-use compare-and-set for the restricted mapped importer.
  * Must run on the SAME physical PostgreSQL client inside the importer's
  * SERIALIZABLE transaction. A bare hash or review fingerprint is NEVER
  * authorization. All owner/signature/topology/permissions must be checked
@@ -177,6 +177,20 @@ export async function claimPortableImportApproval(
     Buffer.from(approvalToken, 'base64url').length !== 32 ||
     Buffer.from(approvalToken, 'base64url').toString('base64url') !== approvalToken) fail();
   try {
+    const values = [hashToken(approvalToken), ...args(checkedBinding)];
+    // UPDATE evaluates its expiry predicate before waiting for a tuple lock.
+    // Lock first, then evaluate DB time in a separate statement while retaining
+    // that lock. Scope the lookup to this destination and owner as well as token.
+    const locked = await client.query(`SELECT token_hash, txid_current()::text AS txid,
+        current_setting('transaction_isolation') AS isolation,
+        current_setting('transaction_read_only') AS readonly
+      FROM portable_import_approvals
+      WHERE token_hash=$1 AND target_server_id=$2 AND owner_id=$3
+      FOR UPDATE`, values.slice(0, 3));
+    const row = locked.rows[0];
+    if (locked.rows.length !== 1 || !row || row.token_hash !== values[0] ||
+      typeof row.txid !== 'string' || !/^[1-9][0-9]*$/.test(row.txid) ||
+      row.isolation !== 'serializable' || row.readonly !== 'off') fail();
     const sql = `UPDATE portable_import_approvals a
       SET consumed_at=clock_timestamp()
       WHERE a.token_hash=$1
@@ -186,11 +200,14 @@ export async function claimPortableImportApproval(
         AND a.source_origin=$7 AND a.source_server_id=$8
         AND a.source_snapshot_id=$9 AND a.source_key_fingerprint=$10
         AND a.structure_digest=$11 AND a.permissions_digest=$12
+        AND txid_current()::text=$13
         AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp()
         AND EXISTS (SELECT 1 FROM servers s
                     WHERE s._id=a.target_server_id AND s."ownerId"=a.owner_id)
       RETURNING a.token_hash`;
-    const res = await client.query(sql, [hashToken(approvalToken), ...args(checkedBinding)]);
+    // A SERIALIZABLE autocommit session loses the SELECT lock immediately;
+    // the transaction-id fence refuses its subsequent UPDATE as well.
+    const res = await client.query(sql, [...values, row.txid]);
     if (res.rows.length !== 1) fail();
   } catch {
     return fail();

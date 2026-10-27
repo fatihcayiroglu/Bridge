@@ -72,13 +72,14 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
+            e2e/package-lock.json
       - name: Install infrastructure (PostgreSQL binaries + pgvector, Redis, OpenSSL, libfaketime)
         # P6: vector needs pgvector; retry-outage uses libfaketime only for the
         # Bridge app processes. PostgreSQL/Redis/the harness keep real time.
         run: |
           sudo apt-get update -qq
           MAJOR=$(basename "$(dirname "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)")")
-          sudo apt-get install -y -qq redis-server openssl libfaketime "postgresql-${MAJOR}-pgvector"
+          sudo apt-get install -y -qq redis-server openssl libfaketime libnss3-tools "postgresql-${MAJOR}-pgvector"
           sudo systemctl stop redis-server || true
           LIBFAKETIME_PATH=$(dpkg -L libfaketime | grep '/libfaketime.so.1$' | head -1)
           test -n "$LIBFAKETIME_PATH" && test -f "$LIBFAKETIME_PATH"
@@ -98,6 +99,7 @@ jobs:
           npm ci --no-audit --no-fund
           cd server && npm ci --no-audit --no-fund && npm run build && cd ..
           npm run build
+          cd e2e && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
       - name: Run the lab (all scenarios)
         run: |
           node scripts/federation-lab/run.mjs \
