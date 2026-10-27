@@ -1,0 +1,282 @@
+[
+  {
+    "path": "src/bridge-auth-api.d.mts",
+    "bytes": 1300,
+    "sha256": "81241ab7914cc5edab7ebf3ec35ed5c8e26fa31023c534c972f755d0b68b3875"
+  },
+  {
+    "path": "src/bridge-auth-api.mjs",
+    "bytes": 4877,
+    "sha256": "86cd85a9af70cb84c02bfd36b89a4c904de4dbde416be0a36be4e30f7376cce8"
+  },
+  {
+    "path": "src/bridge-read-api.d.mts",
+    "bytes": 1669,
+    "sha256": "bfe9eaa24d0ea212f0691e34d7b1c761d5c9565e567a15d902d73d87daf88df9"
+  },
+  {
+    "path": "src/bridge-read-api.mjs",
+    "bytes": 5728,
+    "sha256": "2977aec31fa5ffb9f151469de58b4148120a1176757ad32ba51e7bb7e9a6d045"
+  },
+  {
+    "path": "src/bridge-realtime.d.mts",
+    "bytes": 1554,
+    "sha256": "5cdc2e507d09efb78ce0b24aca2a2bcc782ac3b25549c105b3eb9cd129e23fc9"
+  },
+  {
+    "path": "src/bridge-realtime.mjs",
+    "bytes": 9974,
+    "sha256": "bccc6653c9ee80de1aea6f9a9d5d20e1a6240ed336260189e569c0d23cdddb00"
+  },
+  {
+    "path": "src/browser-sign-in.d.mts",
+    "bytes": 830,
+    "sha256": "1b0cc03028aa9228aa6e774ea5a1a39280513ee11d55238f9e8e73464a2a894b"
+  },
+  {
+    "path": "src/browser-sign-in.mjs",
+    "bytes": 4274,
+    "sha256": "c4f3862196b368b90eee69340c31168ec52a9342497d0a2d1272ebe9a2c2ea37"
+  },
+  {
+    "path": "src/expo-credential-port.ts",
+    "bytes": 1121,
+    "sha256": "097cea7195b6e64a7c3832a3e95028a211e88d4e24ea2ba4eac6c728aee32bdd"
+  },
+  {
+    "path": "src/native-auth-api.d.mts",
+    "bytes": 1335,
+    "sha256": "e48ad0f6442c8d3700bba5bb56f65a03d1bacd6a8b97a26581fc37513685ed1f"
+  },
+  {
+    "path": "src/native-auth-api.mjs",
+    "bytes": 4725,
+    "sha256": "89c2d5af4dacf70b19c504a6c29eb0e4bcc41aea2b60324927207025eda7cc21"
+  },
+  {
+    "path": "src/native-credential-port.d.mts",
+    "bytes": 1288,
+    "sha256": "e1ed84529c86666eec373dcb681a41878bd0ac2e3b3e978e7308855f9d9f1825"
+  },
+  {
+    "path": "src/native-credential-port.mjs",
+    "bytes": 3632,
+    "sha256": "3b7dcd000e49dc7cd8fe13a53799e765f54a0493c96e62ae7680edf2733342f9"
+  },
+  {
+    "path": "src/outbox.d.mts",
+    "bytes": 823,
+    "sha256": "55d3512b8e0b821f5c441ba241ad4f2dc020606fee6206ebeeb7b2a3c3c5abf7"
+  },
+  {
+    "path": "src/outbox.mjs",
+    "bytes": 3821,
+    "sha256": "de37a1543e5d226e2caae7a076a98d5e70e7d04485645579ad1535635a06cb5e"
+  },
+  {
+    "path": "src/pilot-session.ts",
+    "bytes": 2998,
+    "sha256": "9657c63d21fe2de1320fcfae7c1ebd0070333d8c22eab3cc9ad7d763dda00691"
+  },
+  {
+    "path": "src/pkce.d.mts",
+    "bytes": 330,
+    "sha256": "060c523bc2423426cba80a3436b7849e390281b0325788d528aa1e0661ef0207"
+  },
+  {
+    "path": "src/pkce.mjs",
+    "bytes": 2013,
+    "sha256": "eece941898ee54b708f38c55b16d5450d070e4758fde999414c3dec35a850a6d"
+  },
+  {
+    "path": "src/session-coordinator.d.mts",
+    "bytes": 2092,
+    "sha256": "4db8014e02a48d353a71788e0717a08a8f9f72d23307cd2bb566481a60197b06"
+  },
+  {
+    "path": "src/session-coordinator.mjs",
+    "bytes": 13434,
+    "sha256": "aa10a91137a81aa2d885352138cc789bb329f44bdbf77b593518ced7d7222fc1"
+  },
+  {
+    "path": "src/startup-metrics.d.mts",
+    "bytes": 249,
+    "sha256": "d2e1b3e81e67638a0b3073a6ba3ebf970ad3220ccfb078775b137042ee31a8c2"
+  },
+  {
+    "path": "src/startup-metrics.mjs",
+    "bytes": 1011,
+    "sha256": "15d9aee14b9f119e7dfc3d15535c7d4697dbfef46a8da2c09fdd1f187cf79365"
+  },
+  {
+    "path": "tests/bridge-auth-api.test.mjs",
+    "bytes": 4668,
+    "sha256": "42747df2a7a1f5f9f9e3356896fbe1e171af6c88b939442c20983b3c895e59fd"
+  },
+  {
+    "path": "tests/bridge-read-api.test.mjs",
+    "bytes": 8624,
+    "sha256": "b2a403e0a823f9ab7ed5460d50ca183390a2355ef1b3ab4d4cad16fabfecd34d"
+  },
+  {
+    "path": "tests/bridge-realtime.test.mjs",
+    "bytes": 11175,
+    "sha256": "496e7132ae5329e42ce4c7593fd16bb3e056d73026fbe0f02c40d0dfaca01a6a"
+  },
+  {
+    "path": "tests/mutation-result.test.mjs",
+    "bytes": 2119,
+    "sha256": "0252a346e0b7d6d07c26fcee18e8a56c445e349b61dd6797f0797f8695ad43ef"
+  },
+  {
+    "path": "tests/native-credential-port.test.mjs",
+    "bytes": 6997,
+    "sha256": "1528e26159f761c63bcb0f06122a8a3f45b33345ff368b3163000a65174fceff"
+  },
+  {
+    "path": "tests/native-sign-in.test.mjs",
+    "bytes": 8430,
+    "sha256": "986c44aff9dd6ec5bd5020859bbe0d3d3172127ccceae44321565468f077423d"
+  },
+  {
+    "path": "tests/outbox.test.mjs",
+    "bytes": 3948,
+    "sha256": "00eaf603d917f01d8527baf30d6a86ee246019d5e7a7e3af0aef017d83729622"
+  },
+  {
+    "path": "tests/session-coordinator.test.mjs",
+    "bytes": 20594,
+    "sha256": "978cdc93173fec4f0775af87a8787e0f3cfe93200ab694d5cd782a06104e6c02"
+  },
+  {
+    "path": "tests/startup-metrics.test.mjs",
+    "bytes": 1119,
+    "sha256": "98dd03da5c9b78c4a89e8ceddc074362caf6b4169f4fd6d10e98cfd0352c9044"
+  },
+  {
+    "path": "scripts/check-expo-cli-zod.cjs",
+    "bytes": 3995,
+    "sha256": "960e33b4fb7285f44773140c60fc0a86f9a85779e3d9454b222b4000788dd481"
+  },
+  {
+    "path": "scripts/check-session-mutations.mjs",
+    "bytes": 3045,
+    "sha256": "30c4e49eabf92390b81ddbe00f232aabfcfb4a9be208050af25eb2531bad19a9"
+  },
+  {
+    "path": "scripts/mutation-result.mjs",
+    "bytes": 1080,
+    "sha256": "637e9264a053d29388fb94f38fd0d1dba31858b81b170303ab16225820200249"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-backend-integration-blocker.log",
+    "bytes": 1044,
+    "sha256": "4efafe961192a34bb8941a9db30a4c5b188ac4c77fbe0ff9ad8751b26a58b858"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-first-failure.log",
+    "bytes": 1004,
+    "sha256": "a78bebab00fed5071ec82f2456563fa80438b564cff27be75ce3d2e3acffa535"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-mutation-classifier-r3.log",
+    "bytes": 391,
+    "sha256": "750c68fc1821fc4c9f3d2d5dfd4c685d58ed9efe99634163e544b25ff3e5a6ec"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-native-baseline.log",
+    "bytes": 6801,
+    "sha256": "0e332103ed5b29eb1d5290393fb3469f6d00aac7766a09e4d3afd381adb335e4"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-native-complete-tests-r2.log",
+    "bytes": 8864,
+    "sha256": "75a7d98051cc64377c888a1b98339080893095a542e9863eb584a49f1e898eda"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-native-complete-tests.log",
+    "bytes": 8861,
+    "sha256": "399b6d9283a18531861d91f3d61fbaf5cb41fc2642aa2379068b4c7c46b0e9af"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-native-final-tests-r2.log",
+    "bytes": 7820,
+    "sha256": "4904b62eae6f73622dfecd7d18cf4e8857405c9355bdcbb099a0819614f066fd"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-native-fixed.log",
+    "bytes": 6906,
+    "sha256": "a11756b84ab2d50cca087b922d0d9e7a3fbc6fd09ce14a232cbfdcf364d0ddf2"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-native-outbox-tests.log",
+    "bytes": 7555,
+    "sha256": "8f349b33d1067b7a8560fddd07b35fd43dcf475035c89fbe5aada7bb7116c3c4"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-pilot-audit.log",
+    "bytes": 25,
+    "sha256": "4b02d4a3c23d969c46bd2041360f80bfcb1fe760d9db864009acdd710f9de601"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-pilot-npm-ci.log",
+    "bytes": 295,
+    "sha256": "fb81076f68d23dc8b8db1ab7998307bf9ac3952def330ec1cd4a5d52ae5254de"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-pilot-typecheck.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "evidence/2026-10-27/bridge-zod-control.log",
+    "bytes": 570,
+    "sha256": "dfd76f4aaeb112f52cb1a4e4516c40642265b2f13ef9707390faa8e52fe7a392"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/baseline.stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/baseline.stdout.log",
+    "bytes": 5398,
+    "sha256": "4bcfc238f12f015c96aa2d4db349bf43f82e17967c77ff6868834d04df9f0a3d"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/clear-access-at-transition.stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/clear-access-at-transition.stdout.log",
+    "bytes": 5398,
+    "sha256": "36a0d152059271ff4ffc7ac309fb4a8fff6f4c449156cacea219b371ef3b958a"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/epoch-fence.stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/epoch-fence.stdout.log",
+    "bytes": 7573,
+    "sha256": "acdb408cc5cbd78452ff52fc05b9775cc09a77dea8b83a8af349ff2d32d25d87"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/result.json",
+    "bytes": 3060,
+    "sha256": "85c52c1950b7e067b3e4fa0c607cf6c89a3f9828f99fa3f1498a936a0c4ab6d4"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/single-flight.stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "evidence/2026-10-27/session-mutations/single-flight.stdout.log",
+    "bytes": 6112,
+    "sha256": "c1635c2056e092a235a7b0ce325e5fd7022babfedc8a02a8f9370fcb4f722bf6"
+  }
+]

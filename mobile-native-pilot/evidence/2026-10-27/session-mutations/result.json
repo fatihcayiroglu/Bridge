@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "sourceSha256": "aa10a91137a81aa2d885352138cc789bb329f44bdbf77b593518ced7d7222fc1",
+  "sourceUnchanged": true,
+  "results": [
+    {
+      "name": "baseline",
+      "outcome": "SURVIVED",
+      "counts": {
+        "tests": 23,
+        "pass": 23,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "status": 0,
+      "signal": null,
+      "sourceSha256": "809e1b3776bd165e3315c4d306763640338a7656320a06b02018c075dc040b6d",
+      "command": [
+        "C:\\Users\\fatih\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe",
+        "--test",
+        "--test-reporter=tap",
+        "tests/session-coordinator.test.mjs"
+      ],
+      "cwd": "C:\\Users\\fatih\\AppData\\Local\\Temp\\bridge-session-mutation-AMY5aE"
+    },
+    {
+      "name": "epoch-fence",
+      "outcome": "DETECTED",
+      "counts": {
+        "tests": 23,
+        "pass": 20,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "status": 1,
+      "signal": null,
+      "sourceSha256": "150f02fc44dbf492ac2dcab94bff3d422061f6856b63fcb6498f4424eaf41195",
+      "command": [
+        "C:\\Users\\fatih\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe",
+        "--test",
+        "--test-reporter=tap",
+        "tests/session-coordinator.test.mjs"
+      ],
+      "cwd": "C:\\Users\\fatih\\AppData\\Local\\Temp\\bridge-session-mutation-6LjcT6"
+    },
+    {
+      "name": "single-flight",
+      "outcome": "DETECTED",
+      "counts": {
+        "tests": 23,
+        "pass": 22,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "status": 1,
+      "signal": null,
+      "sourceSha256": "e601040a26694eea25ae260d3a3178d80abeee257fce16aa82bece6acfeb8463",
+      "command": [
+        "C:\\Users\\fatih\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe",
+        "--test",
+        "--test-reporter=tap",
+        "tests/session-coordinator.test.mjs"
+      ],
+      "cwd": "C:\\Users\\fatih\\AppData\\Local\\Temp\\bridge-session-mutation-j6qweK"
+    },
+    {
+      "name": "clear-access-at-transition",
+      "outcome": "SURVIVED",
+      "counts": {
+        "tests": 23,
+        "pass": 23,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "status": 0,
+      "signal": null,
+      "sourceSha256": "fd55f274a006bc19388344cee428a512113a5baf6b701fae00bb431202116d86",
+      "command": [
+        "C:\\Users\\fatih\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe",
+        "--test",
+        "--test-reporter=tap",
+        "tests/session-coordinator.test.mjs"
+      ],
+      "cwd": "C:\\Users\\fatih\\AppData\\Local\\Temp\\bridge-session-mutation-DT5Nt9"
+    }
+  ],
+  "limitation": "Three explicitly defined mutations; original untracked 11-case harness was unavailable. The clear-access survivor is not exposed by phase-gated getSession(); this is not 100% mutation coverage."
+}

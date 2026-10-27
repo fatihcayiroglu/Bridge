@@ -1,0 +1,336 @@
+{
+  "date": "2026-10-27",
+  "prs": [
+    {
+      "number": 516,
+      "url": "https://github.com/fatihcayiroglu/Bridge/pull/516",
+      "state": "open",
+      "head": "codex/rn-android-ios-bounded-pilot-20261027",
+      "sha": "acb5b9be84bbe9a9c4b0e40e9713f92935366d74",
+      "base": "main",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 40547827667,
+            "name": "Native pilot checks (NOT product acceptance)",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 20,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40547827667/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40547827667/logs",
+            "workflow_id": 398485801
+          },
+          {
+            "id": 40547827608,
+            "name": "Bridge Quality Gate",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_number": 1704,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40547827608/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40547827608/logs",
+            "workflow_id": 295021666
+          }
+        ]
+      }
+    },
+    {
+      "number": 517,
+      "url": "https://github.com/fatihcayiroglu/Bridge/pull/517",
+      "state": "open",
+      "head": "claude/rn-session-coordinator",
+      "sha": "1969a2a148aafdce4a1320ef66ddd7aa036b3f7c",
+      "base": "codex/rn-android-ios-bounded-pilot-20261027",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 40564418863,
+            "name": "Native pilot checks (NOT product acceptance)",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 27,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564418863/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564418863/logs",
+            "workflow_id": 398485801
+          }
+        ]
+      }
+    },
+    {
+      "number": 518,
+      "url": "https://github.com/fatihcayiroglu/Bridge/pull/518",
+      "state": "open",
+      "head": "claude/native-auth-pkce",
+      "sha": "e7de5d5c957d6d36691de1b501825df6e17599a2",
+      "base": "main",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 40564669867,
+            "name": "Bridge Self-host Evidence",
+            "status": "in_progress",
+            "conclusion": null,
+            "run_number": 860,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669867/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669867/logs",
+            "workflow_id": 372072696
+          },
+          {
+            "id": 40564669793,
+            "name": "Mobile iOS",
+            "status": "in_progress",
+            "conclusion": null,
+            "run_number": 740,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669793/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669793/logs",
+            "workflow_id": 371430061
+          },
+          {
+            "id": 40564669817,
+            "name": "Bridge Federation + AI Evidence",
+            "status": "in_progress",
+            "conclusion": null,
+            "run_number": 860,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669817/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669817/logs",
+            "workflow_id": 372350341
+          },
+          {
+            "id": 40564669805,
+            "name": "Mobile Android",
+            "status": "in_progress",
+            "conclusion": null,
+            "run_number": 1240,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669805/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669805/logs",
+            "workflow_id": 371378122
+          },
+          {
+            "id": 40564669800,
+            "name": "Bridge Step-up Lab Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 199,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669800/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669800/logs",
+            "workflow_id": 378170168
+          },
+          {
+            "id": 40564669799,
+            "name": "Desktop Linux + macOS + Windows native gates",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 184,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669799/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669799/logs",
+            "workflow_id": 381199672
+          },
+          {
+            "id": 40564669804,
+            "name": "Bridge Quality Gate",
+            "status": "in_progress",
+            "conclusion": null,
+            "run_number": 1708,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669804/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40564669804/logs",
+            "workflow_id": 295021666
+          }
+        ]
+      }
+    },
+    {
+      "number": 519,
+      "url": "https://github.com/fatihcayiroglu/Bridge/pull/519",
+      "state": "open",
+      "head": "claude/security-qs-6.17.0",
+      "sha": "15602ca76624bd5c89ff07c03fbdbd6463bf4923",
+      "base": "claude/security-body-parser-2.4.0",
+      "ci": {
+        "workflow_runs": []
+      }
+    },
+    {
+      "number": 513,
+      "url": "https://github.com/fatihcayiroglu/Bridge/pull/513",
+      "state": "open",
+      "head": "claude/209-no-auth-screen-during-restore",
+      "sha": "ffae5f766a1776362a9aa17946a5f8990c1aaa1f",
+      "base": "claude/p7-closure-candidate",
+      "ci": {
+        "workflow_runs": [
+          {
+            "id": 40534247642,
+            "name": "Desktop Linux + macOS + Windows native gates",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 182,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247642/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247642/logs",
+            "workflow_id": 381199672
+          },
+          {
+            "id": 40534247773,
+            "name": "Bridge Step-up Lab Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 197,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247773/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247773/logs",
+            "workflow_id": 378170168
+          },
+          {
+            "id": 40534247573,
+            "name": "Bridge Self-host Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 858,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247573/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247573/logs",
+            "workflow_id": 372072696
+          },
+          {
+            "id": 40534247453,
+            "name": "Mobile iOS",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 738,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247453/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247453/logs",
+            "workflow_id": 371430061
+          },
+          {
+            "id": 40534247361,
+            "name": "Mobile Android",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_number": 1236,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247361/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247361/logs",
+            "workflow_id": 371378122
+          },
+          {
+            "id": 40534247353,
+            "name": "Bridge Federation + AI Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 858,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247353/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247353/logs",
+            "workflow_id": 372350341
+          },
+          {
+            "id": 40534247465,
+            "name": "Bridge Abuse Lab Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 207,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247465/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247465/logs",
+            "workflow_id": 377230616
+          },
+          {
+            "id": 40534247392,
+            "name": "Bridge Quality Gate",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1684,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247392/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534247392/logs",
+            "workflow_id": 295021666
+          },
+          {
+            "id": 40534210612,
+            "name": "Desktop Linux + macOS + Windows native gates",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 181,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534210612/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534210612/logs",
+            "workflow_id": 381199672
+          },
+          {
+            "id": 40534207962,
+            "name": "Bridge Step-up Lab Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 196,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534207962/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534207962/logs",
+            "workflow_id": 378170168
+          },
+          {
+            "id": 40534208045,
+            "name": "Bridge Abuse Lab Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 206,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208045/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208045/logs",
+            "workflow_id": 377230616
+          },
+          {
+            "id": 40534208184,
+            "name": "Mobile Android",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1235,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208184/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208184/logs",
+            "workflow_id": 371378122
+          },
+          {
+            "id": 40534207970,
+            "name": "Bridge Federation + AI Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 857,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534207970/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534207970/logs",
+            "workflow_id": 372350341
+          },
+          {
+            "id": 40534208088,
+            "name": "Mobile iOS",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 737,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208088/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208088/logs",
+            "workflow_id": 371430061
+          },
+          {
+            "id": 40534207986,
+            "name": "Bridge Self-host Evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 857,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534207986/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534207986/logs",
+            "workflow_id": 372072696
+          },
+          {
+            "id": 40534208046,
+            "name": "Bridge Quality Gate",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1683,
+            "jobs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208046/jobs",
+            "logs_url": "https://api.github.com/repos/fatihcayiroglu/Bridge/actions/runs/40534208046/logs",
+            "workflow_id": 295021666
+          }
+        ]
+      }
+    },
+    {
+      "number": 506,
+      "url": "https://github.com/fatihcayiroglu/Bridge/pull/506",
+      "state": "open",
+      "head": "claude/n02-resync-retry",
+      "sha": "e75ddaab2ce771e6b06fd51c66d965b7a9dc1831",
+      "base": "claude/p7-closure-candidate",
+      "ci": {
+        "workflow_runs": []
+      }
+    }
+  ],
+  "note": "Read-only GitHub snapshot. Workflow lookup only returns PR-triggered first-page runs; missing runs do not prove dispatch runs absent."
+}

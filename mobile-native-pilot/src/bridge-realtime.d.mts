@@ -23,8 +23,8 @@ export interface BridgeRealtime {
   onStatus(listener: (status: RealtimeStatus) => void): () => void;
   onMessage(listener: (message: ChannelMessage) => void): () => void;
   joinChannel(channelId: string): void;
-  /** Never resends: channel messages have no idempotency key in the server contract. */
-  send(input: { serverId: string; channelId: string; content: string }): Promise<SendResult>;
+  /** Never resends internally. Outbox retries must retain the original ackId. */
+  send(input: { serverId: string; channelId: string; content: string; ackId?: string }): Promise<SendResult>;
 }
 
 export declare function createBridgeRealtime(config: {

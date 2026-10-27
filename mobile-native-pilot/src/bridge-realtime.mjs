@@ -7,15 +7,17 @@
 //   messages: 'Unauthorized' / 'Token revoked' mean the token; anything else is not.
 // - `channel:join` (channelId): no acknowledgement; the server joins only a member
 //   who may view the channel.
-// - `message:send` { channelId, serverId, content }: no acknowledgement and no
-//   idempotency key for channel messages. Success is the `message:new` broadcast to
-//   the channel room (the sender is in it); refusal is `error:message` with
-//   event 'message:send' and a code.
+// - `message:send` accepts { channelId, serverId, content, ackId? }. With ackId,
+//   message:ack echoes { ackId, channelId, messageId }. The server deduplicates
+//   by user + ackId in its repository and unique database index. Outbox callers
+//   retain this id across retries; a broadcast alone cannot confirm these sends.
+// - Legacy callers without ackId still use their own message:new echo. Those
+//   sends are never automatically retried because their outcome is ambiguous.
 //
 // Consequences enforced here:
-// - A send is CONFIRMED only by our own message:new echo, FAILED by error:message,
+// - A send is CONFIRMED by the correlated ACK (or legacy own echo), FAILED by error:message,
 //   and otherwise UNCONFIRMED after a timeout. It is never resent automatically:
-//   without an idempotency key a resend could post the message twice.
+//   the outbox must explicitly retry an uncertain send with its original ackId.
 // - The socket belongs to one session epoch. An account switch or sign-out tears it
 //   down; nothing from the old socket reaches the new session.
 // - An auth refusal causes at most one shared refresh (coordinator single flight),
@@ -52,6 +54,7 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
   let userId = null;
   let tokenUsed = null;
   let status = 'offline'; // offline | connecting | online | auth-failed
+  let lifecycle = 0;
   const joined = new Set();
   const pending = new Map(); // key → { resolve, timer }
   const messageListeners = new Set();
@@ -68,6 +71,7 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
   }
 
   function teardown(next = 'offline') {
+    lifecycle += 1;
     const s = socket;
     socket = null;
     socketEpoch = null;
@@ -122,13 +126,23 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
     s.on('message:new', (msg) => {
       if (!current() || !msg || typeof msg !== 'object' || !joined.has(msg.channelId)) return;
       const key = `${msg.channelId}\u0000${msg.content}`;
-      if (msg.userId === userId && pending.has(key)) {
+      if (msg.userId === userId && pending.has(key) && !pending.get(key).ackId) {
         const p = pending.get(key);
         clearTimeout(p.timer);
         pending.delete(key);
         p.resolve({ status: 'confirmed', messageId: String(msg._id) });
       }
       for (const l of [...messageListeners]) { try { l(msg); } catch { /* isolated */ } }
+    });
+    s.on('message:ack', (ack) => {
+      if (!current() || !ack || typeof ack.ackId !== 'string' ||
+          typeof ack.messageId !== 'string' || !ack.messageId) return;
+      const key = `ack:${ack.ackId}`;
+      const p = pending.get(key);
+      if (!p || ack.channelId !== p.channelId) return;
+      clearTimeout(p.timer);
+      pending.delete(key);
+      p.resolve({ status: 'confirmed', messageId: ack.messageId });
     });
     s.on('error:message', (err) => {
       if (!current() || !err || err.event !== 'message:send') return;
@@ -137,6 +151,7 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
       const first = pending.entries().next();
       if (first.done) return;
       const [key, p] = first.value;
+      if (p.ackId && err.ackId !== p.ackId) return;
       clearTimeout(p.timer);
       pending.delete(key);
       p.resolve({ status: 'failed', code: typeof err.code === 'string' ? err.code : 'REJECTED' });
@@ -171,18 +186,22 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
      * Resolves to {status:'confirmed', messageId} | {status:'failed', code} |
      * {status:'unconfirmed', reason}. Never resends.
      */
-    send({ serverId, channelId, content }) {
+    send({ serverId, channelId, content, ackId }) {
       if (!ID_RE.test(String(serverId)) || !ID_RE.test(String(channelId))) return Promise.reject(new RealtimeError('INVALID_ID'));
       if (typeof content !== 'string' || !content.trim() || content.length > MAX_CONTENT) return Promise.reject(new RealtimeError('INVALID_CONTENT'));
       if (!joined.has(channelId)) return Promise.reject(new RealtimeError('NOT_JOINED'));
+      if (ackId !== undefined && (typeof ackId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(ackId))) return Promise.reject(new RealtimeError('INVALID_ID'));
+      const admittedEpoch = coordinator.getSession()?.epoch;
+      const admittedLifecycle = lifecycle;
       const run = () => {
+        if (admittedEpoch === undefined || coordinator.getSession()?.epoch !== admittedEpoch || lifecycle !== admittedLifecycle) return { status: 'unconfirmed', reason: 'SESSION_ENDED' };
         if (!socket || status !== 'online') return { status: 'unconfirmed', reason: 'OFFLINE' };
-        const key = `${channelId}\u0000${content}`;
+        const key = ackId ? `ack:${ackId}` : `${channelId}\u0000${content}`;
         return new Promise((resolve) => {
           // Bounded and NOT unref'd: an unconfirmed send must always settle.
           const timer = setTimeout(() => { pending.delete(key); resolve({ status: 'unconfirmed', reason: 'NO_ECHO' }); }, confirmTimeoutMs);
-          pending.set(key, { resolve, timer });
-          socket.emit('message:send', { serverId, channelId, content });
+          pending.set(key, { resolve, timer, ackId, channelId });
+          socket.emit('message:send', { serverId, channelId, content, ...(ackId ? { ackId } : {}) });
         });
       };
       const result = sendChain.then(run, run);

@@ -179,3 +179,41 @@ test('only https origins and complete adapters are accepted', () => {
   assert.throws(() => createBridgeRealtime({ origin: 'http://x', coordinator: c, connect: () => ({}) }), (e) => e.code === 'INVALID_ADAPTER');
   assert.throws(() => createBridgeRealtime({ origin: ORIGIN, coordinator: {}, connect: () => ({}) }), (e) => e.code === 'INVALID_ADAPTER');
 });
+
+test('queued sends cannot cross an account transition even if the new account joins the same channel', async () => {
+  const { io, s, rt, coordinator } = setup({ timeout: 5000 });
+  rt.joinChannel('c1');
+  const first = rt.send({ serverId: 's1', channelId: 'c1', content: 'first' });
+  const queued = rt.send({ serverId: 's1', channelId: 'c1', content: 'private old draft' });
+  await tick();
+  coordinator.set({ epoch: 2, userId: 'other' });
+  const next = io.sockets[1];
+  next.fire('connect');
+  rt.joinChannel('c1');
+  assert.deepEqual(await first, { status: 'unconfirmed', reason: 'SESSION_ENDED' });
+  await tick();
+  assert.equal(next.emitted.some(([event]) => event === 'message:send'), false);
+  assert.deepEqual(await queued, { status: 'unconfirmed', reason: 'SESSION_ENDED' });
+  rt.dispose();
+});
+
+test('ackId sends require the exact correlated ACK; echoes and duplicate/wrong ACKs cannot settle another send', async () => {
+  const { rt, s } = setup({ timeout: 1000 });
+  rt.joinChannel('c1');
+  let settled = false;
+  const p = rt.send({ serverId: 's1', channelId: 'c1', content: 'same', ackId: 'draft-1' }).then(r => { settled = true; return r; });
+  await tick();
+  assert.equal(s.emitted.at(-1)[1].ackId, 'draft-1');
+  s.fire('message:new', { _id: 'echo', channelId: 'c1', content: 'same', userId: 'me' });
+  s.fire('message:ack', { ackId: 'draft-1', channelId: 'other', messageId: 'wrong' });
+  s.fire('error:message', { event: 'message:send', ackId: 'old', code: 'DENIED' });
+  await tick(); assert.equal(settled, false);
+  s.fire('message:ack', { ackId: 'draft-1', channelId: 'c1', messageId: 'persisted' });
+  assert.deepEqual(await p, { status: 'confirmed', messageId: 'persisted' });
+  const next = rt.send({ serverId: 's1', channelId: 'c1', content: 'same', ackId: 'draft-2' });
+  await tick();
+  s.fire('message:ack', { ackId: 'draft-1', channelId: 'c1', messageId: 'persisted' });
+  s.fire('message:ack', { ackId: 'draft-2', channelId: 'c1', messageId: 'second' });
+  assert.deepEqual(await next, { status: 'confirmed', messageId: 'second' });
+  rt.dispose();
+});
