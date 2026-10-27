@@ -145,8 +145,10 @@ test('maps authorization, account-change and server errors without response-body
   for (const [status, code] of [
     [401, 'AUTH_REQUIRED'],
     [403, 'FORBIDDEN'],
+    [404, 'NOT_FOUND'], // /api/me for a deleted account
     [409, 'SESSION_CHANGED'],
-    [429, 'REQUEST_REJECTED'],
+    [429, 'RATE_LIMITED'], // says nothing about the session
+    [400, 'REQUEST_REJECTED'],
     [503, 'SERVER_UNAVAILABLE'],
   ]) {
     const { api } = harness(json({ token: 'do-not-show', error: 'do-not-show' }, status));

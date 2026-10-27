@@ -51,12 +51,85 @@ logout, and handle failed native deletion without claiming logout complete.
 Native device uninstall, backup/restore, passcode/biometric and multi-account
 behaviors remain open and BLOCK any production replacement.
 
+## Session lifecycle (contract-tested; no screen wired yet)
+
+Sign-in uses the system browser (Android Custom Tabs / iOS
+ASWebAuthenticationSession, ephemeral) and authorization code + PKCE (S256)
+against the server endpoints described in `docs/NATIVE_AUTH.md` on the server
+branch. The web page keeps enforcing password, CAPTCHA, e-mail verification,
+2FA, WebAuthn and SSO. `src/session-coordinator.mjs` then:
+
+- persists only the rotating refresh token, through the credential port;
+- keeps the access token in memory;
+- refreshes in single flight;
+- persists each successor before using it;
+- fences every account transition with an epoch;
+- clears locally before revoking server-side, and reports
+  `serverSignOut: confirmed | unconfirmed`.
+
+After a crash or lost response between a server rotation and local
+persistence, the next refresh is reuse: the server revokes the session and the
+user signs in again. Reuse detection is not relaxed.
+
+The tests are Node contract tests over fakes (SecureStore, fetch, browser).
+They are not Keychain/Keystore, system-browser, backend or device evidence.
+The server endpoints must be deployed and `NATIVE_AUTH_REDIRECT_URIS`
+configured before any device test. For the pilot, the redirect address is the
+private-use scheme `com.bridge.nativepilot:/oauth` (declared in `app.json`).
+Production should use verified App Links / Universal Links instead: another
+installed app can claim a custom scheme (docs/NATIVE_AUTH.md, T2).
+
+## Real-backend integration (manual; not device evidence)
+
+`integration/native-auth-backend.it.mjs` drives the pilot's own modules against a running
+Bridge server with native auth (server PR #518) on real PostgreSQL and Redis:
+browser-sign-in, native-auth-api, session-coordinator, the credential port and the read API.
+Only the system browser (an HTTP client doing what the web consent form does) and
+SecureStore (in-memory) are simulated. It is not `npm test`, and a missing
+configuration fails it; it never skips.
+
+Server settings the run needs:
+- `NATIVE_AUTH_REDIRECT_URIS=com.bridge.nativepilot:/oauth`
+- `BASE_URL` and `ALLOWED_ORIGINS` set to the HTTPS origin
+- `NODE_ENV` other than `test`, so the atomic PostgreSQL rotation path is used
+- for repeated runs from one IP, raised test limits: `MAX_REG_PER_HOUR`,
+  `RL_REGISTER_MAX`, `RL_LOGIN_MAX`, `RL_REFRESH_MAX`, `RL_2FA_MAX`. With the defaults,
+  the 2FA limiter (5 per 5 min) answers 429 on the third consecutive run.
+
+```
+BRIDGE_IT_ORIGIN=https://localhost:8443 BRIDGE_IT_REDIRECT=com.bridge.nativepilot:/oauth \
+NODE_EXTRA_CA_CERTS=ca.crt node --test integration/native-auth-backend.it.mjs
+```
+
+Recorded 2026-10-27: #518 head `2a212ae8`, PostgreSQL 16, Redis, behind a local HTTPS
+proxy. 10/10 in three consecutive runs, covering:
+- sign-in, rotation, real reuse detection, concurrent single-flight, a raw double-spend;
+- code replay and wrong verifier; unlisted redirect and foreign state;
+- 2FA (no code before the second factor); restore after restart;
+- logout (server confirmed); logout-everywhere from the web; account switch;
+- no refresh token in browser JSON and no cookies on native responses.
+
+Realtime (added the same day; now 13 cases in that file):
+- a native session lists its real server and channel;
+- it sends a channel message that the server's own echo confirms;
+- a second account receives it live, and it is in persisted history;
+- a non-member's send is refused with the server's NOT_A_MEMBER code and nothing
+  is persisted;
+- sign-out closes the socket.
+
+`integration/token-expiry.it.mjs`, against a server with `ACCESS_TOKEN_TTL=10s`, shows:
+- the socket handshake with an expired token is refused;
+- exactly one rotation follows;
+- the socket reconnects, and reads reuse the rotated token without signing out.
+
+Negative control: with native auth unconfigured on the server, 0/10 (before the realtime
+cases were added).
+
 ## Local setup on a suitable development machine
 
 1. Use Node.js >=22.19 and a supported Android SDK or macOS/Xcode (for iOS).
-2. In `mobile-native-pilot`, run `npm install` and `npx expo install --fix`
-   to resolve SDK-compatible package versions. Commit a generated lockfile only
-   after confirming the exact dependency graph and successful builds.
+2. In `mobile-native-pilot`, run `npm ci` (the lockfile is committed; see
+   `DEPENDENCY_AUDIT.md` for the open audit finding).
 3. Run `npm test`, `npm run typecheck`, then `npm run android` or `npm run ios`.
 4. Benchmark **release builds** on real Android/iOS devices before interpreting
    performance; development-mode results do not count.

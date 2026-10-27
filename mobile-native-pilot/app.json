@@ -2,7 +2,7 @@
   "expo": {
     "name": "Bridge Native Pilot",
     "slug": "bridge-native-pilot",
-    "scheme": "bridge-native-pilot",
+    "scheme": ["bridge-native-pilot", "com.bridge.nativepilot"],
     "version": "0.0.1",
     "orientation": "portrait",
     "newArchEnabled": true,
