@@ -11,7 +11,7 @@ const commit = 'a'.repeat(40);
 const completeProduct = () => ({ suite: 'product', commit, evidenceCategory: 'AUTOMATED / EMULATOR',
   results: [...PRODUCT_CHECKS.map(id => ({ id, status: 'PASS' })),
     ...PRODUCT_MEASUREMENTS.map(id => ({ id, status: 'MEASURED' }))],
-  totals: { pass: 36, fail: 0, skipped: 0, measured: 7 } });
+  totals: { pass: PRODUCT_CHECKS.length, fail: 0, skipped: 0, measured: PRODUCT_MEASUREMENTS.length } });
 
 test('summary CLI rejects missing, malformed and structurally empty evidence with a nonzero exit', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bridge-evidence-verdict-'));
@@ -27,7 +27,7 @@ test('summary CLI rejects missing, malformed and structurally empty evidence wit
 
 test('verdict accepts the complete native inventory without converting measurements to PASS', () => {
   assert.deepEqual(assessSuiteEvidence(completeProduct(), { expectedCommit: commit }), { status: 'PASS', reason: null });
-  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 7);
+  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 13); // #209 adds SF01-SF06 (measurements only)
 });
 
 test('every omitted, failed, skipped or measurement-only mandatory check is rejected', () => {
@@ -47,8 +47,13 @@ test('every omitted, failed, skipped or measurement-only mandatory check is reje
 test('independent acceptance inventory matches all declared product checks and measurements', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const product = source.slice(source.indexOf('async function main('), source.indexOf('  // EX01 runs AFTER'));
+  // After EX01/EX02 only the declared #209 SF03-SF06 experiments may run, and never a check.
+  const tail = source.slice(source.indexOf('  // EX01 runs AFTER'), source.indexOf('\nmain()\n'));
+  assert.deepEqual([...tail.matchAll(/await check\('([A-Z0-9-]+)'/g)].map(m => m[1]), []);
+  assert.deepEqual([...tail.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]), ['SF03', 'SF04', 'SF05', 'SF06']);
   assert.deepEqual([...product.matchAll(/await check\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(), [...PRODUCT_CHECKS].sort());
-  assert.deepEqual([...product.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(), [...PRODUCT_MEASUREMENTS].sort());
+  assert.deepEqual([...`${product}${tail}`.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(),
+    [...PRODUCT_MEASUREMENTS].sort());
 });
 
 test('measurements cannot be omitted, counted as PASS or renamed to hide an unknown check', () => {

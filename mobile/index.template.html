@@ -271,7 +271,49 @@
       -webkit-user-select: text;
       user-select: text;
     }
+
+    /* ── #209: Android first-frame effect deferral (see the script below) ── */
+    html[data-boot-effects] *, html[data-boot-effects] *::before, html[data-boot-effects] *::after {
+      transition: none !important;
+    }
+    html[data-boot-effects="deferred"] *, html[data-boot-effects="deferred"] *::before, html[data-boot-effects="deferred"] *::after {
+      box-shadow: none !important;
+      text-shadow: none !important;
+      filter: none !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+      animation: none !important;
+    }
   </style>
+  <!-- #209: a fresh Android process spends seconds in its first frame (main
+       thread in graphics frame-sync), long enough for an input-dispatch ANR.
+       SF06 (runs 40466134118, 40467196529) disabled first-screen effects in
+       a plain WebView: shadows, filters and animations each cost part of that
+       frame and together about 45%. Draw the first frame without them, then
+       restore them (transitions one frame later, so nothing animates in). -->
+  <script>
+  (function () {
+    if (!/\bAndroid\b/.test(navigator.userAgent)) return;
+    var root = document.documentElement;
+    var state = { deferred: true, restoredEpochMs: null };
+    window.__bridgeBootEffects = state;
+    root.setAttribute('data-boot-effects', 'deferred');
+    function afterNextFrame(fn) {
+      window.requestAnimationFrame(function () { window.requestAnimationFrame(fn); });
+    }
+    function restore() {
+      afterNextFrame(function () {
+        root.setAttribute('data-boot-effects', 'restoring');
+        afterNextFrame(function () {
+          root.removeAttribute('data-boot-effects');
+          state.restoredEpochMs = Math.round(performance.timeOrigin + performance.now());
+        });
+      });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restore, { once: true });
+    else restore();
+  })();
+  </script>
 </head>
 
 <body>

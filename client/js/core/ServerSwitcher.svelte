@@ -25,7 +25,9 @@
   import { getAPI } from './globals.js';
   import { readToken } from './auth-compat.js';
   import { apiFetch } from './api-fetch.js';
-  import { navigationOwner, lastServer, rememberServer } from './navigation-selection.js';
+  import {
+    navigationOwner, lastServer, rememberServer, navigationPreferencesReady, noteNavigationRestoration,
+  } from './navigation-selection.js';
   const log = createLogger('ServerSwitcher');
 
   let { children }: { children?: Snippet } = $props();
@@ -90,11 +92,22 @@
       servers = Array.isArray(data) ? data as RailServer[] : [];
       log.info(`${servers.length} sunucu yüklendi`);
 
-      const owner = navigationOwner(BridgeRegistry.call('getMe'));
+      let owner = navigationOwner(BridgeRegistry.call('getMe'));
+      if (owner && restoredOwner !== owner && !explicitlySelected) {
+        // #490: the remembered server comes from the acknowledged native store
+        // on Android. The rail is already rendered; only the restore decision
+        // waits (bounded, never rejects, normally already done at boot).
+        await navigationPreferencesReady();
+        // A click, logout or account switch during the read wins.
+        if (readToken() !== token &&
+            (requestedOwner === null || requestedOwner !== navigationOwner(BridgeRegistry.call('getMe')))) return;
+        owner = navigationOwner(BridgeRegistry.call('getMe'));
+      }
       if (owner && restoredOwner !== owner && !explicitlySelected) {
         restoredOwner = owner;
         const remembered = lastServer(owner);
         const allowed = servers.find(s => s._id === remembered);
+        noteNavigationRestoration('server', allowed ? 'restored' : remembered ? 'refused' : 'none');
         if (allowed) {
           if (activeId !== allowed._id) selectServer(allowed, false);
           return;
@@ -211,6 +224,9 @@
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────
+  // #490: start the one native boot read now, in parallel with the server
+  // fetch, so restoring never adds a native round-trip to first render.
+  void navigationPreferencesReady();
   function onAuthSuccess(): void { void loadServers(); }
   document.addEventListener('bridge:auth-success', onAuthSuccess);
 
