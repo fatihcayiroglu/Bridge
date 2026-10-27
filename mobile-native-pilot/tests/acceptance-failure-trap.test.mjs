@@ -151,3 +151,90 @@ test('a redbox in the marker loop fails at once, names the reason, and the log s
   assert.match(r.stderr, /NATIVE_ANDROID_UI_TEXT: TypeError: Cannot read property 'exec' of undefined/);
   assert.ok(r.stderr.indexOf('UI_TEXT') < r.stderr.indexOf('ACCEPTANCE_FAILED'), 'screen text precedes the verdict line');
 });
+
+const anrDialog = (title, { wait = true } = {}) => `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="android" bounds="[0,0][1080,2400]"><node index="0" text="${title}" resource-id="android:id/alertTitle" class="android.widget.TextView" package="android" bounds="[126,1001][954,1078]" /><node index="1" text="Close app" resource-id="android:id/aerr_close" class="android.widget.Button" package="android" bounds="[84,1120][996,1252]" />${wait ? '<node index="2" text="Wait" resource-id="android:id/aerr_wait" class="android.widget.Button" package="android" bounds="[84,1252][996,1384]" />' : ''}</node></hierarchy>`;
+const classify = (xml) => runInDir("acceptance_classify_anr_dialog ui.xml 'Bridge Native Pilot'", { 'ui.xml': xml });
+
+test('ANR dialog classification: another app is answered at the centre of Wait; ours is a failure', () => {
+  const foreign = classify(anrDialog('Pixel Launcher isn&apos;t responding'));
+  assert.equal(foreign.status, 0);
+  assert.equal(foreign.stdout, "foreign 540 1318 Pixel Launcher isn't responding\n");
+  assert.equal(classify(anrDialog("System UI isn't responding")).stdout, "foreign 540 1318 System UI isn't responding\n");
+  assert.equal(classify(anrDialog('Bridge Native Pilot isn&apos;t responding')).stdout, "own Bridge Native Pilot isn't responding\n");
+  assert.equal(classify(anrDialog('Pixel Launcher isn&apos;t responding', { wait: false })).stdout, "foreign - - Pixel Launcher isn't responding\n");
+  assert.equal(classify(REDBOX_XML).stdout, 'none\n');
+  assert.equal(classify('<hierarchy><node text="NATIVE_SQLCIPHER_WRITE_PASS" /></hierarchy>').stdout, 'none\n');
+  // A pilot screen that merely mentions the phrase is not a dialog title of another app
+  // unless it is a text node ending in "isn't responding"; ours still counts as ours.
+  assert.equal(classify(anrDialog('Bridge Native Pilot isn’t responding')).stdout, "own Bridge Native Pilot isn’t responding\n");
+});
+
+test('the Android loop answers only foreign ANR dialogs with Wait, inside the same budget, and reports the count', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const fn = s.slice(s.indexOf('function assert_native_marker'), s.indexOf('stage=first-launch'));
+  assert.match(fn, /acceptance_classify_anr_dialog "\$output" 'Bridge Native Pilot'/);
+  assert.match(fn, /own\\ \*\) acceptance_detail="\$marker:app-not-responding"[^\n]*return 1/);
+  assert.match(fn, /foreign\\ -\\ \*\) acceptance_detail="\$marker:foreign-anr-without-wait"[^\n]*return 1/);
+  assert.match(fn, /NATIVE_ANDROID_FOREIGN_ANR/);
+  assert.match(fn, /adb shell input tap "\$x" "\$y"/);
+  assert.doesNotMatch(fn, /aerr_close/, 'never presses Close app');
+  assert.equal((fn.match(/seq 1 90/g) || []).length, 1, 'one loop, same 90-dump budget');
+  // The marker check comes first: a visible marker passes without touching any dialog.
+  assert.ok(fn.indexOf('grep -q "$marker" "$output"') < fn.indexOf('acceptance_classify_anr_dialog'));
+  assert.match(s, /NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS foreign_anr_dialogs_answered=\$foreign_anr_count/);
+  assert.match(s, /^foreign_anr_count=0$/m);
+});
+
+// Runs the REAL assert_native_marker from the Android script against a fake `adb` that
+// serves a scripted sequence of UI dumps and records every tap. No device involved.
+function runMarkerLoop(dumps, marker = 'NATIVE_SQLCIPHER_WRITE_PASS') {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const fn = s.slice(s.indexOf('foreign_anr_count=0'), s.indexOf('stage=first-launch'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acc-'));
+  fs.mkdirSync(path.join(dir, 'bin')); fs.mkdirSync(path.join(dir, 'native-evidence'));
+  dumps.forEach((xml, i) => fs.writeFileSync(path.join(dir, `dump-${i}.xml`), xml));
+  fs.writeFileSync(path.join(dir, 'bin', 'adb'), `#!/usr/bin/env bash
+cd ${JSON.stringify(dir)}
+n=$(cat count 2>/dev/null || echo 0)
+case "$1 $2" in
+  "shell uiautomator") exit 0 ;;
+  "pull /sdcard/native-acceptance.xml") last=$(( ${dumps.length} - 1 )); (( n > last )) && n=$last; cp "dump-$n.xml" "$3"; echo $((n + 1)) > count ;;
+  "shell input") echo "$4 $5" >> taps ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'case.sh'), `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\nsleep() { :; }\n${fn}\nassert_native_marker ${marker} native-evidence/ui.xml\necho "count=$foreign_anr_count"\n`);
+  const r = spawnSync('bash', ['case.sh'], { encoding: 'utf8', cwd: dir, env: { ...process.env, PATH: `${dir}/bin:${process.env.PATH}` } });
+  const read = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8') : '');
+  return { ...r, taps: read('taps'), evidence: read('native-evidence/foreign-anr.txt') };
+}
+const PASS_XML = '<hierarchy><node text="NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS" /></hierarchy>';
+
+test('loop: a launcher ANR in front of the app is answered with Wait, then the marker passes', () => {
+  const r = runMarkerLoop([anrDialog('Pixel Launcher isn&apos;t responding'), anrDialog('Pixel Launcher isn&apos;t responding'), PASS_XML]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.taps, '540 1318\n540 1318\n');
+  assert.match(r.stdout, /^count=2$/m);
+  assert.match(r.evidence, /^NATIVE_ANDROID_FOREIGN_ANR dump=1 marker=NATIVE_SQLCIPHER_WRITE_PASS dialog=Pixel Launcher isn't responding$/m);
+  assert.match(r.stderr, /NATIVE_ANDROID_FOREIGN_ANR dump=2 /);
+});
+
+test('loop: the pilot\'s own ANR fails at once, without a tap', () => {
+  const r = runMarkerLoop([anrDialog('Bridge Native Pilot isn&apos;t responding'), PASS_XML]);
+  assert.equal(r.status, 1);
+  assert.equal(r.taps, '');
+  assert.match(r.stderr, /NATIVE_ANDROID_UI_TEXT: Bridge Native Pilot isn't responding/);
+});
+
+test('loop: a dialog that never goes away still fails after the same 90 dumps', () => {
+  const r = runMarkerLoop([anrDialog('Pixel Launcher isn&apos;t responding')]);
+  assert.equal(r.status, 1);
+  assert.equal(r.taps.trim().split('\n').length, 90);
+  assert.doesNotMatch(r.stdout, /count=/);
+});
+
+test('loop: a visible marker passes without touching anything', () => {
+  const r = runMarkerLoop([PASS_XML]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.taps, '');
+  assert.match(r.stdout, /^count=0$/m);
+});

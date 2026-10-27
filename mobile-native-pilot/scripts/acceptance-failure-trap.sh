@@ -60,3 +60,25 @@ acceptance_print_runtime_errors() {
     | acceptance_redact | cut -c1-300 | tail -n 60 \
     | sed "s/^/NATIVE_${label^^}_RUNTIME_ERROR: /" >&2 || true
 }
+
+# Classifies a uiautomator dump for an Android "<app> isn't responding" dialog.
+# Run 40599501153 failed with the emulator's launcher ANR dialog in front of the app for
+# all 90 dumps: a dialog of ANOTHER app blocked the observation, not the app under test.
+# Prints exactly one line:
+#   none                       no ANR dialog
+#   own <title>                the app under test is not responding (a real failure)
+#   foreign <x> <y> <title>    another app's dialog; (x, y) is the centre of its Wait button
+# $1 = dump, $2 = label of the app under test. Always returns 0.
+acceptance_classify_anr_dialog() {
+  local xml="$1" own="$2" title node bounds
+  title=$({ grep -oE "text=\"[^\"]* isn(&apos;|'|’)t responding\"" "$xml" 2>/dev/null || true; } | head -n 1 \
+    | sed -E "s/^text=\"//; s/\"$//; s/&apos;/'/g; s/&amp;/\&/g")
+  if [[ -z "$title" ]]; then echo none; return 0; fi
+  if [[ "$title" == "$own isn"* ]]; then echo "own $title"; return 0; fi
+  node=$({ grep -oE '<node [^>]*resource-id="android:id/aerr_wait"[^>]*>' "$xml" || true; } | head -n 1)
+  bounds=$(printf '%s' "$node" | sed -nE 's/.*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1 \2 \3 \4/p')
+  # A foreign dialog without a Wait button cannot be answered: report it as blocking.
+  if [[ -z "$bounds" ]]; then echo "foreign - - $title"; return 0; fi
+  read -r x1 y1 x2 y2 <<< "$bounds"
+  echo "foreign $(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 )) $title"
+}

@@ -32,6 +32,7 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 stage=fixture-reset
 adb shell pm clear com.bridge.nativepilot
 adb logcat -c
+foreign_anr_count=0
 function assert_native_marker() {
   local marker="$1" output="$2"
   for i in $(seq 1 90); do
@@ -46,6 +47,20 @@ function assert_native_marker() {
       acceptance_detail="$marker:redbox-or-runtime-not-ready"; acceptance_print_ui_text "$output" android; return 1
     fi
     if grep -q "$marker" "$output"; then return 0; fi
+    # Another app's ANR dialog hides the app under test from uiautomator. Answer it with
+    # Wait (never Close: that would kill a process we do not own), log it, and keep
+    # polling inside the same 90-dump budget. The pilot's own ANR fails at once.
+    local anr
+    anr=$(acceptance_classify_anr_dialog "$output" 'Bridge Native Pilot')
+    case "$anr" in
+      own\ *) acceptance_detail="$marker:app-not-responding"; acceptance_print_ui_text "$output" android; return 1 ;;
+      foreign\ -\ *) acceptance_detail="$marker:foreign-anr-without-wait"; acceptance_print_ui_text "$output" android; return 1 ;;
+      foreign\ *)
+        foreign_anr_count=$((foreign_anr_count + 1))
+        echo "NATIVE_ANDROID_FOREIGN_ANR dump=$i marker=$marker dialog=${anr#foreign * * }" | tee -a native-evidence/foreign-anr.txt >&2
+        read -r _ x y _ <<< "$anr"
+        adb shell input tap "$x" "$y" ;;
+    esac
     sleep 2
   done
   acceptance_detail="$marker:not-seen-in-90-dumps"
@@ -74,6 +89,8 @@ adb pull /sdcard/native-acceptance.png native-evidence/android.png
 stage=final-logcat
 adb logcat -d > native-evidence/android-logcat.txt
 stage=verdict
-echo 'NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS' | tee native-evidence/native-verdict.txt
+# The verdict carries the number of foreign ANR dialogs answered, so a pass that needed
+# them is never indistinguishable from a clean one.
+echo "NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS foreign_anr_dialogs_answered=$foreign_anr_count" | tee native-evidence/native-verdict.txt
 # am start timing above is a debug/Metro diagnostic, NOT release TTID/TTFD or
 # proof of <1s/<2s meaningful UI targets. Never relabel these as performance PASS.
