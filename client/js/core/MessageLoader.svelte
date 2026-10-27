@@ -119,6 +119,30 @@
     return true;
   }
 
+  // N02 (#497 Android 40470478921): the re-read after a reconnect is one HTTP
+  // request. REST and the socket use different transports, so right after a
+  // network change the re-read can fail while the socket is already back, and
+  // nothing else re-reads while it stays up. Retry such a failure, bounded.
+  // With the socket down there is nothing to retry: its reconnect re-reads.
+  const RESYNC_RETRY_MS = [1_000, 2_000, 4_000];
+  let resyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancelResyncRetry(): void {
+    if (resyncRetryTimer !== null) clearTimeout(resyncRetryTimer);
+    resyncRetryTimer = null;
+  }
+
+  function scheduleResyncRetry(target: string, seq: number, attempt: number): void {
+    const delay = RESYNC_RETRY_MS[attempt];
+    const socket = getSocket() as (SocketLike & { connected?: boolean }) | null;
+    if (delay === undefined || socket?.connected !== true) return;
+    resyncRetryTimer = setTimeout(() => {
+      resyncRetryTimer = null;
+      if (seq !== requestSeq || target !== channelId) return;
+      void loadMessages(target, attempt + 1);
+    }, delay);
+  }
+
   // ── İlk yükleme ────────────────────────────────────────────────────────────
   /**
    * A deleted message is audit state, not content: the server scrubs the payload and keeps the
@@ -131,10 +155,11 @@
     return Array.isArray(rows) ? rows.filter((row) => !(row as { deletedAt?: unknown } | null)?.deletedAt) : [];
   }
 
-  async function loadMessages(targetChannelId?: string): Promise<void> {
+  async function loadMessages(targetChannelId?: string, attempt = 0): Promise<void> {
     const target = targetChannelId ?? channelId;
     if (!target) return;
 
+    cancelResyncRetry();
     const seq = ++requestSeq;
     channelId = target;
     const userId = currentHistoryUserId();
@@ -221,6 +246,7 @@
           BridgeRegistry.call('setMessagesOffline', false);
           BridgeRegistry.call('setMessagesError', info.message);
         }
+        scheduleResyncRetry(target, seq, attempt);
       } else {
         // A server error does not make content already on screen current: a
         // cached window applied while waiting stays labelled stale.
@@ -574,6 +600,7 @@
    * yeniden yüklüyoruz; `setMessages` _id bazlı olduğu için duplicate oluşmaz.
    */
   function onAuthLogout(): void {
+    cancelResyncRetry();
     requestSeq += 1;
     channelId = null;
     joinedChannel = null;
@@ -659,6 +686,7 @@
   onDestroy(() => {
     // Invalidate every in-flight request before unregistering the shared state
     // bridge. A late response must not write into a later session/mount.
+    cancelResyncRetry();
     requestSeq += 1;
     channelId = null;
     joinedChannel = null;
