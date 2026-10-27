@@ -1,0 +1,8 @@
+{
+  "name": "deepmerge",
+  "description": "deepmerge 4.3.1 with the GHSA-gcqx-w48m-w2h4 __proto__ fix (vendored by Bridge; see README.md)",
+  "version": "4.3.1-bridge.1",
+  "main": "dist/cjs.js",
+  "types": "index.d.ts",
+  "license": "MIT"
+}
