@@ -76,6 +76,7 @@
   // must not mask their remembered authorized choice once auth succeeds.
   let provisionalPreAuthSelection = false;
   let requestSeq = 0;
+  let authReloadServerId: string | null = null;
   let pendingNavigation: PendingNavigation | null = null;
   let destroyed = false;
   const collapsed = new Set<string>(readCollapsed());
@@ -223,6 +224,7 @@
       await renderView();
 
     }
+    if (seq !== requestSeq || destroyed) return;
 
     try {
       // Faz 4: apiFetch → 401'de access token'ı yeniler ve isteği bir kez tekrarlar.
@@ -301,6 +303,7 @@
       BridgeRegistry.call('setCurrentServerChannels', channels);
       log.info(`${channels.length} kanal yüklendi`);
       await renderView();
+      if (seq !== requestSeq || destroyed) return;
       isLoading = false;
 
       // Cross-server navigation is consumed only AFTER the authorized list
@@ -478,6 +481,7 @@
 
   function onLogout(): void {
     requestSeq += 1;
+    authReloadServerId = null;
     provisionalPreAuthSelection = false;
     if (pendingNavigation) finishPendingNavigation(pendingNavigation, false, 'logout');
     channels = [];
@@ -491,11 +495,28 @@
     void renderView();
   }
 
+  function onAuthTransition(): void {
+    // Invalidate work outside apiFetch too (JSON parsing, rendering and a
+    // pending cross-server navigation). Only a fresh authorized list after
+    // auth-success may resume the interrupted load.
+    if (isLoading) authReloadServerId = serverId;
+    requestSeq += 1;
+    isLoading = false;
+    if (pendingNavigation) finishPendingNavigation(pendingNavigation, false, 'superseded');
+  }
+
   async function onAuthSuccess(): Promise<void> {
+    // auth-success itself advances the HTTP fence too, even when another
+    // producer repeats it without auth-transition.
+    if (isLoading) onAuthTransition();
+    const interruptedServer = authReloadServerId;
+    authReloadServerId = null;
+    if (interruptedServer && interruptedServer === serverId) await loadChannels(interruptedServer, true);
     if (!provisionalPreAuthSelection || !serverId) return;
+    const seq = requestSeq;
     await navigationPreferencesReady();
     // A user selection or server switch during the read supersedes it.
-    if (destroyed || !provisionalPreAuthSelection || !serverId) return;
+    if (destroyed || seq !== requestSeq || !provisionalPreAuthSelection || !serverId) return;
     const owner = navigationOwner(BridgeRegistry.call('getMe'));
     if (!owner) return;
     provisionalPreAuthSelection = false;
@@ -620,6 +641,7 @@
     document.addEventListener('visibilitychange', onVisibilityResume);
     window.addEventListener('pageshow', onPageShowResume);
     document.addEventListener('bridge:load-channels', onLoadChannels);
+    document.addEventListener('bridge:auth-transition', onAuthTransition);
     document.addEventListener('bridge:auth-success', onAuthSuccess);
     document.addEventListener('bridge:auth-logout', onLogout);
     // ServerSwitcher bu bileşenden önce sunucu seçmiş olabilir.
@@ -721,6 +743,7 @@
     if (listRefreshTimer) clearTimeout(listRefreshTimer);
     requestSeq += 1;
     document.removeEventListener('bridge:load-channels', onLoadChannels);
+    document.removeEventListener('bridge:auth-transition', onAuthTransition);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:socket-ready', onSocketReconnected);

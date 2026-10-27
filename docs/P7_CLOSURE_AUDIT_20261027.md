@@ -6,6 +6,109 @@ and every open P7 issue and PR to where its work is and what still blocks it.
 It replaces nothing: [the closure ledger](P7_FINAL_CLOSURE_LEDGER_20261016.md)
 keeps its history, and every result below names its head and run.
 
+## Codex verification checkpoint — 2026-10-27
+
+This checkpoint supplements the original inventory below; it does **not**
+declare the closure candidate accepted. `main` is still `c061d72f`, #375 is
+unmerged, #497 is draft at `ca49e0b2`, and #500 is draft at `dd98331c` with no
+reviews. #500 has **not** been integrated into #497. Offline reload is now
+owner-approved P7 scope; the historical OWNER/FAIL rows below describe the
+pre-#500 inventory, not a new policy decision.
+
+Verified on #500 `dd98331c`:
+
+- [Quality Gate 40475772622](https://github.com/fatihcayiroglu/Bridge/actions/runs/40475772622):
+  all nine jobs succeeded, including full browser/media, security and the real
+  database/storage gate. Job success is not independent security review.
+- [Android 40475775199](https://github.com/fatihcayiroglu/Bridge/actions/runs/40475775199):
+  succeeded; emulator log explicitly records N02 missed-message reconciliation
+  and D2L01 passing.
+- [iOS 40475778861](https://github.com/fatihcayiroglu/Bridge/actions/runs/40475778861):
+  succeeded; logs explicitly record the **actual OS confirmation / same-process
+  channel journey** I07-XCUITest and D2L01-iOS passing. This is simulator
+  evidence; physical-device acceptance remains external.
+- Independent npm audits of root, server, Electron, E2E and iOS tooling each
+  report zero advisories. Dependency changes are already present: no duplicate
+  upgrade was made.
+- Independent Chromium against a newly isolated PostgreSQL database and Redis:
+  all eight offline-reload journeys and both adjacent local-first journeys
+  passed, with zero retries/skips. Includes logout, account switch, revocation,
+  tampering, expiry, erasure and missed-message reconciliation.
+
+The failures on #497 remain evidence:
+[Android 40470478921](https://github.com/fatihcayiroglu/Bridge/actions/runs/40470478921)
+failed N02 and native navigation;
+[iOS 40470482049](https://github.com/fatihcayiroglu/Bridge/actions/runs/40470482049)
+failed I07-XCUITest. Its later dispatch-only I07 smoke passed and does not
+replace the failed native journey. Multi-node 40470484752 and media 40470505863
+also failed. Passing #500 runs do not establish a cause for those failures.
+
+### Auth / native navigation recovery
+
+Isolated implementation branch: `codex/p7-session-startup-recovery-20261027`,
+based on #500. It reuses the existing router, navigation owner and HTTP fence.
+The change preserves the original intent deadline, cancels stale completions,
+and repeats only read-only channel resolution after same-account validation.
+Logout/account changes discard the intent; local-only sessions wait for server
+validation. Invite/DM mutations are never replayed. The channel-list owner
+invalidates deferred work and pending navigation, then restarts an interrupted
+authorized load after validation, including repeated auth-success events.
+
+Executable reproduction on unchanged production code:
+
+- Two same-account recovery cases issued one lookup instead of a fresh second
+  one (allowed and newly withheld destination).
+- A previous-account completion changed the next account's toast UI.
+- An interrupted list was never restarted; pending navigation could select a
+  late response across an auth transition.
+- A repeated auth-success without auth-transition also stranded a list load.
+
+These are consumer recovery defects, **not proof of duplicate startApp() or the
+root cause of all EX01/I07/N02 failures**. Production callers were traced:
+password/registration/2FA, passkey, SSO, and session restoration/recovery all use
+startApp. Bootstrap chooses SSO or restore; recovery is single-flight and
+transition-guarded. startApp writes setMe and AppState mirrors its auth-success
+payload; these two assignments alone do not prove a second session start.
+The HTTP generation changes on auth-transition, auth-success and auth-logout
+capture listeners. No fence, retry budget or assertion was weakened.
+
+Both runs' archived simulator console files contain startup 409s and a second
+socket connection. The smoke script launches a later app instance and captures
+console output there: these files must not be presented as an event trace of
+the earlier failing XCUITest. Android N02 still needs evidence of admission,
+join and authoritative fetch at its first failure; no shared cause is proven.
+
+The new unit regressions pass in the focused 168-test auth/navigation/socket
+run. A new real-browser regression holds an actual authorized HTTP response
+across production startApp, requires a fresh lookup and verifies the actual
+selected channel. Svelte and E2E typechecks and production bundle budgets pass.
+The first full client run passed 5,847 tests with coverage S/B/F/L
+95.37/90.35/94.79/96.46; this predates the final repeated-event case. Final
+full-suite and exact-head CI status belong to the recovery PR's checks/results;
+this checkpoint does not predeclare them green.
+
+### Offline-reload security review remains open
+
+The account/token/key/AAD boundary, grant corruption/expiry/erasure rejection,
+API local-only gate and reconnect refusal have code and executable evidence.
+That is not clearance of all twelve review requirements:
+
+- Native debug iOS artifact console output contains decrypted local values
+  from Capacitor's generic result logger. The provider's own fixed error logs
+  are not sufficient to establish plaintext-free native logging. Release uses
+  Capacitor's default debug-only logging; assess both distribution and evidence
+  paths without publishing plaintext fixtures or suppressing failure evidence.
+- Delayed grant writes racing logout/switch and their durable invalidation
+  still require an adversarial regression review.
+- Seven days is unchanged. Offline revocation cannot be learned until the
+  device reaches the server; device-clock checks do not defend against an
+  OS-level clock/storage attacker. No new grant-lifetime decision is inferred.
+
+Do not integrate #500 or close P7/#321/#209 based on this checkpoint. Required
+reviews, exact-head checks, multi-node/media failures, unresolved product-policy
+decisions and external-device gates remain outstanding. No merge or deployment
+was performed.
+
 ## Where the work is
 
 - **`main` `c061d72f`** (2026-10-23) is the last merge. Since then nothing has

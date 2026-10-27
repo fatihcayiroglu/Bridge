@@ -98,6 +98,44 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it.each([true, false])('restarts an interrupted authorized list after authentication stabilizes (preceding transition: %s)', async precedingTransition => {
+  let finishOld!: (value: Response) => void;
+  const old = new Promise<Response>(resolve => { finishOld = resolve; });
+  mockApiFetch.mockImplementationOnce(() => old);
+  document.dispatchEvent(new CustomEvent('bridge:load-channels', { detail: { serverId: 's1' } }));
+  await vi.waitFor(() => expect(channelRequests('s1')).toBe(1));
+  if (precedingTransition) document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
+  await settle();
+  expect(channelRequests('s1')).toBe(1);
+  document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+  await vi.waitFor(() => expect(channelRequests('s1')).toBe(2));
+  await vi.waitFor(() => expect(listed.map(c => c._id)).toEqual(['general']));
+  finishOld(ok([{ _id: 'stale-private', name: 'stale private' }]));
+  await settle();
+  expect(listed.map(c => c._id)).toEqual(['general']);
+});
+
+it('cancels pending navigation on an auth transition before a late authorized list can select it', async () => {
+  let finishOld!: (value: Response) => void;
+  const old = new Promise<Response>(resolve => { finishOld = resolve; });
+  mockApiFetch.mockImplementationOnce(() => old);
+  document.dispatchEvent(new CustomEvent('bridge:load-channels', { detail: { serverId: 's1' } }));
+  await vi.waitFor(() => expect(channelRequests('s1')).toBe(1));
+  const selected = vi.fn();
+  document.addEventListener('bridge:channel-selected', selected);
+  try {
+    const navigating = BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'stale-private', undefined, { _id: 's1' });
+    document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
+    finishOld(ok([{ _id: 'stale-private', name: 'stale private' }]));
+    await expect(navigating).resolves.toBe(false);
+    await settle();
+    expect(selected).not.toHaveBeenCalled();
+    expect(listed).toEqual([]);
+  } finally {
+    document.removeEventListener('bridge:channel-selected', selected);
+  }
+});
+
 describe('explicit text selection after pre-auth fallback', () => {
   it('persists reselecting the current channel after authentication and restores it after a real component remount', async () => {
     localStorage.clear();

@@ -36,6 +36,7 @@ function makeDeps(overrides: Partial<NativeDeepLinkDeps> = {}) {
     }),
     toast: vi.fn(),
     signedIn: () => true,
+    sessionOwner: () => 'test-user',
     openDm: vi.fn(async () => true),
     openGroupDm: vi.fn(async (groupId: string) => groupId === 'g-mine'),
     ...overrides,

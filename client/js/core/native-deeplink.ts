@@ -24,6 +24,7 @@ import { routeDesktopDeepLink, type DeepLinkDeps, CHANNEL_LOOKUP_SERVER_LIMIT } 
 import { t } from './i18n/index.ts';
 import { createLogger } from './logger.ts';
 import { navigationOwner } from './navigation-selection.ts';
+import { isLocalOnlySession } from './session-authority.ts';
 import { beginIntent, noteIntentStage } from './navigation-intent-diagnostics.ts';
 
 const log = createLogger('NativeDeepLink');
@@ -79,6 +80,7 @@ interface ServerLike { _id?: string }
 
 export interface NativeDeepLinkDeps extends DeepLinkDeps {
   signedIn(): boolean;
+  sessionOwner(): string | null;
   openDm(userId: string): Promise<boolean> | boolean;
   /** Opens a group DM only if it is in the user's own group list (membership is server-side). */
   openGroupDm(groupId: string): Promise<boolean> | boolean;
@@ -100,12 +102,14 @@ async function serverChannels(deps: DeepLinkDeps, serverId: string): Promise<Arr
   return Array.isArray(list) ? list as Array<{ _id?: string }> : [];
 }
 
-export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeepLinkDeps, timeoutMs = SHELL_READY_WAIT_MS): Promise<boolean> {
+export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeepLinkDeps, timeoutMs = SHELL_READY_WAIT_MS,
+  isCurrent: () => boolean = () => true): Promise<boolean> {
   const channelLink = link.kind === 'channel';
-  if (!(await waitFor(() => deps.ready(), timeoutMs))) {
+  if (!(await waitFor(() => !isCurrent() || deps.ready(), timeoutMs))) {
     if (channelLink) noteIntentStage('shell-not-ready');
     return false;
   }
+  if (!isCurrent()) return false;
   // Cold start: the boot load may still be in flight. `loadServers()` resolves once the list
   // reflects the server (ServerSwitcher queues behind an in-flight load); bounded, never forever.
   if (deps.servers().length === 0) {
@@ -116,6 +120,7 @@ export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeep
     ]);
     clearTimeout(timer);
   }
+  if (!isCurrent()) return false;
   const unavailable = () => { deps.toast(t('gdm_gone', 'Bu konuşma artık kullanılamıyor.'), 'warning'); return false; };
 
   switch (link.kind) {
@@ -136,9 +141,14 @@ export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeep
       noteIntentStage('dispatched', servers.length);
       for (const server of ordered.slice(0, CHANNEL_LOOKUP_SERVER_LIMIT)) {
         const channels = await serverChannels(deps, server._id as string);
+        // apiFetch deliberately cancels old authentication contexts. A canceled
+        // lookup is not evidence that the destination is unavailable, and must
+        // never navigate or change the next session's UI.
+        if (!isCurrent()) return false;
         if (channels.some((channel) => channel?._id === link.channelId)) {
           noteIntentStage('lookup-found');
           const navigated = Boolean(await deps.navigateToChannel(link.channelId, link.messageId, server));
+          if (!isCurrent()) return false;
           noteIntentStage(navigated ? 'navigated' : 'not-navigated');
           return navigated;
         }
@@ -162,7 +172,8 @@ const registryDeps: NativeDeepLinkDeps = {
   // A cold app already has a stored JWT while /api/me is still restoring.
   // Starting a lookup then loses the intent when startApp invalidates that
   // pre-restoration HTTP context. Wait in the existing bounded sign-in queue.
-  signedIn: () => Boolean(readToken()) && navigationOwner(BridgeRegistry.call('getMe')) !== null,
+  signedIn: () => !isLocalOnlySession() && Boolean(readToken()) && navigationOwner(BridgeRegistry.call('getMe')) !== null,
+  sessionOwner: () => navigationOwner(BridgeRegistry.call('getMe')),
   openDm: async (userId) => {
     if (!(await waitFor(() => BridgeRegistry.has('openDm'), SHELL_READY_WAIT_MS))) return false;
     return Boolean(await BridgeRegistry.call<Promise<boolean> | boolean>('openDm', userId));
@@ -182,7 +193,11 @@ type PendingQueue = unknown[];
 type BridgeWindow = Window & { __bridgePendingDeepLinks?: PendingQueue };
 
 let installed = false;
-let waiting: Array<{ link: NativeDeepLink; at: number }> = [];
+interface PendingLink { link: NativeDeepLink; at: number; owner: string | null }
+let waiting: PendingLink[] = [];
+const active = new Set<{ item: PendingLink }>();
+let authEpoch = 0;
+let transitioning = false;
 const listeners: Array<[EventTarget, string, EventListener]> = [];
 
 function listen(target: EventTarget, type: string, handler: EventListener): void {
@@ -190,16 +205,34 @@ function listen(target: EventTarget, type: string, handler: EventListener): void
   listeners.push([target, type, handler]);
 }
 
-function dispatch(link: NativeDeepLink, deps: NativeDeepLinkDeps): void {
-  if (!deps.signedIn()) {
+function dispatch(item: PendingLink, deps: NativeDeepLinkDeps): void {
+  const { link } = item;
+  const owner = deps.sessionOwner();
+  if (Date.now() - item.at > PENDING_LINK_TTL_MS || (item.owner !== null && item.owner !== owner)) return;
+  if (transitioning || !deps.signedIn()) {
     if (link.kind === 'channel') noteIntentStage('queued-for-sign-in');
-    waiting.push({ link, at: Date.now() });
+    waiting.push(item);
     return;
   }
-  void routeNativeDeepLink(link, deps).catch((err) => {
+  item.owner = owner;
+  const epoch = authEpoch;
+  const attempt = { item };
+  active.add(attempt);
+  const isCurrent = () => installed && epoch === authEpoch && !transitioning && deps.signedIn()
+    && deps.sessionOwner() === owner && Date.now() - item.at <= PENDING_LINK_TTL_MS;
+  void routeNativeDeepLink(link, deps, SHELL_READY_WAIT_MS, isCurrent).catch((err) => {
+    if (!isCurrent()) return;
     if (link.kind === 'channel') noteIntentStage('route-error');
     log.warn('Deep link could not be routed', err);
-  });
+  }).finally(() => { active.delete(attempt); });
+}
+
+function invalidateRoutes(): void {
+  authEpoch++;
+  // Only read-only channel navigation is replayable. Never replay invite/DM
+  // mutations whose server-side outcome may already have committed.
+  for (const { item } of active) if (item.link.kind === 'channel') waiting.push(item);
+  active.clear();
 }
 
 /**
@@ -216,19 +249,31 @@ export function initNativeDeepLinks(deps: NativeDeepLinkDeps = registryDeps): vo
     for (const payload of queue.splice(0)) {
       const link = parseNativeDeepLink(payload);
       if (link?.kind === 'channel') beginIntent();
-      if (link) dispatch(link, deps);
+      if (link) dispatch({ link, at: Date.now(), owner: deps.sessionOwner() }, deps);
       else log.warn('Ignored an unsupported deep link payload');
     }
   };
   listen(window, 'bridge:deeplink', drain);
+  listen(document, 'bridge:auth-transition', () => {
+    transitioning = true;
+    invalidateRoutes();
+  });
   listen(document, 'bridge:auth-success', () => {
-    const now = Date.now();
-    const ready = waiting.filter((item) => now - item.at <= PENDING_LINK_TTL_MS);
+    // The HTTP fence also changes on auth-success, including a repeated event
+    // without a preceding transition. Reconcile through fresh authorized GETs.
+    invalidateRoutes();
+    transitioning = false;
+    const ready = waiting;
     waiting = [];
-    for (const item of ready) dispatch(item.link, deps);
+    for (const item of ready) dispatch(item, deps);
   });
   // Signing out forgets links that were waiting for the previous person's session.
-  listen(document, 'bridge:auth-logout', () => { waiting = []; });
+  listen(document, 'bridge:auth-logout', () => {
+    authEpoch++;
+    active.clear();
+    waiting = [];
+    transitioning = false;
+  });
   drain();
 }
 
@@ -236,5 +281,8 @@ export function initNativeDeepLinks(deps: NativeDeepLinkDeps = registryDeps): vo
 export function _resetNativeDeepLinksForTest(): void {
   for (const [target, type, handler] of listeners.splice(0)) target.removeEventListener(type, handler);
   installed = false;
+  authEpoch++;
+  transitioning = false;
+  active.clear();
   waiting = [];
 }
