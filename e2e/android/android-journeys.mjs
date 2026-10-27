@@ -2949,12 +2949,32 @@ async function main() {
         try {
           // Proof the document-start script ran, and what it saw (135f3fe5:
           // the blobs still rendered in B, cause unknown).
-          window.__bridgeSf04Init = { ran: true, flagSeen: sessionStorage.getItem(flag) === '1' };
-          if (sessionStorage.getItem(flag) !== '1') return;
-          const style = document.createElement('style');
-          style.textContent = '.auth-blob{display:none!important}';
-          document.documentElement.appendChild(style);
-        } catch { /* evidence only */ }
+          const init = window.__bridgeSf04Init = { ran: true, flagSeen: sessionStorage.getItem(flag) === '1', method: null };
+          if (!init.flagSeen) return;
+          const rule = '.auth-blob{display:none!important}';
+          // 2d8c57bc: the script ran and saw the flag, yet the blobs rendered.
+          // At document start there may be no documentElement to append to,
+          // so prefer a constructable sheet; otherwise wait for the element.
+          if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in Document.prototype) {
+            const sheet = new CSSStyleSheet();
+            sheet.replaceSync(rule);
+            document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+            init.method = 'adopted-sheet';
+            return;
+          }
+          const append = () => {
+            const style = document.createElement('style');
+            style.textContent = rule;
+            document.documentElement.appendChild(style);
+            init.method = 'style-element';
+          };
+          if (document.documentElement) { append(); return; }
+          new MutationObserver((_, observer) => {
+            if (!document.documentElement) return;
+            observer.disconnect();
+            append();
+          }).observe(document, { childList: true });
+        } catch { window.__bridgeSf04Init = { ...(window.__bridgeSf04Init ?? {}), method: 'error' }; }
       }, HIDE_FLAG), 10_000);
       for (const [label, hide] of [['normal-a', false], ['blobs-hidden', true], ['normal-b', false]]) {
         await step(`flag-${label}`, () => page.evaluate(({ flag, on }) => {
@@ -2968,6 +2988,8 @@ async function main() {
         const state = await step(`state-${label}`, () => page.evaluate(() => ({
           initRan: window.__bridgeSf04Init?.ran === true,
           initFlagSeen: window.__bridgeSf04Init?.flagSeen === true,
+          initMethod: ['adopted-sheet', 'style-element', 'error'].includes(window.__bridgeSf04Init?.method)
+            ? window.__bridgeSf04Init.method : null,
           blobs: document.querySelectorAll('.auth-blob').length,
           blobsRendered: [...document.querySelectorAll('.auth-blob')]
             .filter(b => getComputedStyle(b).display !== 'none').length,

@@ -282,7 +282,10 @@ test('#209 SF04 is a same-process warm-reload ABA, verified per reload, bounded 
   assert.ok(source.indexOf("await measure('SF04'") > source.indexOf("await measure('SF03'"));
   assert.match(sf04, /\['normal-a', false\], \['blobs-hidden', true\], \['normal-b', false\]/);
   // Hidden from document start, only while the flag is set; the flag is always cleared.
-  assert.match(sf04, /page\.addInitScript\(flag => \{[^]*sessionStorage\.getItem\(flag\) !== '1'[^]*\.auth-blob\{display:none!important\}/);
+  assert.match(sf04, /page\.addInitScript\(flag => \{[^]*flagSeen: sessionStorage\.getItem\(flag\) === '1'[^]*if \(!init\.flagSeen\) return;[^]*\.auth-blob\{display:none!important\}/);
+  // 2d8c57bc: ran + flag seen, blobs still rendered; prefer a constructable sheet and report the method.
+  assert.match(sf04, /document\.adoptedStyleSheets = \[\.\.\.document\.adoptedStyleSheets, sheet\]/);
+  assert.match(sf04, /initMethod: \['adopted-sheet', 'style-element', 'error'\]\.includes/);
   assert.match(sf04, /step\('flag-clear', \(\) => page\.evaluate\(flag => sessionStorage\.removeItem\(flag\), HIDE_FLAG\)/);
   // Applied only when the page proves the condition of every reload.
   assert.match(sf04, /reloads\[1\]\.blobsRendered === 0 && reloads\[0\]\.blobsRendered > 0 && reloads\[2\]\.blobsRendered > 0/);
