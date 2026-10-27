@@ -209,8 +209,12 @@ export async function collectPageTiming() {
   const paint = Object.fromEntries(performance.getEntriesByType('paint').map(e => [e.name, epoch(e.startTime)]));
   const longTasks = await buffered('longtask');
   const frames = await buffered('long-animation-frame');
+  // The Android shell's first-frame effect deferral (mobile/index.template.html).
+  const boot = globalThis.__bridgeBootEffects;
   return {
     available: Number.isFinite(origin),
+    bootEffects: boot && typeof boot === 'object'
+      ? { deferred: boot.deferred === true, restored: Number.isFinite(boot.restoredEpochMs) } : null,
     supported: { longtask: longTasks !== null, longAnimationFrame: frames !== null },
     timeOriginEpochMs: Math.round(origin),
     navigation: nav ? { responseEndEpochMs: epoch(nav.responseEnd), domContentLoadedEpochMs: epoch(nav.domContentLoadedEventEnd),
@@ -284,6 +288,8 @@ export function summarizeRendererOverlap(samples) {
     stallsMostlyBusy: sum('stallsMostlyBusy'), stallsMostlyIdle: sum('stallsMostlyIdle'),
     beforeFirstContentfulPaint: sum('beforeFirstContentfulPaint'),
     pageTimingRead: timing.length,
+    bootEffectsDeferred: timing.filter(t => t.bootEffects?.deferred).length,
+    bootEffectsRestored: timing.filter(t => t.bootEffects?.restored).length,
     longTaskSupported: timing.filter(t => t.supported.longtask).length,
     longAnimationFrameSupported: timing.filter(t => t.supported.longAnimationFrame).length,
     longTasks: { count: sumTiming('longTasks', 'count'), totalMs: sumTiming('longTasks', 'totalMs'),
