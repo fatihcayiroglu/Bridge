@@ -98,6 +98,17 @@ That is not clearance of all twelve review requirements:
   are not sufficient to establish plaintext-free native logging. Release uses
   Capacitor's default debug-only logging; assess both distribution and evidence
   paths without publishing plaintext fixtures or suppressing failure evidence.
+  The next security revision replaces only Capacitor 8.4.3's generic successful
+  result-payload print with registered plugin/method metadata. The normal iOS
+  overlay applies it before compilation, pins the reviewed SDK file hash, is
+  idempotent, refuses shared dependency symlinks, and fails closed on unknown
+  source/version. Error handlers and result delivery remain unchanged. The new
+  native CI assertion rejects raw result lines and requires an actual native
+  decrypt log as a positive control. The assertion fails on #500's archived
+  console, rather than accepting an empty log. Local mobile tests pass 147/147
+  (zero skips), and the iOS evidence/transport/checker tests pass 30/30. Actual
+  compiled-SDK and simulator privacy acceptance still require the new exact-head
+  iOS run; this is not inferred from the source-patch unit tests.
 - Delayed grant writes racing logout/switch and their durable invalidation
   were subsequently reproduced: a paused grant write completed after a
   successful clear and made the old token unlock history again. The isolated
@@ -109,7 +120,11 @@ That is not clearance of all twelve review requirements:
   includes reversed refresh completion, asynchronous DB open, encryption,
   another account's independent mutations, an already-invalid session and
   canonical-token removal by another tab. The final focused store/auth run
-  passes 50 tests. This corrects the reproduced race; it does not establish
+  passes 50 tests; the final adjacent run passes 401, and the final rebuilt
+  client passes 11 real Chromium/PostgreSQL/Redis journeys. A new full client
+  run after freezing the grant code passes 5,856/5,856 in 346 files, with
+  coverage S/B/F/L 95.37/90.35/94.80/96.47. This corrects the reproduced race;
+  it does not establish
   durable deletion when the storage device itself rejects the delete, or a
   cross-process durable revocation protocol. Those boundaries remain review
   items, rather than being justified by the former incorrect comment that an

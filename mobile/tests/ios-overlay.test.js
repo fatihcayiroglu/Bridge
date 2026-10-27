@@ -30,6 +30,12 @@ function sandbox(appId = 'com.bridge.app') {
   fs.writeFileSync(pbx, fs.readFileSync(pbx, 'utf8').replace(/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/g, `PRODUCT_BUNDLE_IDENTIFIER = ${appId};`));
   fs.cpSync(path.join(ROOT, 'mobile', 'ios'), path.join(dir, 'mobile', 'ios'), { recursive: true });
   fs.copyFileSync(path.join(ROOT, 'capacitor.config.js'), path.join(dir, 'capacitor.config.js'));
+  const sdk = path.join('node_modules', '@capacitor', 'ios');
+  for (const file of ['package.json', 'Capacitor/Capacitor/CapacitorBridge.swift']) {
+    const dest = path.join(dir, sdk, file);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(path.join(ROOT, sdk, file), dest);
+  }
   return dir;
 }
 const readInfo = (dir) => plist.parse(fs.readFileSync(path.join(dir, 'ios', 'App', 'App', 'Info.plist'), 'utf8'));

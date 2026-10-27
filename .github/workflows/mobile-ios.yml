@@ -64,7 +64,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - name: Native WebDriver transport regression tests
-        run: node --test e2e/ios/webdriver-http.test.js e2e/ios/live-channel-evidence.test.mjs e2e/ios/native-open-confirmation.test.mjs e2e/ios/appium-startup-evidence.test.mjs e2e/ios/startup-page-evidence.test.mjs
+        run: node --test e2e/ios/webdriver-http.test.js e2e/ios/live-channel-evidence.test.mjs e2e/ios/native-open-confirmation.test.mjs e2e/ios/appium-startup-evidence.test.mjs e2e/ios/startup-page-evidence.test.mjs e2e/ios/bridge-result-log-privacy.test.mjs
       - name: Real CryptoKit and Keychain security regressions
         env:
           LOCAL_CRYPTO_VECTOR_PATH: ${{ runner.temp }}/bridge-local-crypto-vector.json
@@ -177,6 +177,9 @@ jobs:
           echo "app: $APP"
           cat e2e/ios/results/early-boot.log 2>/dev/null || true
           IOS_APP_PATH="$APP" bash e2e/ios/run-simulator-smoke.sh
+      - name: Native decrypt result log privacy (real simulator positive control)
+        if: ${{ !cancelled() && steps.ios_build.outcome == 'success' }}
+        run: node e2e/ios/bridge-result-log-privacy.mjs e2e/ios/results/console.log
       - name: Stop disposable PostgreSQL
         if: always()
         run: |

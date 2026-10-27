@@ -29,6 +29,7 @@
 const fs = require('fs');
 const path = require('path');
 const plist = require('plist');
+const { redactIosBridgeResults } = require('./redact-ios-bridge-results.js');
 
 class OverlayError extends Error {}
 
@@ -102,6 +103,9 @@ function applyIosOverlay({ root = path.resolve(__dirname, '../..'), ifPresent = 
     ...(Array.isArray(curated.UIBackgroundModes) ? curated.UIBackgroundModes : [])]);
   info.UIBackgroundModes = [...modes].filter((mode) => ALLOWED_BACKGROUND_MODES.has(mode)).sort();
   applied.push('UIBackgroundModes');
+  // Fail closed on an unreviewed SDK/logger shape before changing the project.
+  // This changes diagnostics only; native results and error handling are intact.
+  redactIosBridgeResults(root);
   fs.writeFileSync(infoPath, plist.build(info));
 
   const { marketing, build } = curatedVersions(root);
