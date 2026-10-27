@@ -33,7 +33,7 @@ export function createNativeCredentialPort({ secureStore }) {
       typeof secureStore.getItemAsync !== 'function' ||
       typeof secureStore.setItemAsync !== 'function' ||
       typeof secureStore.deleteItemAsync !== 'function' ||
-      typeof secureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY !== 'string') {
+      !['string', 'number'].includes(typeof secureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY)) {
     throw new NativeCredentialError('INVALID_NATIVE_ADAPTER');
   }
 
