@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   IndexedDbKeyProvider,
@@ -15,6 +15,7 @@ import {
 } from '../js/core/local-first/offline-session.ts';
 import { markLocalAccountErased, resetErasedLocalAccountsForTests } from '../js/core/local-first/erased-accounts.ts';
 import type { EncryptedLocalRecord } from '../js/core/local-first/store.ts';
+import { EncryptedLocalStore } from '../js/core/local-first/store.ts';
 
 type Handler<T> = ((this: T, event: Event) => unknown) | null;
 
@@ -402,6 +403,138 @@ function token(id: string, nonce = 'a'): string {
 describe('P7 offline reload: device-bound offline grant (owner decision on #497)', () => {
   const NOW = 1_800_000_000_000;
   const user = { _id: 'offline-u1', username: 'alice', displayName: 'Alice', email: 'never-stored@example.test' };
+
+  it('does not resurrect a grant when a server-validated write finishes after logout clears it', async () => {
+    const t = token(user._id);
+    await recordOfflineSession(user, t, NOW);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = EncryptedLocalStore.prototype.putJson;
+    const write = vi.spyOn(EncryptedLocalStore.prototype, 'putJson').mockImplementationOnce(async function (this: EncryptedLocalStore, ...args) {
+      await gate;
+      return original.apply(this, args);
+    });
+    try {
+      const pending = recordOfflineSession(user, t, NOW + 1);
+      await vi.waitFor(() => expect(write).toHaveBeenCalledOnce());
+      await clearOfflineSession(user._id);
+      expect(await unlockOfflineSession(t, NOW + 2)).toEqual({ ok: false, reason: 'no-grant' });
+      release();
+      await pending;
+      expect(await unlockOfflineSession(t, NOW + 3)).toEqual({ ok: false, reason: 'no-grant' });
+    } finally {
+      release();
+      write.mockRestore();
+    }
+  });
+
+  it('keeps the newest refreshed token grant when an older encrypted write finishes later', async () => {
+    const oldToken = token(user._id, 'old');
+    const newToken = token(user._id, 'new');
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = EncryptedLocalStore.prototype.putJson;
+    const write = vi.spyOn(EncryptedLocalStore.prototype, 'putJson').mockImplementationOnce(async function (this: EncryptedLocalStore, ...args) {
+      await gate;
+      return original.apply(this, args);
+    });
+    try {
+      const pending = recordOfflineSession(user, oldToken, NOW);
+      await vi.waitFor(() => expect(write).toHaveBeenCalledOnce());
+      await recordOfflineSession(user, newToken, NOW + 1);
+      release(); await pending;
+      expect((await unlockOfflineSession(newToken, NOW + 2)).ok).toBe(true);
+      expect(await unlockOfflineSession(oldToken, NOW + 2)).toEqual({ ok: false, reason: 'token-mismatch' });
+    } finally { release(); write.mockRestore(); }
+  });
+
+  it('does not let a delayed clear delete a newer validated grant', async () => {
+    const t = token(user._id);
+    await recordOfflineSession(user, t, NOW);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = EncryptedLocalStore.prototype.delete;
+    const deletion = vi.spyOn(EncryptedLocalStore.prototype, 'delete').mockImplementationOnce(async function (this: EncryptedLocalStore, ...args) {
+      await gate;
+      return original.apply(this, args);
+    });
+    try {
+      const clearing = clearOfflineSession(user._id);
+      await vi.waitFor(() => expect(deletion).toHaveBeenCalledOnce());
+      await recordOfflineSession(user, t, NOW + 1);
+      release(); await clearing;
+      expect(await unlockOfflineSession(t, NOW + 2)).toEqual({
+        ok: true, validatedAt: NOW + 1, user: { _id: user._id, username: 'alice', displayName: 'Alice' },
+      });
+    } finally { release(); deletion.mockRestore(); }
+  });
+
+  it('rechecks mutation guards after opening IndexedDB before starting a transaction', async () => {
+    const backend = new IndexedDbRecordBackend();
+    const row = record('guarded-record');
+    let current = true;
+    const pending = backend.put(row, () => current);
+    current = false;
+    await pending;
+    expect(await backend.get(row.id)).toBeNull();
+    await backend.put(row);
+    current = true;
+    const clearing = backend.delete(row.id, () => current);
+    current = false;
+    await clearing;
+    expect(await backend.get(row.id)).toEqual(row);
+    backend.close();
+  });
+
+  it('drops a guarded encrypted write invalidated during asynchronous encryption', async () => {
+    const { store } = await createBrowserLocalFirstStore(user._id);
+    let current = true;
+    const pending = store.putJson('session', 'guarded-encryption', { proof: 'private' }, NOW, () => current);
+    current = false;
+    await pending;
+    expect(await store.getJson('session', 'guarded-encryption')).toBeNull();
+    store.close();
+  });
+
+  it('does not let an already invalid session supersede a pending clear', async () => {
+    const t = token(user._id);
+    await recordOfflineSession(user, t, NOW);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = EncryptedLocalStore.prototype.delete;
+    const deletion = vi.spyOn(EncryptedLocalStore.prototype, 'delete').mockImplementationOnce(async function (this: EncryptedLocalStore, ...args) {
+      await gate;
+      return original.apply(this, args);
+    });
+    try {
+      const clearing = clearOfflineSession(user._id);
+      await vi.waitFor(() => expect(deletion).toHaveBeenCalledOnce());
+      await recordOfflineSession(user, t, NOW + 1, () => false);
+      release(); await clearing;
+      expect(await unlockOfflineSession(t, NOW + 2)).toEqual({ ok: false, reason: 'no-grant' });
+    } finally { release(); deletion.mockRestore(); }
+  });
+
+  it('keeps grant mutation ordering scoped to the account', async () => {
+    const t = token(user._id);
+    const other = { _id: 'offline-other' };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = EncryptedLocalStore.prototype.putJson;
+    const write = vi.spyOn(EncryptedLocalStore.prototype, 'putJson').mockImplementationOnce(async function (this: EncryptedLocalStore, ...args) {
+      await gate;
+      return original.apply(this, args);
+    });
+    try {
+      const pending = recordOfflineSession(user, t, NOW);
+      await vi.waitFor(() => expect(write).toHaveBeenCalledOnce());
+      await recordOfflineSession(other, token(other._id), NOW);
+      await clearOfflineSession(other._id);
+      release(); await pending;
+      expect((await unlockOfflineSession(t, NOW + 1)).ok).toBe(true);
+      expect(await unlockOfflineSession(token(other._id), NOW + 1)).toEqual({ ok: false, reason: 'no-grant' });
+    } finally { release(); write.mockRestore(); }
+  });
 
   it('opens an existing store only when this device already holds the account key, and never creates one', async () => {
     expect(await openExistingBrowserLocalFirstStore('fresh-user')).toBeNull();

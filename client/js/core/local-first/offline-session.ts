@@ -28,6 +28,20 @@ const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const NAMESPACE = 'session';
 const RECORD_ID = 'offline-grant';
 
+// Latest intent per account, registered synchronously before any storage or
+// encryption await. A canceled writer cannot recreate a cleared grant; a late
+// clear cannot delete a newer server-validated grant. Object identity also
+// keeps a settled operation from becoming current again after map cleanup.
+const mutations = new Map<string, object>();
+function mutation(userId: string) {
+  const operation = {};
+  mutations.set(userId, operation);
+  return {
+    isCurrent: () => mutations.get(userId) === operation,
+    finish: () => { if (mutations.get(userId) === operation) mutations.delete(userId); },
+  };
+}
+
 /** The profile fields the shell needs to render a signed-in, read-only view. */
 export interface OfflineUser {
   _id: string;
@@ -95,34 +109,47 @@ function validGrant(value: unknown, userId: string): value is OfflineGrant {
  * Records that the server validated `token` for `user` just now. Called only
  * from a server-validated session start or a token refresh inside one.
  */
-export async function recordOfflineSession(user: Record<string, unknown>, token: string, now = Date.now()): Promise<void> {
+export async function recordOfflineSession(user: Record<string, unknown>, token: string, now = Date.now(),
+  sessionIsCurrent: () => boolean = () => true): Promise<void> {
   const userId = nonEmpty(user._id) ? user._id : nonEmpty(user.id) ? user.id : null;
   if (!userId || !nonEmpty(token) || isLocalAccountErased(userId)) return;
   if (tokenAccountId(token) !== userId) return;
-  const { store, durable } = await createBrowserLocalFirstStore(userId);
+  if (!sessionIsCurrent()) return;
+  const operation = mutation(userId);
   try {
-    if (!durable) return; // nothing survives a reload anyway
-    const grant: OfflineGrant = {
-      v: 1, userId, tokenDigest: await localDigestHex(token), validatedAt: now,
-      expiresAt: now + OFFLINE_SESSION_MAX_AGE_MS, user: offlineUser(user, userId),
-    };
-    await store.putJson(NAMESPACE, RECORD_ID, grant, now);
+    const { store, durable } = await createBrowserLocalFirstStore(userId);
+    try {
+      if (!durable) return; // nothing survives a reload anyway
+      const grant: OfflineGrant = {
+        v: 1, userId, tokenDigest: await localDigestHex(token), validatedAt: now,
+        expiresAt: now + OFFLINE_SESSION_MAX_AGE_MS, user: offlineUser(user, userId),
+      };
+      await store.putJson(NAMESPACE, RECORD_ID, grant, now, () => operation.isCurrent() && sessionIsCurrent());
+    } finally {
+      store.close();
+    }
   } finally {
-    store.close();
+    operation.finish();
   }
 }
 
 /** Deletes the account's grant (logout, account switch, erasure, 401/403). Never throws. */
 export async function clearOfflineSession(userId: string | null | undefined): Promise<void> {
   if (!nonEmpty(userId)) return;
-  const store = await openExistingBrowserLocalFirstStore(userId).catch(() => null);
-  if (!store) return;
+  const operation = mutation(userId);
   try {
-    await store.delete(NAMESPACE, RECORD_ID);
-  } catch {
-    // A grant that cannot be deleted also cannot be read without its key.
+    const store = await openExistingBrowserLocalFirstStore(userId).catch(() => null);
+    if (!store) return;
+    try {
+      await store.delete(NAMESPACE, RECORD_ID, operation.isCurrent);
+    } catch {
+      // Storage failure is not proof of durable deletion. The caller still
+      // removes the stored token; review durable invalidation separately.
+    } finally {
+      store.close();
+    }
   } finally {
-    store.close();
+    operation.finish();
   }
 }
 

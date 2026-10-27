@@ -99,7 +99,21 @@ That is not clearance of all twelve review requirements:
   Capacitor's default debug-only logging; assess both distribution and evidence
   paths without publishing plaintext fixtures or suppressing failure evidence.
 - Delayed grant writes racing logout/switch and their durable invalidation
-  still require an adversarial regression review.
+  were subsequently reproduced: a paused grant write completed after a
+  successful clear and made the old token unlock history again. The isolated
+  `codex/p7-offline-grant-review-20261027` correction registers the latest
+  operation per account before any await, carries a cancellation guard through
+  encryption and immediately before the IndexedDB transaction, and guards
+  production writes with the current auth transition/account/canonical token.
+  A late clear cannot remove a newer validated grant. Regression coverage also
+  includes reversed refresh completion, asynchronous DB open, encryption,
+  another account's independent mutations, an already-invalid session and
+  canonical-token removal by another tab. The final focused store/auth run
+  passes 50 tests. This corrects the reproduced race; it does not establish
+  durable deletion when the storage device itself rejects the delete, or a
+  cross-process durable revocation protocol. Those boundaries remain review
+  items, rather than being justified by the former incorrect comment that an
+  undeletable grant cannot be read.
 - Seven days is unchanged. Offline revocation cannot be learned until the
   device reaches the server; device-clock checks do not defend against an
   OS-level clock/storage attacker. No new grant-lifetime decision is inferred.

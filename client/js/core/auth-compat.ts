@@ -71,6 +71,14 @@ function sessionUserId(): string | null {
   return typeof id === 'string' && id ? id : null;
 }
 
+function recordCurrentOfflineSession(user: AuthUser, token: string): Promise<void> {
+  const transition = authTransition;
+  const userId = user._id ?? user.id;
+  return recordOfflineSession(user, token, undefined, () =>
+    isCurrentAuthTransition(transition) && currentAuthority() === 'server'
+    && sessionUserId() === userId && readToken() === token);
+}
+
 /** Access token'ı mevcut depolama sözleşmesiyle yazar — api-fetch.ts yenileme sonrası kullanır. */
 export function saveToken(token: string): void {
   try {
@@ -82,7 +90,7 @@ export function saveToken(token: string): void {
   // A refresh inside a server-validated session moves the offline grant to the
   // new token; the grant always names the token stored now.
   if (currentAuthority() === 'server' && sessionUser) {
-    void recordOfflineSession(sessionUser, token).catch(error => log.warn('Offline grant could not be renewed', error));
+    void recordCurrentOfflineSession(sessionUser, token).catch(error => log.warn('Offline grant could not be renewed', error));
   }
 }
 
@@ -429,7 +437,7 @@ export async function startApp(token: string, user: AuthUser, stepUp?: unknown):
   sessionUser = user;
   const userId = sessionUserId();
   if (previousUserId && previousUserId !== userId) void clearOfflineSession(previousUserId);
-  void recordOfflineSession(user, readToken() ?? token)
+  void recordCurrentOfflineSession(user, readToken() ?? token)
     .catch(error => log.warn('Offline grant could not be stored', error));
 
   const authScreen = el<HTMLElement>('auth-screen');

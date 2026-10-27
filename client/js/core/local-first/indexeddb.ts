@@ -15,6 +15,7 @@ import {
   type EncryptedLocalRecord,
   type LocalFirstKeyProvider,
   type LocalFirstRecordBackend,
+  type RecordMutationGuard,
 } from './store.ts';
 
 const RECORD_DB = 'bridge-local-first-records-v1';
@@ -171,15 +172,19 @@ export class IndexedDbRecordBackend implements LocalFirstRecordBackend {
     return (result as EncryptedLocalRecord | undefined) ?? null;
   }
 
-  async put(record: EncryptedLocalRecord): Promise<void> {
+  async put(record: EncryptedLocalRecord, isCurrent?: RecordMutationGuard): Promise<void> {
     const db = await this.db();
+    // Check after the asynchronous open, immediately before the read/write
+    // transaction. Logout or a newer grant must win over delayed encryption.
+    if (isCurrent && !isCurrent()) return;
     const tx = db.transaction(RECORD_STORE, 'readwrite');
     tx.objectStore(RECORD_STORE).put(record);
     await transactionDone(tx);
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, isCurrent?: RecordMutationGuard): Promise<void> {
     const db = await this.db();
+    if (isCurrent && !isCurrent()) return;
     const tx = db.transaction(RECORD_STORE, 'readwrite');
     tx.objectStore(RECORD_STORE).delete(id);
     await transactionDone(tx);
