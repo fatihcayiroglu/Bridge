@@ -124,6 +124,14 @@ That is not clearance of all twelve review requirements:
   run is still required. The first failed privacy artifact is retained, rather
   than weakening its positive control or calling functional success privacy
   acceptance.
+  The source build on `8531e5d9` compiled successfully, but its native journey
+  stopped **before Appium** because CocoaPods' template omits the SPM Debug
+  marker: `Print: Entry, ":CAPACITOR_DEBUG", Does Not Exist`. The privacy gate
+  then correctly rejected the missing decrypt control. The follow-up restores
+  the same Info.plist placeholder in the generated CI app and sets its value
+  only on the Debug simulator build command. The curated/release plist and the
+  journey prerequisite remain unchanged. This early stop is not a completed
+  expiry journey or a privacy pass; the subsequent exact-head run is required.
 - Delayed grant writes racing logout/switch and their durable invalidation
   were subsequently reproduced: a paused grant write completed after a
   successful clear and made the old token unlock history again. The isolated

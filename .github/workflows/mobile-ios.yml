@@ -129,6 +129,10 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains dict' ios/App/App/Info.plist
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost dict' ios/App/App/Info.plist
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost:NSExceptionAllowsInsecureHTTPLoads bool true' ios/App/App/Info.plist
+          # Preserve the journey's existing Debug-inspection prerequisite.
+          # CocoaPods has no SPM debug.xcconfig marker. Resolve this placeholder
+          # only in the Debug simulator build below; no release flag is enabled.
+          /usr/libexec/PlistBuddy -c 'Add :CAPACITOR_DEBUG string $(CAPACITOR_DEBUG)' ios/App/App/Info.plist
       - name: xcodebuild (Debug, iphonesimulator, ad hoc signed)
         id: ios_build
         # Keychain access needs entitlements, and an unsigned app has none: with
@@ -148,7 +152,7 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
-            build | tail -n 60
+            CAPACITOR_DEBUG=true build | tail -n 60
       - name: Verify the app's actual signature and Keychain entitlements
         run: |
           APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' -print -quit)

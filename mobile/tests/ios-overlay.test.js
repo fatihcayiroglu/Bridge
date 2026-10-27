@@ -84,6 +84,9 @@ describeIfTemplate('apply-ios-overlay', () => {
     const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/mobile-ios.yml'), 'utf8');
     expect(workflow).toContain('npx cap add ios --packagemanager CocoaPods');
     expect(workflow).toContain('xcodebuild -workspace ios/App/App.xcworkspace');
+    expect(workflow).toContain("'Add :CAPACITOR_DEBUG string $(CAPACITOR_DEBUG)'");
+    expect(workflow).toMatch(/xcodebuild -workspace[^\n]+-configuration Debug[\s\S]*?-sdk iphonesimulator[\s\S]*?CAPACITOR_DEBUG=true build/);
+    expect(fs.readFileSync(path.join(ROOT, 'mobile', 'ios', 'App', 'App', 'Info.plist'), 'utf8')).not.toContain('CAPACITOR_DEBUG');
   });
 
   it('carries only background modes the product implements (no voip without PushKit/CallKit)', () => {
