@@ -65,3 +65,25 @@ test('fast A-B-A switch waits for superseded initialization and does not adopt o
   await tick(); s.switch('B'); s.switch('A'); release(); await box.ready();
   assert.equal(calls, 2); assert.deepEqual(box.snapshot(), []); box.dispose();
 });
+test('full journal stays fail-closed with uncertain drafts; confirmed receipts alone can make room', async () => {
+  const s = setup(); let box = createPersistentOutbox(s.config);
+  for (let i = 0; i < 100; i++) await box.enqueue({ ...input, content: `payload ${i}` });
+  await assert.rejects(box.enqueue(input), /OUTBOX_FULL/);
+  assert.equal(box.snapshot().length, 100);
+  assert.ok(box.snapshot().every(row => row.status === 'queued'));
+  assert.equal(s.sent.length, 0);
+  s.online();
+  s.realtime.send = async row => { s.sent.push(row); return { status: 'confirmed', messageId: `server-${row.ackId}` }; };
+  await box.flush();
+  assert.equal(box.snapshot().filter(row => row.status === 'confirmed').length, 100);
+  const freshId = await box.enqueue({ ...input, content: 'post-capacity payload' });
+  assert.equal(freshId, 'ack-102');
+  assert.equal(s.sent.length, 100); // Compaction itself must not emit.
+  assert.deepEqual(box.snapshot().map(row => row.id), [
+    ...Array.from({ length: 75 }, (_, i) => `ack-${i + 26}`), freshId,
+  ]);
+  box.dispose(); await tick(); box = createPersistentOutbox(s.config); await box.ready();
+  assert.equal(box.snapshot().length, 76);
+  assert.equal(box.snapshot().find(row => row.id === freshId).status, 'queued');
+  box.dispose();
+});

@@ -11,6 +11,7 @@ export interface EncryptedOutboxJournal {
   append(input: { id: string; serverId: string; channelId: string; content: string }): Promise<OutboxRow>;
   mark(id: string, status: OutboxRow['status'], messageId?: string | null): Promise<void>;
   remove(id: string): Promise<void>;
+  pruneConfirmed(max?: number): Promise<string[]>;
   close(): Promise<void>;
 }
 export declare function createEncryptedOutboxJournal(config: { db: SqlPort; keyHex: string }): Promise<EncryptedOutboxJournal>;
