@@ -1,6 +1,6 @@
 # P7 D1 — read-only PostgreSQL scale assessment
 
-**Status: NOT CLOSED.** This is a reproducible evidence collection tool, not a conclusion that partitioning is necessary, nor proof of good performance.
+**Status: NOT CLOSED.** Measured evidence and a recommendation (no partition) are in [P7_D1_PARTITION_DECISION.md](P7_D1_PARTITION_DECISION.md). This is a reproducible evidence collection tool, not a conclusion that partitioning is necessary, nor proof of good performance.
 
 Run from the repository root against a representative **PostgreSQL instance** after normal migrations. Use a **read-only database role**; the script itself also starts `BEGIN TRANSACTION READ ONLY`, sets a 5-second statement timeout and a 1-second lock timeout. It does not use `EXPLAIN ANALYZE`, run `COUNT(*)` on large tables, alter schema or print any message content or IDs. Example:
 
