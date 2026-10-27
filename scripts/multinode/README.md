@@ -18,6 +18,15 @@ memory, mediasoup workers, and the upload root (`--uploads per-node`, like
 Kubernetes `emptyDir`) unless `--uploads shared` (like the compose volume).
 `TRUSTED_PROXY_COUNT=1`; each simulated client sends its own X-Forwarded-For.
 
+SFU-01/02/04/06/08 use **harness-only, parent/child IPC router lifecycle
+evidence** (`BRIDGE_SFU_EVIDENCE_IPC=1`, supplied only to disposable child
+processes). Each creation/closure carries the channel only to its test parent,
+not to routine logs, HTTP routes or uploaded reports. An explicit IPC flush
+barrier precedes ownership assertions; missing IPC, missing router events,
+duplicate opens and overlapping live owners fail rather than passing on empty
+intervals. Process generations and exit times close killed-node intervals.
+Fast negative-control tests run in the normal release-integrity Quality Gate.
+
 Harness-only settings (never production): `RL_REGISTER_MAX`,
 `MAX_REG_PER_HOUR`, `RL_LOGIN_MAX` raised for fixture creation;
 `ALLOW_INTERNAL_WEBHOOKS=true` + `SSRF_ALLOWLIST=localhost` for the loopback

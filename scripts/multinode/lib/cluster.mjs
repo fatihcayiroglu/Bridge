@@ -21,6 +21,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HttpFaultProxy, PgFaultProxy } from './faultProxy.mjs';
+import { SFU_EVIDENCE_TAG, SfuRouterEvidence } from './sfuEvidence.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(HERE, '../../..');
@@ -109,6 +110,9 @@ export class Cluster {
     this.s3Port = opts.s3Port || 59000;
     this.nodes = new Map();
     this.exitHistory = []; // every node process exit, for time-interval evidence
+    this.sfuEvidence = new SfuRouterEvidence();
+    this.nodeGeneration = 0;
+    this.sfuFlushSequence = 0;
     this.logs = path.join(this.workDir, 'logs');
     fs.mkdirSync(this.logs, { recursive: true });
     this.pgBin = findPgBin();
@@ -303,6 +307,9 @@ export class Cluster {
       FEDERATION_SECRET: 'multinode-harness-federation-secret-0123456789',
       METRICS_SECRET: 'multinode-metrics-secret',
       BRIDGE_MULTI_NODE: 'true',
+      // The test parent alone receives router lifecycle IDs over an IPC pipe;
+      // routine product logs and external APIs remain privacy-minimized.
+      BRIDGE_SFU_EVIDENCE_IPC: '1',
       CDN_PROVIDER: 'minio',
       MINIO_ENDPOINT: this.nodeS3Endpoint,
       MINIO_BUCKET: 'bridge-public',
@@ -338,12 +345,14 @@ export class Cluster {
     const out = fs.openSync(path.join(this.logs, `node-${name}.log`), 'a');
     fs.mkdirSync(this.uploadRoot(name), { recursive: true });
     const proc = spawn(process.execPath, ['dist/index.js'], {
-      cwd: SERVER, env: { ...process.env, ...this.nodeEnv(name), ...extraEnv }, stdio: ['ignore', out, out],
+      cwd: SERVER, env: { ...process.env, ...this.nodeEnv(name), ...extraEnv }, stdio: ['ignore', out, out, 'ipc'],
     });
-    const node = { name, proc, url: this.nodeUrl(name), startedAt: Date.now(), exited: null };
+    const generation = ++this.nodeGeneration;
+    proc.on('message', message => this.sfuEvidence.record(name, generation, message));
+    const node = { name, generation, proc, url: this.nodeUrl(name), startedAt: Date.now(), exited: null };
     proc.once('exit', (code, signal) => {
       node.exited = { code, signal, at: Date.now() };
-      this.exitHistory.push({ name, ...node.exited });
+      this.exitHistory.push({ name, generation, ...node.exited });
     });
     this.nodes.set(name, node);
     await waitFor(async () => {
@@ -365,6 +374,33 @@ export class Cluster {
 
   nodeLog(name) {
     try { return fs.readFileSync(path.join(this.logs, `node-${name}.log`), 'utf8'); } catch { return ''; }
+  }
+
+  /** A parent→child→parent barrier guarantees all earlier router events were
+   * received before SFU assertions inspect them (no arbitrary sleeps/retries). */
+  async flushSfuEvidence(timeoutMs = 5_000) {
+    await Promise.all([...this.nodes.values()].filter(n => !n.exited).map(node => new Promise((resolve, reject) => {
+      const nonce = `${Date.now()}-${++this.sfuFlushSequence}`;
+      let settled = false;
+      const done = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        node.proc.off('message', onMessage);
+        node.proc.off('exit', onExit);
+        if (error) reject(error); else resolve();
+      };
+      const onMessage = message => {
+        if (message?.tag === SFU_EVIDENCE_TAG && message.event === 'flushed' && message.nonce === nonce) done();
+      };
+      const onExit = () => done(new Error(`SFU evidence source ${node.name} exited before flush`));
+      const timer = setTimeout(() => done(new Error(`SFU evidence source ${node.name} failed to flush`)), timeoutMs);
+      node.proc.on('message', onMessage);
+      node.proc.once('exit', onExit);
+      node.proc.send({ tag: SFU_EVIDENCE_TAG, event: 'flush', nonce }, err => {
+        if (err) done(new Error(`SFU evidence source ${node.name} IPC failed`));
+      });
+    })));
   }
 
   async up({ nodes = this.nodeNames } = {}) {
