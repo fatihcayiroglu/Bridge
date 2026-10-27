@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   parseChoreographerSkips, summarizeStartupSkips, parseStallProbeTimeline, attributeStallPhases, summarizeStallPhases,
-  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap,
+  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap, stallsInWindow,
 } from './frame-skip-evidence.mjs';
 
 const line = (pid, frames) =>
@@ -234,7 +234,7 @@ test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () 
   assert.match(source, /renderer: summarizeRendererOverlap\(facts\.androidColdStartSamples\)/);
 });
 
-test('#209 SF03 reduced-motion A/B runs last, is bounded, restores state and records its own exits', () => {
+test('#209 SF03 is a same-process ABA run last, bounded, verified and records its own exit', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const sf03 = source.slice(source.indexOf("await measure('SF03'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
   // After every product verdict, exit checkpoint and EX01/EX02 (6179ee0e: a
@@ -242,17 +242,38 @@ test('#209 SF03 reduced-motion A/B runs last, is bounded, restores state and rec
   for (const earlier of ["await check('PD01'", "productExitCheckpoint('final')", "await measure('SF02'", 'EX02 independent']) {
     assert.ok(source.indexOf("await measure('SF03'") > source.indexOf(earlier), earlier);
   }
-  assert.doesNotMatch(source, /productExitCheckpoint\('after-reduced-motion'\)/);
-  assert.match(sf03, /settings put global animator_duration_scale 0/);
-  const restore = sf03.slice(sf03.indexOf("step('restore-setting'"));
-  assert.match(restore, /settings delete global animator_duration_scale/);
-  assert.ok(restore.indexOf("step('relaunch-normal'") > 0);
-  assert.match(restore, /step\('reattach-normal', \(\) => attachPage\(\)/);
+  // No device setting changes (fcf787bc: the animator scale never reached the page).
+  assert.doesNotMatch(sf03, /settings (put|delete)/);
+  assert.match(sf03, /\['normal-a', 'no-preference'\], \['reduced', 'reduce'\], \['normal-b', 'no-preference'\]/);
+  assert.match(sf03, /page\.emulateMedia\(\{ reducedMotion \}\)/);
+  assert.match(sf03, /step\('media-restore', \(\) => page\.emulateMedia\(\{ reducedMotion: null \}\)/);
+  // The A/B only counts when the page proves each window's condition.
+  assert.match(sf03, /windows\[1\]\.reduceMatches && windows\[1\]\.blobsAnimated === 0/);
+  assert.match(sf03, /row\.probe\.covered/);
   assert.match(sf03, /classifyAndroidDependencyDeath\(exitRows, appPid\)/);
-  assert.match(sf03, /return \{ attempt, exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass \}/);
-  assert.match(sf03, /matchMedia\('\(prefers-reduced-motion: reduce\)'\)/);
-  assert.match(sf03, /reducedMotionSeen/);
-  // Every device/page wait is time-bounded (the first run hung for 55 min).
-  assert.doesNotMatch(sf03, /await (platform\.coldLaunch|attachPage|page\.evaluate|until|sh|androidFailureShell)\(/);
+  // Every device/page wait is time-bounded (the first run hung for 55 min);
+  // the sign-out sequence awaits inside its own bounded step.
+  const signOut = sf03.indexOf("step('sign-out', async () => {");
+  assert.ok(signOut > 0);
+  const unbounded = sf03.slice(0, signOut) + sf03.slice(sf03.indexOf('}, 60_000);', signOut));
+  assert.doesNotMatch(unbounded, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.evaluate|page\.emulateMedia|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
   assert.doesNotMatch(sf03, /assert\(/);
+});
+
+test('#209 SF03 windows count stalls by start and refuse an uncovered window', () => {
+  const raw = [
+    epochLine(1793052300, 0, 4321, 'event=installed windowMs=90000 reportMs=250'),
+    epochLine(1793052311, 0, 4321, stallMsg(1000, 'render')), // starts +10 s: window A
+    epochLine(1793052325, 0, 4321, stallMsg(500, 'render')), // starts +24.5 s: window B
+    epochLine(1793052390, 0, 4321, 'event=uninstalled stalls=2 maxMs=1000'),
+  ].join('\n');
+  const timeline = parseStallProbeTimeline(raw, 4321);
+  assert.equal(timeline.installedEpochMs, 1793052300000);
+  assert.equal(timeline.uninstalledEpochMs, 1793052390000);
+  const t0 = 1793052300000;
+  assert.deepEqual(stallsInWindow(timeline, t0 + 5000, t0 + 15000),
+    { available: true, covered: true, windowMs: 10000, stalls: 1, totalMs: 1000, maxMs: 1000, byWhere: { render: 1 } });
+  assert.equal(stallsInWindow(timeline, t0 + 15000, t0 + 25000).stalls, 1);
+  assert.equal(stallsInWindow(timeline, t0 + 85000, t0 + 95000).covered, false);
+  assert.equal(stallsInWindow(timeline, t0 + 10, t0 + 5).available, false);
 });

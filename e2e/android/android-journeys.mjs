@@ -32,7 +32,7 @@ import { collectKernelPressure } from './pressure-evidence.mjs';
 import {
   parseChoreographerSkips, summarizeStartupSkips, parseStallProbe, stallProbeCalibrated, summarizeStartupStallProbe,
   parseStallProbeTimeline, attributeStallPhases, summarizeStallPhases,
-  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap,
+  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap, stallsInWindow,
 } from './frame-skip-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
@@ -2813,22 +2813,20 @@ async function main() {
     log('EX02 independent debugger-paused storage comparison', JSON.stringify(facts.androidPausedPreferenceControl));
   }
 
-  // #209 SF03: A/B of the first screen's continuous compositor work. SF02
-  // found the renderer's main thread mostly idle during Bridge's cold-start
-  // render stalls; the auth screen animates three 90px-blurred blobs forever
-  // (auth.css `.auth-blob`), and stops when prefers-reduced-motion matches.
-  // Chromium reports that when Android's animator duration scale is 0. Same
-  // evidence as CS01 under reduced motion; whether the page actually saw it is
-  // recorded per start. The setting is always restored. Measurement only.
-  // Runs LAST, after every product verdict, ANR/exit checkpoint and EX01/EX02:
-  // its extra cold starts and the changed setting must not alter what those
-  // checks observe (6179ee0e, 40423221908: a DEPENDENCY DIED kill inside SF03
-  // was charged to PD01). SF03 records the exit of each of its own processes.
-  await measure('SF03', 'cold-start main-thread stalls with reduced motion (animator scale 0; measurement)', async () => {
-    if (MODE !== 'android') throw new Skip('actual Android settings and stall probe required');
-    // Every step is time-bounded and logged by fixed stage name: the first
-    // run (1dc534ef, 40415173707) hung silently inside SF03 until the job's
-    // 60 min limit. A stage that overruns fails SF03 naming that stage.
+  // #209 SF03: steady-state A/B of the auth screen's continuous compositor
+  // work, in ONE process: normal motion, reduced motion, normal motion again
+  // (ABA, so drift shows). SF02 found the page's own thread idle during
+  // Bridge's render stalls; auth.css animates three 90px-blurred blobs
+  // forever (`.auth-blob`) and stops them under prefers-reduced-motion. The
+  // media feature is emulated over CDP (fcf787bc, 40425507186: Android's
+  // animator scale never reached the page, reducedMotionSeen 0/3). Each window
+  // records whether reduce matched and whether a blob still animates.
+  // Runs LAST, after every product verdict, ANR/exit checkpoint and EX01/EX02
+  // (6179ee0e, 40423221908: a kill inside an earlier SF03 was charged to PD01),
+  // within the debug probe's 90 s window. Every wait is bounded and logged by
+  // fixed stage name. Measurement only.
+  await measure('SF03', 'auth-screen steady-state main-thread stalls: normal vs reduced motion (same process, ABA; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android WebView and stall probe required');
     const step = async (name, work, ms) => {
       log('SF03 stage', name);
       let timer;
@@ -2838,65 +2836,74 @@ async function main() {
         })]);
       } finally { clearTimeout(timer); }
     };
-    const original = String(await step('read-setting', () => sh('settings get global animator_duration_scale'), 20_000)).trim();
-    const samples = [];
-    const pids = [];
+    const WINDOW_MS = 10_000;
+    const windows = [];
+    let appPid = null;
+    let signedOutFirst = null;
     let failure = null;
-    let processExits = [];
+    let processExit = null;
+    let timeline = null;
     try {
-      await step('reduce-motion', () => sh('settings put global animator_duration_scale 0'), 20_000);
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const origin = await step(`clock-${attempt}`, () => deviceClockOrigin(), 20_000).catch(() => null);
-        await step(`launch-${attempt}`, () => platform.coldLaunch(), 60_000);
-        const hostMarks = { displayed: Date.now() };
-        const appPid = await step(`pid-${attempt}`, () => pid(), 20_000);
-        pids.push({ attempt, pid: appPid });
-        await step(`attach-${attempt}`, () => attachPage(), 75_000);
-        hostMarks.attached = Date.now();
-        await step(`visible-${attempt}`, () => until(async () => (await authVisible()) || (await appVisible()), {
-          timeout: 45_000,
-          message: `visible UI after reduced-motion cold start ${attempt}`,
-        }), 60_000);
-        hostMarks.visible = Date.now();
-        const reducedMotion = await step(`media-${attempt}`,
-          () => page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), 10_000).catch(() => null);
-        const pageTiming = await step(`page-timing-${attempt}`, () => startupPageTiming(), 15_000).catch(() => null);
-        await sleep(2000);
-        const stallTimeline = await startupStallTimeline(appPid);
-        samples.push({ attempt, reducedMotion,
-          skippedFrames: await startupSkips(appPid),
-          mainThreadStalls: await startupStalls(appPid),
-          stallPhases: startupStallPhases(stallTimeline, origin, hostMarks),
-          pageTiming: compactPageTiming(pageTiming),
-          rendererOverlap: rendererOverlap(stallTimeline, pageTiming) });
+      const origin = await step('clock', () => deviceClockOrigin(), 20_000);
+      if (!origin) throw new Error('SF03 needs the device clock to place its windows');
+      const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+      await step('launch', () => platform.coldLaunch(), 60_000);
+      appPid = await step('pid', () => pid(), 20_000);
+      await step('attach', () => attachPage(), 75_000);
+      await step('visible', () => until(async () => (await authVisible()) || (await appVisible()),
+        { timeout: 45_000, message: 'SF03 visible UI' }), 60_000);
+      // EX01/EX02 leave a signed-in session; the blobs live on the auth screen.
+      signedOutFirst = !(await step('auth-check', () => authVisible(), 10_000));
+      if (signedOutFirst) {
+        await step('sign-out', async () => {
+          await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')
+            ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+          await until(() => page.evaluate(() => !!document.getElementById('tab-security')), { timeout: 15_000, message: 'SF03 settings open' });
+          await page.evaluate(() => document.getElementById('tab-security')?.click());
+          await until(() => page.evaluate(() => !!document.querySelector('[data-testid="sec-logout"]')), { timeout: 15_000, message: 'SF03 security tab' });
+          await page.evaluate(() => document.querySelector('[data-testid="sec-logout"]')?.click());
+          await until(() => authVisible(), { timeout: 20_000, message: 'SF03 auth screen after sign-out' });
+        }, 60_000);
+      }
+      for (const [label, reducedMotion] of [['normal-a', 'no-preference'], ['reduced', 'reduce'], ['normal-b', 'no-preference']]) {
+        await step(`media-${label}`, () => page.emulateMedia({ reducedMotion }), 10_000);
+        const state = await step(`state-${label}`, () => page.evaluate(() => ({
+          reduceMatches: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          blobs: document.querySelectorAll('.auth-blob').length,
+          blobsAnimated: [...document.querySelectorAll('.auth-blob')]
+            .filter(b => getComputedStyle(b).animationName !== 'none').length,
+          authVisible: (() => { const a = document.getElementById('auth-screen');
+            return !!a && getComputedStyle(a).display !== 'none'; })(),
+        })), 10_000);
+        const from = Date.now();
+        await sleep(WINDOW_MS);
+        windows.push({ label, ...state, hostFrom: from, hostTo: Date.now() });
+      }
+      timeline = await step('timeline', () => startupStallTimeline(appPid), 20_000);
+      for (const row of windows) {
+        Object.assign(row, { probe: stallsInWindow(timeline, toDevice(row.hostFrom), toDevice(row.hostTo)) });
+        delete row.hostFrom; delete row.hostTo;
       }
     } catch (err) {
       failure = err;
     }
-    {
-      // Fixed categories only (classifyAndroidDependencyDeath); no PIDs leave.
+    await step('media-restore', () => page.emulateMedia({ reducedMotion: null }), 10_000).catch(() => {});
+    // Fixed categories only (classifyAndroidDependencyDeath); no PIDs leave.
+    if (appPid) {
       const exitRows = await step('exit-evidence', () => androidFailureShell(`dumpsys activity exit-info ${PKG}`), 20_000)
         .then(raw => parseApplicationExits(raw, 32)).catch(() => null);
-      processExits = pids.map(({ attempt, pid: appPid }) => {
-        const { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass } =
-          classifyAndroidDependencyDeath(exitRows, appPid);
-        return { attempt, exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass };
-      });
-      await step('restore-setting', () => sh(/^[0-9]{1,3}(\.[0-9]{1,3})?$/.test(original)
-        ? `settings put global animator_duration_scale ${original}`
-        : 'settings delete global animator_duration_scale'), 20_000).catch(() => {});
-      // Later checks must not inherit a process started under reduced motion:
-      // hand them a fresh normal-motion cold start, as CS01 leaves it.
-      await step('relaunch-normal', () => platform.coldLaunch(), 60_000).catch(() => {});
-      await step('reattach-normal', () => attachPage(), 75_000).catch(() => {});
+      const { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass } =
+        classifyAndroidDependencyDeath(exitRows, appPid);
+      processExit = { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass };
     }
     if (failure) {
-      throw new Error(`${String(failure?.message ?? failure).slice(0, 1500)}; SF03 process exits: ${JSON.stringify(processExits)}`);
+      throw new Error(`${String(failure?.message ?? failure).slice(0, 1500)}; SF03 process exit: ${JSON.stringify(processExit)}`);
     }
-    return { processExits, coldStarts: samples.length, reducedMotionSeen: samples.filter(row => row.reducedMotion === true).length,
-      baseline: 'CS01 / SF01 / SF02 in this run (normal motion)',
-      frames: summarizeStartupSkips(samples), probe: summarizeStartupStallProbe(samples),
-      phases: summarizeStallPhases(samples), renderer: summarizeRendererOverlap(samples) };
+    const applied = windows.every(row => row.authVisible && row.blobs > 0 && row.probe.covered)
+      && windows[1].reduceMatches && windows[1].blobsAnimated === 0
+      && !windows[0].reduceMatches && windows[0].blobsAnimated > 0 && !windows[2].reduceMatches;
+    return { design: 'same process ABA; prefers-reduced-motion emulated over CDP', windowMs: WINDOW_MS,
+      applied, signedOutFirst, windows, processExit, probeMalformed: timeline?.malformed ?? null };
   });
 
   peerSock.close();

@@ -117,13 +117,18 @@ const MAX_TIMELINE = 200;
  */
 export function parseStallProbeTimeline(raw, pid) {
   const appPid = /^[0-9]{1,8}$/.test(String(pid)) ? String(pid) : null;
-  const result = { available: typeof raw === 'string' && appPid !== null, stalls: [], malformed: 0, truncated: false };
+  const result = { available: typeof raw === 'string' && appPid !== null, stalls: [], malformed: 0, truncated: false,
+    installedEpochMs: null, uninstalledEpochMs: null };
   if (!result.available) return result;
   for (const line of raw.split(/\r?\n/).slice(0, 5000)) {
     if (!line.includes('BridgeStallProbe')) continue;
     const match = EPOCH_PROBE_LINE.exec(line.trimEnd());
     if (!match) { result.malformed++; continue; }
-    if (match[3] !== appPid || !match[4].startsWith('event=stall ')) continue;
+    if (match[3] !== appPid) continue;
+    const atMs = Number(match[1]) * 1000 + Number(match[2]);
+    if (/^event=installed /.test(match[4])) { result.installedEpochMs ??= atMs; continue; }
+    if (/^event=uninstalled /.test(match[4])) { result.uninstalledEpochMs ??= atMs; continue; }
+    if (!match[4].startsWith('event=stall ')) continue;
     const stall = STALL.exec(match[4]);
     if (!stall || !MSG.has(stall[2]) || !WHERE.has(stall[3])) { result.malformed++; continue; }
     if (result.stalls.length >= MAX_TIMELINE) { result.truncated = true; break; }
@@ -287,4 +292,27 @@ export function summarizeRendererOverlap(samples) {
       maxMs: timing.reduce((m, t) => Math.max(m, t.longAnimationFrames.maxMs), 0),
       scriptMs: sumTiming('longAnimationFrames', 'scriptMs'), styleLayoutMs: sumTiming('longAnimationFrames', 'styleLayoutMs') },
     clock: 'device wall clock on both sides (performance.timeOrigin, logcat -v epoch)' };
+}
+
+/**
+ * #209 SF03: probe stalls whose dispatch began inside [fromEpochMs, toEpochMs).
+ * `covered` is false when the probe was not installed for the whole window
+ * (it uninstalls itself 90 s after process start), so an empty window is
+ * never mistaken for a stall-free one.
+ */
+export function stallsInWindow(timeline, fromEpochMs, toEpochMs) {
+  const result = { available: Boolean(timeline?.available) && Number.isFinite(fromEpochMs) && Number.isFinite(toEpochMs)
+    && fromEpochMs < toEpochMs, covered: false, windowMs: null, stalls: 0, totalMs: 0, maxMs: 0, byWhere: {} };
+  if (!result.available) return result;
+  result.windowMs = toEpochMs - fromEpochMs;
+  result.covered = Number.isFinite(timeline.installedEpochMs) && timeline.installedEpochMs <= fromEpochMs
+    && (timeline.uninstalledEpochMs === null || timeline.uninstalledEpochMs >= toEpochMs);
+  for (const stall of timeline.stalls) {
+    if (stall.startEpochMs < fromEpochMs || stall.startEpochMs >= toEpochMs) continue;
+    result.stalls++;
+    result.totalMs += stall.ms;
+    result.maxMs = Math.max(result.maxMs, stall.ms);
+    result.byWhere[stall.where] = (result.byWhere[stall.where] ?? 0) + 1;
+  }
+  return result;
 }
