@@ -13,6 +13,13 @@
     "android": {
       "package": "com.bridge.nativepilot"
     },
-    "plugins": []
+    "plugins": [
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true
+        }
+      ]
+    ]
   }
 }
