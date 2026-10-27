@@ -38,7 +38,7 @@ export function createMessagingController({ coordinator, read, realtime, createI
     for (const row of box.snapshot()) if (row.status === 'queued') realtime.joinChannel(row.channelId);
     const work = box.flush(); await Promise.resolve(); emit(); await work;
     if (!current(seq, epoch)) return;
-    emit(); await history();
+    emit(); if (realtime.getStatus() === 'online') await history();
   }
   const unsubscribeSession = coordinator.subscribe(session => {
     if (disposed) return;

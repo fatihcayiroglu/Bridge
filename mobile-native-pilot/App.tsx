@@ -69,8 +69,8 @@ function ConnectedPilot({ origin }: { origin: string }) {
           <Text style={styles.author}>{item.author}</Text><Text style={styles.text}>{item.body}</Text><Text style={styles.muted}>{item.status}</Text>
           {item.retryId && <Action label="Retry with original message ID" disabled={busy || state.connection !== 'online'} onPress={() => void perform(() => runtime.controller.retry(item.retryId!))} />}
         </View>} />
-        <TextInput accessibilityLabel="Message" multiline value={draft} onChangeText={setDraft} editable={!busy} style={styles.input} placeholder="Write a message" placeholderTextColor="#8b95a7" />
-        <Action label={state.connection === 'online' ? 'Send message' : 'Queue offline'} disabled={busy || !draft.trim()} onPress={() => { const content = draft; void perform(async () => { const work = runtime.controller.send(content); setDraft(''); await work; }); }} />
+        <TextInput accessibilityLabel="Message" multiline maxLength={4000} value={draft} onChangeText={setDraft} editable={!busy} style={styles.input} placeholder="Write a message" placeholderTextColor="#8b95a7" />
+        <Action label={state.connection === 'online' ? 'Send message' : 'Queue offline'} disabled={busy || !draft.trim()} onPress={() => { const content = draft, admittedEpoch = epoch.current; void perform(async () => { await runtime.controller.send(content); if (alive.current && epoch.current === admittedEpoch) setDraft(''); }); }} />
       </>}
     </>}
   </SafeAreaView>;
