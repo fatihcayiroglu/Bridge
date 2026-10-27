@@ -116,7 +116,10 @@ jobs:
         run: node mobile/scripts/setup.js
       - name: Generate the iOS project and apply the curated native layer
         run: |
-          npx cap add ios
+          # SwiftPM downloads prebuilt XCFrameworks and ignores the npm source
+          # patch. CocoaPods compiles the pinned local SDK and the same plugin.
+          pod --version
+          npx cap add ios --packagemanager CocoaPods
           node mobile/scripts/apply-ios-overlay.js
           npx cap sync ios
           node -e 'const assert=require("node:assert/strict"); const cfg=require("./ios/App/App/capacitor.config.json"); assert(cfg.packageClassList.includes("BridgeLocalFirstCryptoPlugin"), "Native local encryption plugin must be packaged");'
@@ -140,7 +143,7 @@ jobs:
           # command-line CODE_SIGN_ENTITLEMENTS would apply to every Swift
           # package target too (run 40021067365 failed exactly that way).
           node e2e/ios/scope-simulator-entitlements.mjs ios/App/App.xcodeproj/project.pbxproj App/BridgeSimulatorDebug.entitlements
-          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \

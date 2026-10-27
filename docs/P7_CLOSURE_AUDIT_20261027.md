@@ -109,6 +109,21 @@ That is not clearance of all twelve review requirements:
   (zero skips), and the iOS evidence/transport/checker tests pass 30/30. Actual
   compiled-SDK and simulator privacy acceptance still require the new exact-head
   iOS run; this is not inferred from the source-patch unit tests.
+  **That run failed as intended by the privacy gate:** on `7f574386`,
+  [iOS 40488786954](https://github.com/fatihcayiroglu/Bridge/actions/runs/40488786954)
+  passed compilation, D2L01 and I07-XCUITest but the archived console still
+  contains 30 JSON result lines and no redacted result lines. SwiftPM downloads
+  a prebuilt XCFramework from `capacitor-swift-pm`; editing the npm SDK source
+  cannot change it. The correction uses Capacitor's supported CocoaPods source
+  build and workspace, packages the existing crypto sources through a podspec,
+  and refuses existing SwiftPM projects without rewriting them. SDK version,
+  crypto implementation, entitlement scope and the privacy assertion are
+  unchanged. Local mobile checks pass 149/149 with zero skips; actual npm pack
+  includes the podspec and both existing Swift files, and the actual Capacitor
+  CLI discovers the expected pod and plugin class. A new compiled-source iOS
+  run is still required. The first failed privacy artifact is retained, rather
+  than weakening its positive control or calling functional success privacy
+  acceptance.
 - Delayed grant writes racing logout/switch and their durable invalidation
   were subsequently reproduced: a paused grant write completed after a
   successful clear and made the old token unlock history again. The isolated
