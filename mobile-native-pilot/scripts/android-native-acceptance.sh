@@ -2,16 +2,15 @@
 set -euo pipefail
 cd mobile-native-pilot
 mkdir -p native-evidence
+# shellcheck source=acceptance-failure-trap.sh
+source scripts/acceptance-failure-trap.sh
 stage=metro-start
 node -e 'require("dns").lookup("localhost", (error,address,family)=>{if(error)throw error; console.log({address,family})})' > native-evidence/metro-dns.txt
 npx expo start --localhost --port 8081 > native-evidence/metro-android.log 2>&1 &
 metro_pid=$!
 function cleanup() {
   local status=$?
-  if (( status != 0 )); then
-    printf 'NATIVE_ANDROID_ACCEPTANCE_FAILED stage=%s exit=%s\n' "$stage" "$status" >&2
-    printf 'stage=%s exit=%s\n' "$stage" "$status" > native-evidence/native-failure-stage.txt
-  fi
+  acceptance_record_failure "$status" native-evidence android
   adb logcat -d > native-evidence/android-logcat.txt 2>&1 || true
   adb shell screencap -p /sdcard/native-failure.png >/dev/null 2>&1 && adb pull /sdcard/native-failure.png native-evidence/final-screen.png >/dev/null 2>&1 || true
   kill "$metro_pid" 2>/dev/null || true
@@ -35,13 +34,16 @@ adb logcat -c
 function assert_native_marker() {
   local marker="$1" output="$2"
   for i in $(seq 1 90); do
-    adb shell uiautomator dump /sdcard/native-acceptance.xml >/dev/null
+    # Dump output kept (was /dev/null) so a failing dump leaves its message behind;
+    # pull progress still goes to the job log as before.
+    adb shell uiautomator dump /sdcard/native-acceptance.xml >> native-evidence/uiautomator-dump.log 2>&1
     adb pull /sdcard/native-acceptance.xml "$output" >/dev/null
-    if grep -q NATIVE_ACCEPTANCE_FAILED "$output"; then return 1; fi
-    if grep -q 'catalyst_redbox_title\|runtime not ready' "$output"; then return 1; fi
+    if grep -q NATIVE_ACCEPTANCE_FAILED "$output"; then acceptance_detail="$marker:app-reported-failure"; return 1; fi
+    if grep -q 'catalyst_redbox_title\|runtime not ready' "$output"; then acceptance_detail="$marker:redbox-or-runtime-not-ready"; return 1; fi
     if grep -q "$marker" "$output"; then return 0; fi
     sleep 2
   done
+  acceptance_detail="$marker:not-seen-in-90-dumps"
   return 1
 }
 stage=first-launch
