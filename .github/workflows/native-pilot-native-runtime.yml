@@ -94,10 +94,10 @@ jobs:
           npx expo prebuild --platform ios --no-install
           cd ios
           pod install 2>&1 | tee ../native-evidence/pods.log
-          # A disposable ad-hoc simulator app has no Developer Team prefix.
-          # Give that simulator target its own bundle-ID Keychain group. These
-          # generated files are not device provisioning or distribution signing.
-          python3 -c 'import glob,plistlib; paths=glob.glob("*/*.entitlements"); assert len(paths)==1, paths; p=paths[0]; d=plistlib.load(open(p,"rb")); d["application-identifier"]="com.bridge.nativepilot"; d["keychain-access-groups"]=["com.bridge.nativepilot"]; plistlib.dump(d,open(p,"wb"))'
+          # Do not synthesize a provisioning Team ID or Keychain sharing group.
+          # Apple issues app IDs when a team provisions an app; this throwaway
+          # simulator build uses no account/profile. Actual SecureStore writes,
+          # reads and restart recovery are mandatory runtime acceptance below.
       - name: Build actual iOS simulator application
         run: |
           set -o pipefail
@@ -105,14 +105,16 @@ jobs:
           test -n "$workspace"
           xcodebuild -workspace "$workspace" -list -json > native-evidence/schemes.json
           scheme=$(python3 -c 'import json; d=json.load(open("native-evidence/schemes.json")); print(next(s for s in d["workspace"]["schemes"] if s.startswith("Bridge")))')
-          # Keychain requires signed application identity even in the simulator.
-          # Ad-hoc simulator signing uses no Apple account/certificate/profile.
+          # The simulator app is signed ad-hoc; do not claim device signing.
           xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-native-ios" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build 2>&1 | tee native-evidence/ios-build.log
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
           test -n "$app"
           codesign --verify --strict "$app"
           codesign -d --entitlements :- "$app" > native-evidence/simulator-entitlements.plist
-          python3 -c 'import plistlib; d=plistlib.load(open("native-evidence/simulator-entitlements.plist","rb")); assert d.get("application-identifier"), "SIMULATOR_KEYCHAIN_APPLICATION_IDENTITY_REQUIRED"'
+          # A missing team-prefixed application-identifier is expected with
+          # ad-hoc simulator signing. If present, it must name this bundle;
+          # real Keychain access is tested by the app, not inferred from plist.
+          python3 -c 'import plistlib; d=plistlib.load(open("native-evidence/simulator-entitlements.plist","rb")); ident=d.get("application-identifier"); assert not ident or ident=="com.bridge.nativepilot" or ident.endswith(".com.bridge.nativepilot"), "WRONG_SIGNED_BUNDLE_ID"'
           ditto -c -k --keepParent "$app" native-evidence/BridgeNativePilot-simulator.zip
       - name: Launch built application in real simulator
         run: |
@@ -129,10 +131,10 @@ jobs:
           # fixed 20s screenshot captured only 'Bundling 39%', not application UI.
           curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
-          xcrun simctl install "$udid" "$app"
+          xcrun simctl install "$udid" "$app" 2>&1 | tee native-evidence/simulator-install.txt
           # Preserve logs/screens on assertion failure too. Vision reads actual
           # rendered fixture UI; both launches must expose the required markers.
-          trap 'xcrun simctl spawn "$udid" log show --last 3m --style compact --predicate '\''process == "BridgeNativePilot"'\'' > native-evidence/app-runtime.log; xcrun simctl io "$udid" screenshot native-evidence/final-screen.png' EXIT
+          trap 'xcrun simctl spawn "$udid" log show --last 3m --style compact --predicate '\''process == "BridgeNativePilot" OR process == "SpringBoard" OR process == "runningboardd" OR process == "securityd"'\'' > native-evidence/app-runtime.log || true; xcrun simctl io "$udid" screenshot native-evidence/final-screen.png || true' EXIT
           bash scripts/ios-native-acceptance.sh "$udid"
       - uses: actions/upload-artifact@v4
         if: always()
