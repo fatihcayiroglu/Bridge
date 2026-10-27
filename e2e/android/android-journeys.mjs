@@ -35,6 +35,7 @@ import {
   collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap, stallsInWindow,
 } from './frame-skip-evidence.mjs';
 import { navigationStoreVerdict, parseNavigationStoreLog } from './navigation-store-evidence.mjs';
+import { startResyncRecorder } from './resync-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -2091,6 +2092,8 @@ async function main() {
   await check('N02', 'offline 30 s while another user posts → reconnect resync shows the missed message', async () => {
     const needle = `android-missed-${Date.now().toString(36)}`;
     let visibleWhileOffline = false; let t0 = 0;
+    // Evidence only (counts and statuses): where a missed resync stopped.
+    const resync = await startResyncRecorder(page).catch(() => null);
     try {
       await platform.network(false);
       await sleep(5_000);
@@ -2103,8 +2106,14 @@ async function main() {
       await platform.network(true);
     }
     assert(!visibleWhileOffline, 'the message was visible while offline — the network was not actually cut');
-    await until(() => visibleMessage(needle), { timeout: 60_000, message: 'missed message after reconnect' });
-    return { visibleAfterReconnectMs: Date.now() - t0 };
+    try {
+      await until(() => visibleMessage(needle), { timeout: 60_000, message: 'missed message after reconnect' });
+    } catch (err) {
+      log('  N02 resync evidence', JSON.stringify(await resync?.read().catch(() => null) ?? null));
+      throw err;
+    }
+    const visibleAfterReconnectMs = Date.now() - t0;
+    return { visibleAfterReconnectMs, resync: await resync?.read().catch(() => null) ?? null };
   });
 
   await check('D01', 'DM from another user reaches the DM list and opens', async () => {
