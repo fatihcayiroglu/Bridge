@@ -32,6 +32,25 @@ The React Native fixture screens do not call this adapter. Connecting them is
 blocked on native secure credential storage, a session lifecycle contract,
 real integration tests, and explicit owner-reviewed acceptance gates.
 
+## Native credential capability (dormant; no sign-in yet)
+
+The pilot declares Expo SDK 57's `expo-secure-store ~57.0.4` and its Android
+backup-exclusion config plugin. `src/expo-credential-port.ts` injects Expo
+SecureStore into a fail-closed, testable port. The port uses a pilot-only key,
+requires native availability, applies iOS unlocked-this-device-only access,
+and serializes reads, writes and deletion so an in-flight write cannot overtake
+a later logout deletion. There is no AsyncStorage, file or plaintext fallback.
+No login screen imports or invokes this port; **no real credentials have been
+read or stored by this change**.
+
+These are Node tests with a fake secure-store object, not Keystore/Keychain
+proof. On iOS a Keychain item can survive app uninstall/reinstall; therefore
+a future real session implementation must validate any restored token with
+`GET /api/me`, support explicit revocation, invalidate account epochs before
+logout, and handle failed native deletion without claiming logout complete.
+Native device uninstall, backup/restore, passcode/biometric and multi-account
+behaviors remain open and BLOCK any production replacement.
+
 ## Local setup on a suitable development machine
 
 1. Use Node.js >=22.19 and a supported Android SDK or macOS/Xcode (for iOS).
