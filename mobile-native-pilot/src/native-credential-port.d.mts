@@ -13,18 +13,18 @@ export declare class NativeCredentialError extends Error {
 export declare const NATIVE_PILOT_CREDENTIAL_KEY: 'bridge.nativepilot.session.v1';
 
 export interface SecureStorePort {
-  WHEN_UNLOCKED_THIS_DEVICE_ONLY: string | number;
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY?: string | number;
   isAvailableAsync(): Promise<boolean>;
   getItemAsync(key: string, options?: {
-    keychainAccessible: string | number;
+    keychainAccessible?: string | number;
     requireAuthentication: boolean;
   }): Promise<string | null>;
   setItemAsync(key: string, token: string, options?: {
-    keychainAccessible: string | number;
+    keychainAccessible?: string | number;
     requireAuthentication: boolean;
   }): Promise<void>;
   deleteItemAsync(key: string, options?: {
-    keychainAccessible: string | number;
+    keychainAccessible?: string | number;
     requireAuthentication: boolean;
   }): Promise<void>;
 }
@@ -36,4 +36,5 @@ export interface NativeCredentialPort {
 }
 export declare function createNativeCredentialPort(config: {
   secureStore: SecureStorePort;
+  platform?: 'ios' | 'android';
 }): NativeCredentialPort;

@@ -5,7 +5,14 @@ mkdir -p native-evidence
 node -e 'require("dns").lookup("localhost", (error,address,family)=>{if(error)throw error; console.log({address,family})})' > native-evidence/metro-dns.txt
 npx expo start --localhost --port 8081 > native-evidence/metro-android.log 2>&1 &
 metro_pid=$!
-trap 'kill "$metro_pid" 2>/dev/null || true' EXIT
+function cleanup() {
+  status=$?
+  adb logcat -d > native-evidence/android-logcat.txt 2>&1 || true
+  adb shell screencap -p /sdcard/native-failure.png >/dev/null 2>&1 && adb pull /sdcard/native-failure.png native-evidence/final-screen.png >/dev/null 2>&1 || true
+  kill "$metro_pid" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT
 for i in $(seq 1 60); do
   kill -0 "$metro_pid" || { cat native-evidence/metro-android.log; exit 1; }
   if curl -fsS http://127.0.0.1:8081/status >/dev/null; then break; fi
@@ -22,6 +29,7 @@ function assert_native_marker() {
     adb shell uiautomator dump /sdcard/native-acceptance.xml >/dev/null
     adb pull /sdcard/native-acceptance.xml "$output" >/dev/null
     if grep -q NATIVE_ACCEPTANCE_FAILED "$output"; then return 1; fi
+    if grep -q 'catalyst_redbox_title\|runtime not ready' "$output"; then return 1; fi
     if grep -q "$marker" "$output"; then return 0; fi
     sleep 2
   done

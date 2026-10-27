@@ -27,18 +27,18 @@ function validToken(token) {
  * implementation MUST validate restored credentials with /api/me, revoke on
  * account deletion/logout, and handle storage failures as explicit blockers.
  */
-export function createNativeCredentialPort({ secureStore }) {
-  if (!secureStore ||
+export function createNativeCredentialPort({ secureStore, platform = 'ios' }) {
+  if (!['ios', 'android'].includes(platform) || !secureStore ||
       typeof secureStore.isAvailableAsync !== 'function' ||
       typeof secureStore.getItemAsync !== 'function' ||
       typeof secureStore.setItemAsync !== 'function' ||
       typeof secureStore.deleteItemAsync !== 'function' ||
-      !['string', 'number'].includes(typeof secureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY)) {
+      (platform === 'ios' && !['string', 'number'].includes(typeof secureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY))) {
     throw new NativeCredentialError('INVALID_NATIVE_ADAPTER');
   }
 
   const options = Object.freeze({
-    keychainAccessible: secureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    ...(platform === 'ios' ? { keychainAccessible: secureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY } : {}),
     requireAuthentication: false,
   });
 

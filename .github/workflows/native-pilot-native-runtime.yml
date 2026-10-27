@@ -116,11 +116,15 @@ jobs:
           npx expo start --localhost --port 8081 > native-evidence/metro-ios.log 2>&1 &
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8081/status && break; sleep 1; done
           curl -fsS http://127.0.0.1:8081/status
+          # Compile the development bundle before observing app UI. The previous
+          # fixed 20s screenshot captured only 'Bundling 39%', not application UI.
+          curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
           xcrun simctl install "$udid" "$app"
           xcrun simctl launch "$udid" com.bridge.nativepilot | tee native-evidence/simulator-launch.txt
           sleep 20
           xcrun simctl io "$udid" screenshot native-evidence/simulator.png
+          xcrun simctl spawn "$udid" log show --last 2m --style compact --predicate 'process == "BridgeNativePilot"' > native-evidence/app-runtime.log
           # Launch + screenshot is NOT a SecureStore or PKCE assertion. Android
           # has automated native storage assertions; iOS still needs XCUITest.
       - uses: actions/upload-artifact@v4
