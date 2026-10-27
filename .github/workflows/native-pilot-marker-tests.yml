@@ -1,4 +1,4 @@
-name: Native pilot marker unit tests (not product acceptance)
+name: Native pilot checks (NOT product acceptance)
 
 on:
   pull_request:
@@ -23,3 +23,24 @@ jobs:
       - name: Test isolated JS marker semantics (no retries)
         working-directory: mobile-native-pilot
         run: npm test
+
+  js-build-and-typecheck:
+    name: Expo JS typecheck and Android/iOS bundles - NOT native binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: mobile-native-pilot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Install isolated pilot dependencies (lockfile pending)
+        run: npm install --no-fund
+      - name: Type-check RN prototype
+        run: npm run typecheck
+      - name: Export Android JS bundle (not APK)
+        run: npx expo export --platform android --output-dir ./ci-export-android
+      - name: Export iOS JS bundle (not IPA)
+        run: npx expo export --platform ios --output-dir ./ci-export-ios
