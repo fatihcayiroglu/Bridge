@@ -68,3 +68,86 @@ test('the Android acceptance script uses the trap and still asserts every marker
   assert.match(s, /for i in \$\(seq 1 90\); do/);
   assert.match(s, /sleep 2/);
 });
+
+function runInDir(body, files = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acc-'));
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+  const file = path.join(dir, 'case.sh');
+  fs.writeFileSync(file, `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\n${body}\n`);
+  return spawnSync('bash', [file], { encoding: 'utf8', cwd: dir });
+}
+
+const REDBOX_XML = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">
+<node index="0" text="" resource-id="com.bridge.nativepilot:id/catalyst_redbox_title" content-desc="" />
+<node index="1" text="TypeError: Cannot read property &apos;exec&apos; of undefined" resource-id="" content-desc="" />
+<node index="2" text="TypeError: Cannot read property &apos;exec&apos; of undefined" resource-id="" content-desc="" />
+<node index="3" text="token=abcdefghijklmnopqrstuvwxyz0123456789ABCD &amp; more" content-desc="Dismiss" />
+</hierarchy>`;
+
+test('a redbox dump is printed as its visible text: decoded, de-duplicated, secrets masked', () => {
+  const r = runInDir('acceptance_print_ui_text ui.xml android', { 'ui.xml': REDBOX_XML });
+  assert.equal(r.status, 0);
+  const lines = r.stderr.trim().split('\n');
+  assert.deepEqual(lines, [
+    "NATIVE_ANDROID_UI_TEXT: TypeError: Cannot read property 'exec' of undefined",
+    'NATIVE_ANDROID_UI_TEXT: token=[redacted] & more',
+    'NATIVE_ANDROID_UI_TEXT: Dismiss',
+  ]);
+});
+
+test('printing never fails the caller: a missing dump and an empty dump both return 0', () => {
+  const missing = runInDir('acceptance_print_ui_text nope.xml android; echo after');
+  assert.equal(missing.status, 0);
+  assert.equal(missing.stdout.trim(), 'after');
+  assert.match(missing.stderr, /NATIVE_ANDROID_UI_TEXT: \(no dump at nope\.xml\)/);
+  const empty = runInDir('acceptance_print_ui_text ui.xml android; echo after', { 'ui.xml': '<hierarchy/>' });
+  assert.equal(empty.status, 0);
+  assert.equal(empty.stderr, '');
+});
+
+test('runtime errors: only JS-runtime and crash error lines, the last 60, masked', () => {
+  const log = [
+    '10-27 22:47:15.001  4321  4400 I ReactNativeJS: Running "main"',
+    '10-27 22:47:15.200  4321  4400 E ReactNativeJS: Error: SQLCipher key unavailable',
+    '10-27 22:47:15.300  4321  4321 E AndroidRuntime: FATAL EXCEPTION: main',
+    '10-27 22:47:15.400  1000  1000 E SurfaceFlinger: unrelated',
+    '10-27 22:47:15.500  4321  4400 E ReactNativeJS: key=0123456789abcdef0123456789abcdef01',
+    ...Array.from({ length: 70 }, (_, i) => `10-27 22:47:16.${String(i).padStart(3, '0')}  4321  4400 E ReactNative: line ${i}`),
+  ].join('\n');
+  const r = runInDir('acceptance_print_runtime_errors android < log.txt', { 'log.txt': log });
+  assert.equal(r.status, 0);
+  const lines = r.stderr.trim().split('\n');
+  assert.equal(lines.length, 60);
+  assert.ok(lines.every((l) => l.startsWith('NATIVE_ANDROID_RUNTIME_ERROR: ')));
+  assert.match(lines.at(-1), /line 69$/);
+  assert.ok(!r.stderr.includes('Running "main"') && !r.stderr.includes('SurfaceFlinger'));
+  const few = runInDir('acceptance_print_runtime_errors android < log.txt', { 'log.txt': log.split('\n').slice(0, 5).join('\n') });
+  assert.match(few.stderr, /E ReactNativeJS: Error: SQLCipher key unavailable/);
+  assert.match(few.stderr, /E AndroidRuntime: FATAL EXCEPTION: main/);
+  assert.match(few.stderr, /key=\[redacted\]/);
+});
+
+test('the Android script prints the screen text on every marker failure and runtime errors on any failure', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const fn = s.slice(s.indexOf('function assert_native_marker'), s.indexOf('stage=first-launch'));
+  for (const reason of ['app-reported-failure', 'redbox-or-runtime-not-ready', 'not-seen-in-90-dumps']) {
+    const at = fn.indexOf(reason);
+    assert.ok(at > 0, reason);
+    const after = fn.slice(at, fn.indexOf('return 1', at));
+    assert.match(after, /acceptance_print_ui_text "\$output" android/, `${reason} prints the screen`);
+  }
+  assert.match(s, /\(\( status == 0 \)\) \|\| acceptance_print_runtime_errors android < native-evidence\/android-logcat\.txt/);
+});
+
+test('a redbox in the marker loop fails at once, names the reason, and the log shows the error', () => {
+  const r = run([
+    'stage=first-ui-assertions',
+    `printf '%s' ${JSON.stringify(REDBOX_XML)} > first-ui.xml`,
+    'check() { if grep -q "catalyst_redbox_title" first-ui.xml; then acceptance_detail="M:redbox-or-runtime-not-ready"; acceptance_print_ui_text first-ui.xml android; return 1; fi; }',
+    'check',
+  ].join('\n'));
+  assert.equal(r.status, 1);
+  assert.match(r.record, /^detail=M:redbox-or-runtime-not-ready$/m);
+  assert.match(r.stderr, /NATIVE_ANDROID_UI_TEXT: TypeError: Cannot read property 'exec' of undefined/);
+  assert.ok(r.stderr.indexOf('UI_TEXT') < r.stderr.indexOf('ACCEPTANCE_FAILED'), 'screen text precedes the verdict line');
+});

@@ -12,6 +12,7 @@ function cleanup() {
   local status=$?
   acceptance_record_failure "$status" native-evidence android
   adb logcat -d > native-evidence/android-logcat.txt 2>&1 || true
+  (( status == 0 )) || acceptance_print_runtime_errors android < native-evidence/android-logcat.txt
   adb shell screencap -p /sdcard/native-failure.png >/dev/null 2>&1 && adb pull /sdcard/native-failure.png native-evidence/final-screen.png >/dev/null 2>&1 || true
   kill "$metro_pid" 2>/dev/null || true
   exit "$status"
@@ -38,12 +39,17 @@ function assert_native_marker() {
     # pull progress still goes to the job log as before.
     adb shell uiautomator dump /sdcard/native-acceptance.xml >> native-evidence/uiautomator-dump.log 2>&1
     adb pull /sdcard/native-acceptance.xml "$output" >/dev/null
-    if grep -q NATIVE_ACCEPTANCE_FAILED "$output"; then acceptance_detail="$marker:app-reported-failure"; return 1; fi
-    if grep -q 'catalyst_redbox_title\|runtime not ready' "$output"; then acceptance_detail="$marker:redbox-or-runtime-not-ready"; return 1; fi
+    if grep -q NATIVE_ACCEPTANCE_FAILED "$output"; then
+      acceptance_detail="$marker:app-reported-failure"; acceptance_print_ui_text "$output" android; return 1
+    fi
+    if grep -q 'catalyst_redbox_title\|runtime not ready' "$output"; then
+      acceptance_detail="$marker:redbox-or-runtime-not-ready"; acceptance_print_ui_text "$output" android; return 1
+    fi
     if grep -q "$marker" "$output"; then return 0; fi
     sleep 2
   done
   acceptance_detail="$marker:not-seen-in-90-dumps"
+  acceptance_print_ui_text "$output" android
   return 1
 }
 stage=first-launch

@@ -31,3 +31,32 @@ acceptance_record_failure() {
     "${stage:-unknown}" "$status" "${acceptance_failed_function:-unknown}" \
     "${acceptance_failed_line:-unknown}" "${cmd:-unknown}" "${acceptance_detail:-none}" > "$dir/native-failure-stage.txt"
 }
+
+# Why the next helpers exist: native run 40596429506 (Android, #530 on 3e1a4824) stopped at
+# stage=first-ui-assertions with detail=NATIVE_SQLCIPHER_WRITE_PASS:redbox-or-runtime-not-ready,
+# and the UI dump naming the error stayed in an artifact that cannot always be fetched. The
+# job log itself now carries the screen text and the React Native error lines.
+#
+# Long opaque runs (hex/base64, 32+ chars) are masked so a stray secret cannot reach the log.
+acceptance_redact() {
+  sed -E 's/[A-Za-z0-9+\/_-]{32,}={0,2}/[redacted]/g'
+}
+
+# $1 = uiautomator XML dump, $2 = label (android). Prints at most 40 visible strings.
+acceptance_print_ui_text() {
+  local xml="$1" label="$2"
+  [[ -f "$xml" ]] || { printf 'NATIVE_%s_UI_TEXT: (no dump at %s)\n' "${label^^}" "$xml" >&2; return 0; }
+  { grep -oE '(text|content-desc)="[^"]+"' "$xml" || true; } \
+    | sed -E 's/^(text|content-desc)="//; s/"$//; s/&quot;/"/g; s/&apos;/'"'"'/g; s/&lt;/</g; s/&gt;/>/g; s/&#10;/ /g; s/&amp;/\&/g' \
+    | acceptance_redact | cut -c1-240 | awk 'NF && !seen[$0]++' | head -n 40 \
+    | sed "s/^/NATIVE_${label^^}_UI_TEXT: /" >&2 || true
+}
+
+# Reads an `adb logcat -d` capture on stdin; prints the last 60 error lines from the JS
+# runtime and fatal crashes only (not the whole log).
+acceptance_print_runtime_errors() {
+  local label="$1"
+  { grep -E ' E (ReactNativeJS|ReactNative|AndroidRuntime|unknown:ReactNative)' || true; } \
+    | acceptance_redact | cut -c1-300 | tail -n 60 \
+    | sed "s/^/NATIVE_${label^^}_RUNTIME_ERROR: /" >&2 || true
+}
