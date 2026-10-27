@@ -308,12 +308,15 @@ worker.addEventListener('fetch', (event: FetchEvent) => {
         })
         .catch(async (): Promise<Response> => {
           await broadcastNetworkStatus(false);
+          // The page never sees the failed fetch, only this answer. The marker
+          // header lets it tell "no network" from a real server 503 (api-error.ts),
+          // so an offline channel open can fall back to the local history.
           return new Response(
             JSON.stringify({ error: 'offline', message: workerText(await readNotificationLocale(), 'sw_offline') }),
             {
               status:     503,
               statusText: 'Service Unavailable',
-              headers:    { 'Content-Type': 'application/json' },
+              headers:    { 'Content-Type': 'application/json', 'X-Bridge-Offline': '1' },
             },
           );
         }),
