@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  marker-unit-only:
-    name: JS marker unit tests only - NOT Android/iOS parity
+  isolated-unit-contracts:
+    name: JS marker/API adapter unit tests - NOT Android/iOS parity
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.19.0'
-      - name: Test isolated JS marker semantics (no retries)
+      - name: Test isolated JS marker and read-only API contracts (no retries)
         working-directory: mobile-native-pilot
         run: npm test
 
