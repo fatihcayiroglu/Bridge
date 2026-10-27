@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Bridge Native Pilot",
+    "slug": "bridge-native-pilot",
+    "scheme": "bridge-native-pilot",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.bridge.nativepilot",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.bridge.nativepilot"
+    },
+    "plugins": []
+  }
+}
