@@ -19,7 +19,9 @@ export type LocalFirstNamespace =
   | 'outbox'
   | 'history'
   | 'oplog'
-  | 'search-meta';
+  | 'search-meta'
+  | 'session'
+  | 'navigation';
 
 export interface EncryptedLocalRecord {
   id: string;

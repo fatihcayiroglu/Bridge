@@ -296,6 +296,22 @@ worker.addEventListener('sync', (event: Event) => {
 worker.addEventListener('fetch', (event: FetchEvent) => {
   const url = new URL(event.request.url);
 
+  // The Socket.IO client library is a static script. Without a copy, a page
+  // reloaded offline has no socket client when the network returns (P7
+  // offline reload). Network first, so it always matches the server when one
+  // answers; the cached copy only serves an offline load. The transport below
+  // /socket.io/ is never touched.
+  if (url.pathname === '/socket.io/socket.io.js') {
+    event.respondWith(fetch(event.request).then(response => {
+      if (response.status === 200 && response.type === 'basic') {
+        const clone = response.clone();
+        void caches.open(worker.CURRENT_CACHE ?? STATIC_CACHE_PREFIX).then(cache => cache.put(event.request, clone));
+      }
+      return response;
+    }).catch(async (): Promise<Response> => (await caches.match(event.request))
+      ?? new Response(workerText(await readNotificationLocale(), 'sw_offline'), { status: 503 })));
+    return;
+  }
   if (url.pathname.startsWith('/socket.io/')) return;
   if (url.pathname.startsWith('/uploads/'))   return;
 

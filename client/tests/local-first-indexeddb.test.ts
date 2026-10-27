@@ -4,7 +4,16 @@ import {
   IndexedDbKeyProvider,
   IndexedDbRecordBackend,
   createBrowserLocalFirstStore,
+  openExistingBrowserLocalFirstStore,
 } from '../js/core/local-first/indexeddb.ts';
+import {
+  OFFLINE_SESSION_MAX_AGE_MS,
+  clearOfflineSession,
+  recordOfflineSession,
+  tokenAccountId,
+  unlockOfflineSession,
+} from '../js/core/local-first/offline-session.ts';
+import { markLocalAccountErased, resetErasedLocalAccountsForTests } from '../js/core/local-first/erased-accounts.ts';
 import type { EncryptedLocalRecord } from '../js/core/local-first/store.ts';
 
 type Handler<T> = ((this: T, event: Event) => unknown) | null;
@@ -381,5 +390,71 @@ describe('P7 IndexedDB local-first adapter', () => {
     }) as typeof db.transaction;
 
     await expect(backend.get('x')).rejects.toThrow('request failed');
+  });
+});
+
+/** A JWT-shaped token naming `id`; offline unlock never verifies its signature. */
+function token(id: string, nonce = 'a'): string {
+  const b64 = (value: object) => btoa(JSON.stringify(value)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  return `${b64({ alg: 'HS256' })}.${b64({ id, n: nonce })}.signature`;
+}
+
+describe('P7 offline reload: device-bound offline grant (owner decision on #497)', () => {
+  const NOW = 1_800_000_000_000;
+  const user = { _id: 'offline-u1', username: 'alice', displayName: 'Alice', email: 'never-stored@example.test' };
+
+  it('opens an existing store only when this device already holds the account key, and never creates one', async () => {
+    expect(await openExistingBrowserLocalFirstStore('fresh-user')).toBeNull();
+    expect(await new IndexedDbKeyProvider().get('fresh-user')).toBeNull();
+    const runtime = await createBrowserLocalFirstStore('fresh-user');
+    runtime.store.close();
+    const store = await openExistingBrowserLocalFirstStore('fresh-user');
+    expect(store).not.toBeNull();
+    store?.close();
+  });
+
+  it('a recorded grant unlocks the same account for the same token, with only allowlisted profile fields', async () => {
+    const t = token(user._id);
+    expect(tokenAccountId(t)).toBe(user._id);
+    await recordOfflineSession(user, t, NOW);
+    const result = await unlockOfflineSession(t, NOW + 1_000);
+    expect(result).toEqual({ ok: true, validatedAt: NOW, user: { _id: user._id, username: 'alice', displayName: 'Alice' } });
+  });
+
+  it('fails closed: no token, no account in it, no device key, other token, expiry, clock, logout, erasure, corruption', async () => {
+    const t = token(user._id);
+    await recordOfflineSession(user, t, NOW);
+
+    expect(await unlockOfflineSession(null, NOW)).toEqual({ ok: false, reason: 'no-token' });
+    expect(await unlockOfflineSession('not-a-jwt', NOW)).toEqual({ ok: false, reason: 'no-account' });
+    // Another account: this device never held its key, and none is created.
+    expect(await unlockOfflineSession(token('someone-else'), NOW)).toEqual({ ok: false, reason: 'no-device-key' });
+    expect(await new IndexedDbKeyProvider().get('someone-else')).toBeNull();
+    // The same account with a token the server never validated on this device.
+    expect(await unlockOfflineSession(token(user._id, 'forged'), NOW)).toEqual({ ok: false, reason: 'token-mismatch' });
+    expect(await unlockOfflineSession(t, NOW + OFFLINE_SESSION_MAX_AGE_MS)).toEqual({ ok: false, reason: 'expired' });
+    expect(await unlockOfflineSession(t, NOW - 10 * 60_000)).toEqual({ ok: false, reason: 'clock' });
+
+    // A grant for a token naming another account is never written.
+    await recordOfflineSession({ _id: 'mismatch-user' }, token('different-user'), NOW);
+    expect(await openExistingBrowserLocalFirstStore('mismatch-user')).toBeNull();
+
+    // Tampered ciphertext: authentication fails, nothing is returned.
+    const db = factory.dbs.get('bridge-local-first-records-v1')!;
+    const rows = (db as unknown as { stores: Map<string, { rows: Map<string, EncryptedLocalRecord> }> }).stores.get('records')!.rows;
+    const grantId = [...rows.keys()].find(k => k.includes('n:session'))!;
+    const original = rows.get(grantId)!;
+    rows.set(grantId, { ...original, envelope: { ...original.envelope, ct: original.envelope.ct.replace(/^./, c => (c === 'A' ? 'B' : 'A')) } });
+    expect(await unlockOfflineSession(t, NOW)).toEqual({ ok: false, reason: 'corrupt' });
+    rows.set(grantId, original);
+    expect((await unlockOfflineSession(t, NOW)).ok).toBe(true);
+
+    await clearOfflineSession(user._id);
+    expect(await unlockOfflineSession(t, NOW)).toEqual({ ok: false, reason: 'no-grant' });
+
+    await recordOfflineSession(user, t, NOW);
+    markLocalAccountErased(user._id);
+    expect(await unlockOfflineSession(t, NOW)).toEqual({ ok: false, reason: 'erased' });
+    resetErasedLocalAccountsForTests();
   });
 });

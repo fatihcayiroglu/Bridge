@@ -14,6 +14,7 @@
 
 import { getAPI, toServerUrl } from './globals.ts';
 import { readToken, saveToken, logout } from './auth-compat.ts';
+import { isLocalOnlySession } from './session-authority.ts';
 import {
   storageAvailable, tryAcquireLease, releaseLease, publishResult, waitForOtherTab,
 } from './refresh-coordinator.ts';
@@ -378,6 +379,18 @@ export async function apiFetch<T = unknown>(
     }));
   }
 
+  // P7 offline reload: a session opened from the local offline grant has no
+  // server authority yet. Until /api/me validates it again (restoreSession),
+  // nothing but that check goes to the server; callers see the same answer the
+  // service worker gives without a network, so they fall back to local data.
+  if (isLocalOnlySession() && !isSessionCheck(method, target)) {
+    return attach(new Response(JSON.stringify({ error: 'offline' }), {
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: { 'Content-Type': 'application/json', 'X-Bridge-Offline': '1' },
+    }));
+  }
+
   // A grant this client already holds for the action's scope rides along up front.
   const scope = scopeForRequest(method, target);
   const held = scope ? grantFor(scope) : null;
@@ -397,6 +410,15 @@ export async function apiFetch<T = unknown>(
     if (grant) response = await sendAuthed(target, init, mutating, grant, context);
   }
   return attachCurrent(response);
+}
+
+function isSessionCheck(method: string, target: string): boolean {
+  if (method !== 'GET') return false;
+  try {
+    return new URL(target, location.origin).pathname === '/api/me';
+  } catch {
+    return false;
+  }
 }
 
 /** Proofs go through this same client (CSRF, refresh) and are never step-up protected themselves. */

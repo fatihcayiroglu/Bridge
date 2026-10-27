@@ -238,6 +238,30 @@ describe('P7 MessageLoader encrypted offline history', () => {
     expect(errorText).toBe('');
   });
 
+  it('after an offline open, the server-validated session reads the same channel from the server again', async () => {
+    const userId = 'reload-user';
+    const channelId = 'reload-channel';
+    registerState(userId);
+    await replaceLocalFirstHistory(userId, channelId, [{ _id: 'cached-1', channelId, content: 'cached', createdAt: 1 }]);
+    apiFetchMock.mockResolvedValue({ ...(response({ error: 'offline' }, 503) as object), headers: new Headers({ 'X-Bridge-Offline': '1' }) });
+
+    render(MessageLoader);
+    select(channelId);
+    await waitFor(() => expect(offline).toBe(true));
+
+    apiFetchMock.mockResolvedValue(response({ messages: [
+      { _id: 'cached-1', channelId, content: 'cached', createdAt: 1 },
+      { _id: 'written-meanwhile', channelId, content: 'new', createdAt: 2 },
+    ] }));
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    await waitFor(() => expect(messages.map(row => row._id)).toEqual(['cached-1', 'written-meanwhile']));
+    expect(offline).toBe(false);
+
+    // Logout (including a refusal after reconnect) empties the view.
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    expect(messages).toEqual([]);
+  });
+
   it('server-authoritative 403 clears cached history instead of using past authorization', async () => {
     const userId = 'revoked-user';
     const channelId = 'revoked-channel';

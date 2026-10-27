@@ -25,6 +25,8 @@
   import { getAPI } from './globals.js';
   import { readToken } from './auth-compat.js';
   import { apiFetch } from './api-fetch.js';
+  import { isNetworkFailure } from './api-error.js';
+  import { readCachedServerList, saveCachedServerList } from './local-first/navigation-cache.js';
   import {
     navigationOwner, lastServer, rememberServer, navigationPreferencesReady, noteNavigationRestoration,
   } from './navigation-selection.js';
@@ -76,14 +78,23 @@
 
     try {
       // Faz 4: apiFetch → 401'de access token'ı yeniler ve isteği bir kez tekrarlar.
-      const response = await apiFetch(`${getAPI()}/api/servers`);
-
-      if (!response.ok) {
-        log.warn('Sunucu listesi isteği başarısız', { status: response.status });
-        throw new Error('server-list-load-failed');
+      const response: unknown = await apiFetch(`${getAPI()}/api/servers`).catch((error: unknown) => error);
+      let data: unknown;
+      let fromCache = false;
+      if (isOkResponse(response)) {
+        data = await response.json() as unknown;
+      } else {
+        // P7 offline reload / server unreachable: the last authorized rail,
+        // read-only (local-first/navigation-cache.ts). Anything else fails.
+        const cacheOwner = navigationOwner(BridgeRegistry.call('getMe'));
+        const cached = cacheOwner && isNetworkFailure(response) ? await readCachedServerList(cacheOwner) : null;
+        if (!cached) {
+          log.warn('Sunucu listesi isteği başarısız', { status: (response as { status?: unknown } | null)?.status });
+          throw new Error('server-list-load-failed');
+        }
+        data = cached;
+        fromCache = true;
       }
-
-      const data = await response.json() as unknown;
       // Token refresh can rotate the JWT for the SAME account; do not drop
       // a good response solely because its token string changed. A concurrent
       // logout/account switch still invalidates the old response.
@@ -91,6 +102,11 @@
           (requestedOwner === null || requestedOwner !== navigationOwner(BridgeRegistry.call('getMe')))) return;
       servers = Array.isArray(data) ? data as RailServer[] : [];
       log.info(`${servers.length} sunucu yüklendi`);
+      const cacheOwner = navigationOwner(BridgeRegistry.call('getMe'));
+      if (!fromCache && cacheOwner) {
+        void saveCachedServerList(cacheOwner, servers.map(railSnapshot))
+          .catch((error: unknown) => log.warn('Sunucu listesi yerel kopyası yazılamadı', error));
+      }
 
       let owner = navigationOwner(BridgeRegistry.call('getMe'));
       if (owner && restoredOwner !== owner && !explicitlySelected) {
@@ -132,6 +148,20 @@
         for (const resolve of waiting) resolve();
       }
     }
+  }
+
+  function isOkResponse(value: unknown): value is Response {
+    return Boolean(value) && typeof value === 'object' && (value as { ok?: unknown }).ok === true
+      && typeof (value as { json?: unknown }).json === 'function';
+  }
+
+  /** Only what the rail renders goes into the encrypted local snapshot. */
+  function railSnapshot(server: RailServer): RailServer {
+    const out: RailServer = { _id: server._id };
+    if (typeof server.name === 'string') out.name = server.name;
+    if (typeof server.icon === 'string') out.icon = server.icon;
+    if (typeof server.iconUrl === 'string') out.iconUrl = server.iconUrl;
+    return out;
   }
 
   // ── Sunucu seçimi ──────────────────────────────────────────────────────────
@@ -229,6 +259,8 @@
   void navigationPreferencesReady();
   function onAuthSuccess(): void { void loadServers(); }
   document.addEventListener('bridge:auth-success', onAuthSuccess);
+  // P7 offline reload: a local-only session renders the cached rail.
+  document.addEventListener('bridge:auth-local', onAuthSuccess);
 
   // Faz 10.11 — KULLANICI İZOLASYONU (Faz 10.7 sahiplik kuralı).
   // Rail çıkışta unmount EDİLMEZ; bu yüzden kendi özel durumunu kendisi
@@ -257,6 +289,7 @@
 
   onDestroy(() => {
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
+    document.removeEventListener('bridge:auth-local', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
     BridgeRegistry.unregister('loadServers');
     BridgeRegistry.unregister('getAvailableServers');

@@ -304,3 +304,30 @@ export async function createBrowserLocalFirstStore(userId: string): Promise<Brow
     };
   }
 }
+
+/**
+ * The account's durable store ONLY if this device already holds its key.
+ *
+ * Never creates a key or falls back to memory: offline unlock
+ * (offline-session.ts) must fail closed on a device that never stored this
+ * account's data, instead of minting a fresh key that decrypts nothing.
+ */
+export async function openExistingBrowserLocalFirstStore(userId: string): Promise<EncryptedLocalStore | null> {
+  if (!userId || isLocalAccountErased(userId) || !idb()) return null;
+  const records = new IndexedDbRecordBackend();
+  const keys = new IndexedDbKeyProvider();
+  try {
+    const native = iosLocalFirstCipher(userId);
+    if (native && await native.hasKey()) {
+      await native.ensureKey();
+      keys.close();
+      return new EncryptedLocalStore(userId, records, null, native);
+    }
+    if (await keys.get(userId)) return new EncryptedLocalStore(userId, records, keys);
+  } catch {
+    // An unreadable key store is a missing proof, not a reason to guess.
+  }
+  records.close();
+  keys.close();
+  return null;
+}

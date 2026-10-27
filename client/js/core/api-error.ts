@@ -166,6 +166,11 @@ function classify(input: unknown, fallbackKey: string): Omit<ApiErrorInfo, 'mess
   return { status: 0, key: fallbackKey, severity: 'error', network: false };
 }
 
+/** True when the server was not reached: a failed fetch, or the service worker's offline answer. */
+export function isNetworkFailure(input: unknown): boolean {
+  return classify(unwrapApiError(input), 'error_generic').network;
+}
+
 /** Teknik ayrıntıyı loglar — kullanıcıya gösterilen metne hiçbir zaman karışmaz. */
 function reportTechnical(input: unknown, info: Omit<ApiErrorInfo, 'message'>): void {
   if (isResponseLike(input)) {
