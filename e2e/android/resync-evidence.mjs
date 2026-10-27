@@ -31,7 +31,7 @@ export function summarizeResync(page, responses) {
   else if (reconnected === 0) stage = 'no-reconnect-event';
   else if (responses.length === 0) stage = 'no-history-request';
   else if (!responses.some((r) => r === 200)) stage = 'history-request-failed';
-  else stage = 'history-loaded-not-rendered';
+  else stage = 'history-loaded';
   return { stage, events, historyRequests: responses.length, historyStatuses: statuses };
 }
 

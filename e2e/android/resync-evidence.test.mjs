@@ -18,7 +18,7 @@ test('classifies where the resync stopped', () => {
   assert.equal(summarizeResync({ events: events(0) }, []).stage, 'no-reconnect-event');
   assert.equal(summarizeResync({ events: events(1) }, []).stage, 'no-history-request');
   assert.equal(summarizeResync({ events: events(1) }, ['failed', 409]).stage, 'history-request-failed');
-  assert.equal(summarizeResync({ events: events(1) }, [409, 200]).stage, 'history-loaded-not-rendered');
+  assert.equal(summarizeResync({ events: events(1) }, [409, 200]).stage, 'history-loaded');
 });
 
 test('the summary carries counts and statuses only', () => {
@@ -52,7 +52,7 @@ test('the recorder counts history requests inside the page (CapacitorHttp bypass
   await assert.rejects(fakeWindow.fetch('https://localhost/api/channels/fail/messages?limit=50'));
   for (const fn of listeners['bridge:socket-reconnected']) fn();
   const s = await rec.read();
-  assert.equal(s.stage, 'history-loaded-not-rendered');
+  assert.equal(s.stage, 'history-loaded');
   assert.deepEqual(s.historyStatuses, { 200: 1, failed: 1 });
   assert.equal(s.events['bridge:socket-reconnected'], 1);
   assert.equal(fakeWindow.fetch, original, 'the page fetch is restored after read');
