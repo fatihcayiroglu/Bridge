@@ -43,6 +43,7 @@ import webauthnRouter                       from '../routes/webauthn';
 import emailRouter                          from '../routes/email';
 import adminRouter                          from '../routes/admin';
 import ssoRouter                            from '../routes/sso';
+import { createNativeAuthRouters }           from '../routes/nativeAuth';
 import invitePreviewRouter                  from '../routes/invitePreview';
 import mobilePushRouter                     from '../routes/mobilePush';
 import webpushRouter                        from '../routes/webpush';
@@ -164,6 +165,11 @@ export function setupRoutes(app: Application): void {
   mountApi('/email', emailRouter);
   mountApi('/admin', adminRouter);
   mountApi('/sso', ssoRouter);
+  // Native Android/iOS sign-in (code + PKCE). The consent step lives under
+  // /refresh so the path-scoped browser refresh cookie reaches it.
+  const nativeAuth = createNativeAuthRouters();
+  mountApi('/refresh/native-authorize', nativeAuth.authorize);
+  mountApi('/native-auth', nativeAuth.token);
   app.use('/invite', invitePreviewRouter);
   mountApi('/mobile', mobilePushRouter);
   mountApi('/webpush', webpushRouter);

@@ -189,6 +189,13 @@ describe('createApp() entegrasyon', () => {
       expect(res.headers['cache-control']).toContain('no-store');
     });
 
+    it('serves the SPA shell at the native sign-in entry the app opens in the system browser', async () => {
+      const res = await request(app).get('/native-auth?state=x');
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/^text\/html/);
+      expect(res.headers['cache-control']).toContain('no-store');
+    });
+
     it('JSON body parse eder', async () => {
       const res = await request(app)
         .post('/__test_json')

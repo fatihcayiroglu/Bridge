@@ -2421,5 +2421,8 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "Kurulu bot veya webhook yok",
   "automation_link_exemption_save_failed": "Entegrasyon istisnası kaydedilemedi.",
   "automation_link_exemption_saved": "Entegrasyon istisnası kaydedildi.",
+  "native_auth_consent_title": "Bridge uygulamasında oturum açılsın mı?",
+  "native_auth_consent_message": "Yalnızca bu cihazdaki Bridge uygulamasından oturum açmayı siz başlattıysanız devam edin. Uygulamada {name} olarak oturum açılacak.",
+  "native_auth_consent_continue": "Uygulamada devam et",
 };
 export default translations;

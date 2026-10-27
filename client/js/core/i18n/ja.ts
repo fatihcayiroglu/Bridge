@@ -2450,6 +2450,9 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "インストール済みのボットやWebhookはありません",
   "automation_link_exemption_save_failed": "連携の例外を保存できませんでした。",
   "automation_link_exemption_saved": "連携の例外を保存しました。",
+  "native_auth_consent_title": "Bridge アプリにサインインしますか？",
+  "native_auth_consent_message": "このデバイスの Bridge アプリからサインインを開始した場合のみ続行してください。アプリは {name} としてサインインします。",
+  "native_auth_consent_continue": "アプリで続行",
 };
 
 export default translations;
