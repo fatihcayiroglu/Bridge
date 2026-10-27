@@ -29,6 +29,11 @@ import { runLifecycleReproduction, observeLifecycleWindow } from './lifecycle-re
 import { pausedPreferenceControlApplies, runPausedPreferenceControl, readPausedPreference } from './paused-preference-control.mjs';
 import { createDebuggerStoragePause } from './debugger-storage-pause.mjs';
 import { collectKernelPressure } from './pressure-evidence.mjs';
+import {
+  parseChoreographerSkips, summarizeStartupSkips, parseStallProbe, stallProbeCalibrated, summarizeStartupStallProbe,
+  parseStallProbeTimeline, attributeStallPhases, summarizeStallPhases,
+  collectPageTiming, compactPageTiming, rendererOverlap, summarizeRendererOverlap, stallsInWindow,
+} from './frame-skip-evidence.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -1463,11 +1468,18 @@ async function runUpstreamWebViewControls() {
           await sleep(2000);
           const finalPid = await pid();
           const count = await anrCount();
+          // #209: the same per-start stall evidence as CS01 (Choreographer +
+          // debug stall probe), so native-only, plain-WebView and Bridge cold
+          // starts are compared on identical infrastructure. Non-asserting.
+          const startupLog = tag => androidFailureShell(
+            'logcat -d -v brief --pid ' + firstPid + ' -s ' + tag + ":I '*:S'").catch(() => undefined);
           const record = {
             attempt, kind: control.kind, activityResumed,
             pidStable: firstPid === finalPid,
             pidPresentAfterObservation: /^[0-9]{1,8}$/.test(String(finalPid)),
             newlyRecordedAnrs: count - previousAnrs,
+            skippedFrames: parseChoreographerSkips(await startupLog('Choreographer'), firstPid),
+            mainThreadStalls: parseStallProbe(await startupLog('BridgeStallProbe'), firstPid),
           };
           samples.push(record);
           if (!record.pidStable) {
@@ -1504,7 +1516,12 @@ async function runUpstreamWebViewControls() {
         }
       }
       facts.androidControlColdStarts.complete = true;
-      return { complete: true, samples };
+      // #209: per-kind stall summary for comparison with CS01/SF01/SF02.
+      const byKind = Object.fromEntries(controls.map(({ kind }) => {
+        const rows = samples.filter(row => row.kind === kind);
+        return [kind, { frames: summarizeStartupSkips(rows), probe: summarizeStartupStallProbe(rows) }];
+      }));
+      return { complete: true, samples, stallsByKind: byKind };
     } finally {
       // The product launch A01 must start in a fresh Android app process.
       await sh('am force-stop ' + PKG).catch(() => {});
@@ -1547,6 +1564,11 @@ async function runUpstreamWebViewControls() {
     await sleep(stallMs + 4_000);
     await Promise.race([injection, sleep(5_000)]);
     markers = await readMarkers().catch(() => markers);
+    // #209: positive control for the debug MainThreadStallProbe. The control
+    // sleeps its main thread for stallMs; the probe must report that dispatch
+    // as `sleep` with at least 90 % of the duration. Counts/categories only.
+    const stallProbe = await androidFailureShell('logcat -d -v brief --pid ' + controlPid +
+      " -s BridgeStallProbe:I '*:S'").then(raw => parseStallProbe(raw, controlPid)).catch(() => null);
     const aliveBeforeHome = (await pid().catch(() => null)) === controlPid;
     const dialogBeforeHome = inspectAnrDialogWindows(
       await androidFailureShell('dumpsys window windows').catch(() => ''), PKG);
@@ -1575,7 +1597,9 @@ async function runUpstreamWebViewControls() {
       anrAfterStallBeganMs: anr ? anr.atMs - stallBeganAtMs : null,
       aliveBeforeHome, dialogBeforeHome, aliveAfterHome,
       killAfterAnrMs: anr?.killAfterMs ?? null, killReasonClass: anr?.killReasonClass ?? null,
-      exitReasonCode: exit.reasonCode, exitSubreasonCode: exit.subreasonCode };
+      exitReasonCode: exit.reasonCode, exitSubreasonCode: exit.subreasonCode,
+      stallProbe: stallProbe && { installed: stallProbe.installed, calibrated: stallProbeCalibrated(stallProbe, stallMs),
+        maxMs: stallProbe.maxMs, byWhere: stallProbe.byWhere } };
   });
   await measureAn00('AN00', 7_000);
   await measureAn00('AN00-L', 20_000);
@@ -1657,6 +1681,39 @@ async function main() {
   // intermittent FocusEvent ANR seen in run 39017377880. This is an ASSERTING
   // check (not a measurement-only pseudo-pass), and the later ANR01 still
   // scans the entire session, even if CS01 itself fails.
+  // #209: Bridge's own main-thread stalls for this exact PID (counts only).
+  // Evidence, never part of this check's verdict: a failed read is null.
+  const startupSkips = async appPid => {
+    try {
+      return parseChoreographerSkips(await androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s Choreographer:I '*:S'"), appPid);
+    } catch { return null; }
+  };
+  const startupStalls = async appPid => {
+    try {
+      return parseStallProbe(await androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
+    } catch { return null; }
+  };
+  // #209 phase attribution: host instants mapped onto the device clock, then
+  // each probe stall is assigned to the phase its dispatch began in.
+  const startupStallTimeline = async appPid => {
+    try {
+      return parseStallProbeTimeline(await androidFailureShell(
+        "logcat -d -v epoch --pid " + appPid + " -s BridgeStallProbe:I '*:S'"), appPid);
+    } catch { return null; }
+  };
+  const startupStallPhases = (timeline, origin, hostMarks) => {
+    if (!origin || !timeline) return null;
+    const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+    const marks = Object.fromEntries(Object.entries(hostMarks).map(([k, v]) => [k, toDevice(v)]));
+    return attributeStallPhases(timeline, marks, origin.precision);
+  };
+  // Renderer-side timing (numbers only) read after the UI is visible; both
+  // sides use the device wall clock, so no host mapping is involved.
+  const startupPageTiming = async () => {
+    try { return await page.evaluate(collectPageTiming); } catch { return null; }
+  };
   await check('CS01', 'three additional cold starts retain the app PID and report no Android ANR', async () => {
     if (MODE !== 'android') throw new Skip('actual Android ActivityManager required');
     const anrCount = async () => {
@@ -1672,15 +1729,20 @@ async function main() {
     // Fixed and small on purpose; stress must not consume the entire emulator
     // CI budget or silently redefine later L01 / FD01 acceptance.
     for (let attempt = 1; attempt <= 3; attempt++) {
+      const origin = await deviceClockOrigin().catch(() => null);
       const launch = await platform.coldLaunch();
+      const hostMarks = { displayed: Date.now() };
       const initialPid = await pid();
       assert(/^[0-9]{1,8}$/.test(String(initialPid)),
         `cold start ${attempt}: no valid app PID after Activity launch`);
       await attachPage();
+      hostMarks.attached = Date.now();
       await until(async () => (await authVisible()) || (await appVisible()), {
         timeout: 45_000,
         message: `visible UI after repeated cold start ${attempt}`,
       });
+      hostMarks.visible = Date.now();
+      const pageTiming = await startupPageTiming();
       // Catch the delayed process death that earlier cold-launch-only checks
       // missed: a 2 s OS-observation window is part of the assertion.
       await sleep(2000);
@@ -1691,7 +1753,13 @@ async function main() {
         totalTimeMs: launch.totalTimeMs,
         pidStable: finalPid === initialPid,
         anrCount: newAnrs,
+        skippedFrames: await startupSkips(initialPid),
+        mainThreadStalls: await startupStalls(initialPid),
       });
+      const stallTimeline = await startupStallTimeline(initialPid);
+      samples.at(-1).stallPhases = startupStallPhases(stallTimeline, origin, hostMarks);
+      samples.at(-1).pageTiming = compactPageTiming(pageTiming);
+      samples.at(-1).rendererOverlap = rendererOverlap(stallTimeline, pageTiming);
       facts.androidColdStartSamples = samples;
       assert(finalPid === initialPid,
         `cold start ${attempt}: Android replaced the app process after UI render`);
@@ -1707,6 +1775,13 @@ async function main() {
   await productExitCheckpoint('after-startup');
   await collectAnrEvents();
   await anrDialogSample('after-startup');
+
+  // #209: measurement only. Choreographer reports stalls >= 30 frames.
+  await measure('SF01', 'cold-start main-thread stalls reported by Choreographer for the Bridge PID (measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android Choreographer required');
+    return summarizeStartupSkips(facts.androidColdStartSamples);
+  });
+
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
@@ -2535,6 +2610,19 @@ async function main() {
     }
   });
 
+  // #209 SF02: what Bridge's main thread did during CS01's cold-start stalls
+  // (debug-only MainThreadStallProbe). The ANR-inducing stall control stays
+  // out of the product flow, so the probe is calibrated in the
+  // upstream-webview-controls suite (AN00 / AN00-L), not in this run.
+  // Measurement only.
+  await measure('SF02', 'what the main thread did during cold-start stalls (debug stall probe; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('debug stall probe requires the native app');
+    return { calibratedInRun: false, calibration: 'upstream-webview-controls AN00/AN00-L',
+      coldStarts: summarizeStartupStallProbe(facts.androidColdStartSamples),
+      phases: summarizeStallPhases(facts.androidColdStartSamples),
+      renderer: summarizeRendererOverlap(facts.androidColdStartSamples) };
+  });
+
   // EX01 runs AFTER every product verdict and ANR/exit checkpoint. It cannot
   // warm product startup, change L01 timing or add expected deaths to PD01.
   // Unlike a repeated CI run, this is one fixed, bounded experiment. Stop at
@@ -2724,6 +2812,307 @@ async function main() {
     }
     log('EX02 independent debugger-paused storage comparison', JSON.stringify(facts.androidPausedPreferenceControl));
   }
+
+  // #209 SF03/SF04 helpers. Each wait runs under its own deadline and logs a
+  // fixed stage name (the first SF03 hung silently for 55 min); an overrun
+  // fails the measurement naming the stage.
+  const boundedStage = tag => async (name, work, ms) => {
+    log(`${tag} stage`, name);
+    let timer;
+    try {
+      return await Promise.race([work(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${tag} stage ${name} exceeded ${ms} ms`)), ms);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  // EX01/EX02 leave a signed-in session; the auth screen is what #209 renders first.
+  const signOutToAuthScreen = async tag => {
+    await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await until(() => page.evaluate(() => !!document.getElementById('tab-security')), { timeout: 15_000, message: `${tag} settings open` });
+    await page.evaluate(() => document.getElementById('tab-security')?.click());
+    await until(() => page.evaluate(() => !!document.querySelector('[data-testid="sec-logout"]')), { timeout: 15_000, message: `${tag} security tab` });
+    await page.evaluate(() => document.querySelector('[data-testid="sec-logout"]')?.click());
+    await until(() => authVisible(), { timeout: 20_000, message: `${tag} auth screen after sign-out` });
+  };
+
+  // #209 SF03: steady-state A/B of the auth screen's continuous compositor
+  // work, in ONE process: normal motion, reduced motion, normal motion again
+  // (ABA, so drift shows). SF02 found the page's own thread idle during
+  // Bridge's render stalls; auth.css animates three 90px-blurred blobs
+  // forever (`.auth-blob`) and stops them under prefers-reduced-motion. The
+  // media feature is emulated over CDP (fcf787bc, 40425507186: Android's
+  // animator scale never reached the page, reducedMotionSeen 0/3). Each window
+  // records whether reduce matched and whether a blob still animates.
+  // Runs LAST, after every product verdict, ANR/exit checkpoint and EX01/EX02
+  // (6179ee0e, 40423221908: a kill inside an earlier SF03 was charged to PD01),
+  // within the debug probe's 90 s window. Every wait is bounded and logged by
+  // fixed stage name. Measurement only.
+  await measure('SF03', 'auth-screen steady-state main-thread stalls: normal vs reduced motion (same process, ABA; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android WebView and stall probe required');
+    const step = boundedStage('SF03');
+    const WINDOW_MS = 10_000;
+    const windows = [];
+    let appPid = null;
+    let signedOutFirst = null;
+    let failure = null;
+    let processExit = null;
+    let timeline = null;
+    try {
+      const origin = await step('clock', () => deviceClockOrigin(), 20_000);
+      if (!origin) throw new Error('SF03 needs the device clock to place its windows');
+      const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+      await step('launch', () => platform.coldLaunch(), 60_000);
+      appPid = await step('pid', () => pid(), 20_000);
+      await step('attach', () => attachPage(), 75_000);
+      await step('visible', () => until(async () => (await authVisible()) || (await appVisible()),
+        { timeout: 45_000, message: 'SF03 visible UI' }), 60_000);
+      // EX01/EX02 leave a signed-in session; the blobs live on the auth screen.
+      signedOutFirst = !(await step('auth-check', () => authVisible(), 10_000));
+      if (signedOutFirst) {
+        await step('sign-out', () => signOutToAuthScreen('SF03'), 60_000);
+      }
+      for (const [label, reducedMotion] of [['normal-a', 'no-preference'], ['reduced', 'reduce'], ['normal-b', 'no-preference']]) {
+        await step(`media-${label}`, () => page.emulateMedia({ reducedMotion }), 10_000);
+        const state = await step(`state-${label}`, () => page.evaluate(() => ({
+          reduceMatches: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          blobs: document.querySelectorAll('.auth-blob').length,
+          blobsAnimated: [...document.querySelectorAll('.auth-blob')]
+            .filter(b => getComputedStyle(b).animationName !== 'none').length,
+          authVisible: (() => { const a = document.getElementById('auth-screen');
+            return !!a && getComputedStyle(a).display !== 'none'; })(),
+        })), 10_000);
+        const from = Date.now();
+        await sleep(WINDOW_MS);
+        windows.push({ label, ...state, hostFrom: from, hostTo: Date.now() });
+      }
+      timeline = await step('timeline', () => startupStallTimeline(appPid), 20_000);
+      for (const row of windows) {
+        Object.assign(row, { probe: stallsInWindow(timeline, toDevice(row.hostFrom), toDevice(row.hostTo)) });
+        delete row.hostFrom; delete row.hostTo;
+      }
+    } catch (err) {
+      failure = err;
+    }
+    await step('media-restore', () => page.emulateMedia({ reducedMotion: null }), 10_000).catch(() => {});
+    // Fixed categories only (classifyAndroidDependencyDeath); no PIDs leave.
+    if (appPid) {
+      const exitRows = await step('exit-evidence', () => androidFailureShell(`dumpsys activity exit-info ${PKG}`), 20_000)
+        .then(raw => parseApplicationExits(raw, 32)).catch(() => null);
+      const { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass } =
+        classifyAndroidDependencyDeath(exitRows, appPid);
+      processExit = { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass };
+    }
+    if (failure) {
+      throw new Error(`${String(failure?.message ?? failure).slice(0, 1500)}; SF03 process exit: ${JSON.stringify(processExit)}`);
+    }
+    const applied = windows.every(row => row.authVisible && row.blobs > 0 && row.probe.covered)
+      && windows[1].reduceMatches && windows[1].blobsAnimated === 0
+      && !windows[0].reduceMatches && windows[0].blobsAnimated > 0 && !windows[2].reduceMatches;
+    return { design: 'same process ABA; prefers-reduced-motion emulated over CDP', windowMs: WINDOW_MS,
+      applied, signedOutFirst, windows, processExit, probeMalformed: timeline?.malformed ?? null };
+  });
+
+  // #209 SF04: SF03 (68d342c6, 40428021986) found the auth screen's
+  // steady-state animation nearly stall-free (0 / 0 / 1 stall of 772 ms in
+  // three 10 s windows, normal / reduced / normal), so the multi-second
+  // stalls belong to FIRST frames. SF04 isolates Bridge's first render from
+  // WebView start-up: warm reloads of the page in one already-running
+  // process, ABA: normal, the three 90px-blurred `.auth-blob` layers hidden
+  // from document start, normal again. Hiding is a document-start style
+  // gated by a sessionStorage flag set before each reload; each reload
+  // records whether the blobs actually rendered. Stalls are counted by
+  // dispatch start from reload to auth screen + 3 s. Runs last, after SF03,
+  // within the probe's 90 s window of its own cold start. Measurement only.
+  await measure('SF04', 'warm-reload first-render main-thread stalls: normal vs auth-blob layers hidden (same process, ABA; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android WebView and stall probe required');
+    const step = boundedStage('SF04');
+    const HIDE_FLAG = 'bridge-sf04-hide-auth-blobs';
+    const reloads = [];
+    let appPid = null;
+    let failure = null;
+    let processExit = null;
+    let timeline = null;
+    try {
+      const origin = await step('clock', () => deviceClockOrigin(), 20_000);
+      if (!origin) throw new Error('SF04 needs the device clock to place its windows');
+      const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+      await step('launch', () => platform.coldLaunch(), 60_000);
+      appPid = await step('pid', () => pid(), 20_000);
+      await step('attach', () => attachPage(), 75_000);
+      await step('visible', () => until(async () => (await authVisible()) || (await appVisible()),
+        { timeout: 45_000, message: 'SF04 visible UI' }), 60_000);
+      if (!(await step('auth-check', () => authVisible(), 10_000))) {
+        await step('sign-out', () => signOutToAuthScreen('SF04'), 60_000);
+      }
+      await step('init-script', () => page.addInitScript(flag => {
+        try {
+          // Proof the document-start script ran, and what it saw (135f3fe5:
+          // the blobs still rendered in B, cause unknown).
+          const init = window.__bridgeSf04Init = { ran: true, flagSeen: sessionStorage.getItem(flag) === '1', method: null };
+          if (!init.flagSeen) return;
+          const rule = '.auth-blob{display:none!important}';
+          // 2d8c57bc: the script ran and saw the flag, yet the blobs rendered.
+          // At document start there may be no documentElement to append to,
+          // so prefer a constructable sheet; otherwise wait for the element.
+          if (typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in Document.prototype) {
+            const sheet = new CSSStyleSheet();
+            sheet.replaceSync(rule);
+            document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+            init.method = 'adopted-sheet';
+            return;
+          }
+          const append = () => {
+            const style = document.createElement('style');
+            style.textContent = rule;
+            document.documentElement.appendChild(style);
+            init.method = 'style-element';
+          };
+          if (document.documentElement) { append(); return; }
+          new MutationObserver((_, observer) => {
+            if (!document.documentElement) return;
+            observer.disconnect();
+            append();
+          }).observe(document, { childList: true });
+        } catch { window.__bridgeSf04Init = { ...(window.__bridgeSf04Init ?? {}), method: 'error' }; }
+      }, HIDE_FLAG), 10_000);
+      for (const [label, hide] of [['normal-a', false], ['blobs-hidden', true], ['normal-b', false]]) {
+        await step(`flag-${label}`, () => page.evaluate(({ flag, on }) => {
+          if (on) sessionStorage.setItem(flag, '1'); else sessionStorage.removeItem(flag);
+        }, { flag: HIDE_FLAG, on: hide }), 10_000);
+        const from = Date.now();
+        await step(`reload-${label}`, () => page.reload({ waitUntil: 'load', timeout: 45_000 }), 50_000);
+        await step(`auth-${label}`, () => until(() => authVisible(), { timeout: 30_000, message: `SF04 auth screen ${label}` }), 35_000);
+        const visibleMs = Date.now() - from;
+        await sleep(3000);
+        const state = await step(`state-${label}`, () => page.evaluate(() => ({
+          initRan: window.__bridgeSf04Init?.ran === true,
+          initFlagSeen: window.__bridgeSf04Init?.flagSeen === true,
+          initMethod: ['adopted-sheet', 'style-element', 'error'].includes(window.__bridgeSf04Init?.method)
+            ? window.__bridgeSf04Init.method : null,
+          blobs: document.querySelectorAll('.auth-blob').length,
+          blobsRendered: [...document.querySelectorAll('.auth-blob')]
+            .filter(b => getComputedStyle(b).display !== 'none').length,
+        })), 10_000);
+        reloads.push({ label, hide, visibleMs, ...state, hostFrom: from, hostTo: Date.now() });
+      }
+      timeline = await step('timeline', () => startupStallTimeline(appPid), 20_000);
+      for (const row of reloads) {
+        Object.assign(row, { probe: stallsInWindow(timeline, toDevice(row.hostFrom), toDevice(row.hostTo)) });
+        delete row.hostFrom; delete row.hostTo;
+      }
+    } catch (err) {
+      failure = err;
+    }
+    await step('flag-clear', () => page.evaluate(flag => sessionStorage.removeItem(flag), HIDE_FLAG), 10_000).catch(() => {});
+    if (appPid) {
+      const exitRows = await step('exit-evidence', () => androidFailureShell(`dumpsys activity exit-info ${PKG}`), 20_000)
+        .then(raw => parseApplicationExits(raw, 32)).catch(() => null);
+      const { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass } =
+        classifyAndroidDependencyDeath(exitRows, appPid);
+      processExit = { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass };
+    }
+    if (failure) {
+      throw new Error(`${String(failure?.message ?? failure).slice(0, 1500)}; SF04 process exit: ${JSON.stringify(processExit)}`);
+    }
+    const applied = reloads.length === 3 && reloads.every(row => row.blobs > 0 && row.probe.covered)
+      && reloads[1].blobsRendered === 0 && reloads[0].blobsRendered > 0 && reloads[2].blobsRendered > 0;
+    return { design: 'same process ABA warm reloads; auth-blob layers hidden from document start in B',
+      applied, reloads, processExit, probeMalformed: timeline?.malformed ?? null };
+  });
+
+  // #209 SF05: #494 (gradients) removed the warm and steady-state stalls,
+  // yet cold starts still show 3-4 s render dispatches that begin before the
+  // Activity is displayed or before the page is reachable. A bare WebView
+  // stays under 0.4 s (CS00). SF05 separates Bridge's page from Capacitor
+  // start-up: cold starts alternating MainActivity (Capacitor + Bridge) with
+  // a DEBUG-only Activity loading the same packaged assets in a plain WebView
+  // without Capacitor, each observed for the same fixed window with the same
+  // Choreographer and stall-probe evidence. The control reports when its page
+  // finished loading, so an empty page cannot pass for a cheap one. Runs last;
+  // bounded per stage; measurement only.
+  await measure('SF05', 'cold-start stalls: Capacitor MainActivity vs Bridge content in a plain WebView (alternating; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android cold starts and stall probe required');
+    const step = boundedStage('SF05');
+    const OBSERVE_MS = 8_000;
+    const CONTENT = 'com.bridge.app.WebViewBridgeContentBaselineActivity';
+    const samples = [];
+    const plan = [1, 2, 3].flatMap(attempt => [{ attempt, kind: 'capacitor-main' }, { attempt, kind: 'plain-webview-content' }]);
+    for (const { attempt, kind } of plan) {
+      const tag = `${kind}-${attempt}`;
+      await step(`stop-${tag}`, () => sh(`am force-stop ${PKG}`), 20_000);
+      const out = await step(`launch-${tag}`, () => sh(`am start -W -n ${kind === 'capacitor-main' ? ACTIVITY : `${PKG}/${CONTENT}`}`), 60_000);
+      const appPid = await step(`pid-${tag}`, () => pid(), 20_000);
+      await sleep(OBSERVE_MS);
+      const finished = kind === 'capacitor-main' ? null : await step(`page-${tag}`, () => androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s BridgeContentControl:I '*:S'"), 20_000)
+        .then(raw => {
+          const m = /event=page-finished ms=([0-9]{1,6})/.exec(String(raw));
+          return m ? Number(m[1]) : null;
+        }).catch(() => null);
+      samples.push({ attempt, kind, launched: /Status: ok/.test(String(out)),
+        pageFinishedMs: finished,
+        skippedFrames: await startupSkips(appPid), mainThreadStalls: await startupStalls(appPid) });
+    }
+    await step('stop-final', () => sh(`am force-stop ${PKG}`), 20_000).catch(() => {});
+    const byKind = Object.fromEntries(['capacitor-main', 'plain-webview-content'].map(kind => {
+      const rows = samples.filter(row => row.kind === kind);
+      return [kind, { launched: rows.filter(row => row.launched).length, frames: summarizeStartupSkips(rows),
+        probe: summarizeStartupStallProbe(rows) }];
+    }));
+    const contentRows = samples.filter(row => row.kind === 'plain-webview-content');
+    return { observeMs: OBSERVE_MS, order: 'alternating, capacitor-main first',
+      contentPageFinished: contentRows.filter(row => Number.isFinite(row.pageFinishedMs)).length,
+      contentPageFinishedMaxMs: Math.max(0, ...contentRows.map(row => row.pageFinishedMs ?? 0)),
+      applied: samples.every(row => row.launched) && contentRows.every(row => Number.isFinite(row.pageFinishedMs)),
+      byKind };
+  });
+
+  // #209 SF06: the first frame of a fresh process still costs 3-6 s on this
+  // emulator after #494 (integration run 40460571063: an input-focus ANR in
+  // CS01, its 5.8 s render stall beginning before the Activity was displayed;
+  // SF05 put most of the cost in Bridge's page, not Capacitor). SF06 cold-
+  // starts the plain-WebView Bridge-content control with first-screen CSS
+  // effect classes disabled from the first parse (variant extra, fixed list),
+  // in two rounds of opposite order, with the same fixed window and evidence
+  // as SF05. A start counts only when the control logged the requested
+  // variant and its page finished. Runs last; bounded; measurement only.
+  // Run 40463258659 (648d8b3c): only no-effects clearly lowered the stall
+  // (about 1.0 s against 1.8 s, two starts each); its text-clip and animation
+  // parts now also run on their own.
+  await measure('SF06', 'cold-start stalls of Bridge content with first-screen CSS effects disabled (debug control; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android cold starts and stall probe required');
+    const step = boundedStage('SF06');
+    const OBSERVE_MS = 8_000;
+    const CONTENT = 'com.bridge.app.WebViewBridgeContentBaselineActivity';
+    const VARIANTS = ['none', 'no-filters', 'no-shadows', 'no-text-clip', 'no-animations', 'no-effects'];
+    const plan = [...VARIANTS, ...[...VARIANTS].reverse()].map((variant, index) => ({ round: index < VARIANTS.length ? 1 : 2, variant }));
+    const samples = [];
+    for (const { round, variant } of plan) {
+      const tag = `${variant}-${round}`;
+      await step(`stop-${tag}`, () => sh(`am force-stop ${PKG}`), 20_000);
+      const out = await step(`launch-${tag}`, () => sh(`am start -W -n ${PKG}/${CONTENT} --es variant ${variant}`), 60_000);
+      const appPid = await step(`pid-${tag}`, () => pid(), 20_000);
+      await sleep(OBSERVE_MS);
+      const control = await step(`control-${tag}`, () => androidFailureShell(
+        "logcat -d -v brief --pid " + appPid + " -s BridgeContentControl:I '*:S'"), 20_000).catch(() => '');
+      const logged = (/event=variant name=([a-z-]{1,20})/.exec(String(control)) || [])[1] ?? null;
+      const finished = /event=page-finished ms=([0-9]{1,6})/.exec(String(control));
+      samples.push({ round, variant, launched: /Status: ok/.test(String(out)),
+        variantConfirmed: logged === variant, pageFinishedMs: finished ? Number(finished[1]) : null,
+        skippedFrames: await startupSkips(appPid), mainThreadStalls: await startupStalls(appPid) });
+    }
+    await step('stop-final', () => sh(`am force-stop ${PKG}`), 20_000).catch(() => {});
+    const byVariant = Object.fromEntries(VARIANTS.map(variant => {
+      const rows = samples.filter(row => row.variant === variant);
+      return [variant, { starts: rows.length, confirmed: rows.filter(row => row.variantConfirmed).length,
+        frames: summarizeStartupSkips(rows), probe: summarizeStartupStallProbe(rows),
+        perStartMaxMs: rows.map(row => row.mainThreadStalls?.maxMs ?? null) }];
+    }));
+    return { observeMs: OBSERVE_MS, order: 'two rounds, second reversed',
+      applied: samples.every(row => row.launched && row.variantConfirmed && Number.isFinite(row.pageFinishedMs)),
+      byVariant };
+  });
 
   peerSock.close();
 }

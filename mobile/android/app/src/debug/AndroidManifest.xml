@@ -35,6 +35,13 @@
   <application
     android:networkSecurityConfig="@xml/network_security_config"
     tools:replace="android:networkSecurityConfig">
+    <!-- #209 SF01: debug-only main-thread stall probe, installed before any
+         Activity. Serves no data; not exported; absent from release. -->
+    <provider
+      android:name="com.bridge.app.MainThreadStallProbeProvider"
+      android:authorities="${applicationId}.stallprobe"
+      android:exported="false"
+      android:initOrder="1000" />
     <!-- CR00: known Java crash, ONLY after product journeys, debug only. -->
     <activity
       android:name="com.bridge.app.JavaCrashControlActivity"
@@ -122,6 +129,14 @@
          about:blank WebView without Capacitor or Bridge assets. Debug only. -->
     <activity
       android:name="com.bridge.app.WebViewBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- #209 SF05: Bridge's packaged web content (assets/public) in a plain
+         WebView WITHOUT Capacitor, to separate page cost from Capacitor
+         start-up. Same https://localhost origin. Debug only. -->
+    <activity
+      android:name="com.bridge.app.WebViewBridgeContentBaselineActivity"
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
