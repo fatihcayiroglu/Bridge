@@ -11,7 +11,7 @@ function fixture() {
   const calls = [];
   let secret = null;
   const native = {
-    WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'mock-device-only-while-unlocked',
+    WHEN_UNLOCKED_THIS_DEVICE_ONLY: 6, // Expo SDK 57 exposes this enum as a number.
     async isAvailableAsync() { calls.push(['available']); return true; },
     async getItemAsync(key, options) {
       calls.push(['get', key, options]);
