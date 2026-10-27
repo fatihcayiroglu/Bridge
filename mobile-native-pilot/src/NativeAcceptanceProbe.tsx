@@ -20,6 +20,8 @@ export default function NativeAcceptanceProbe() {
       const a = await openNativeOutboxJournal('native-acceptance-account-A');
       stage = 'journal-B-open';
       const b = await openNativeOutboxJournal('native-acceptance-account-B');
+      stage = 'journal-confirmed-receipts-open';
+      const receipts = await openNativeOutboxJournal('native-acceptance-confirmed-receipts');
       try {
         stage = 'journal-A-write-or-restore';
         if (prior) {
@@ -35,8 +37,28 @@ export default function NativeAcceptanceProbe() {
         await b.append({ id, serverId: 'test-server', channelId: 'test-channel', content: 'native-private-B' });
         const isolated = await b.list();
         if (isolated.length !== 1 || isolated[0].content !== 'native-private-B') throw new Error('ACCOUNT_ISOLATION_FAILED');
-        setResult(prior ? 'NATIVE_SECURE_STORE_RESTORE_PASS NATIVE_SQLCIPHER_RECOVERY_PASS NATIVE_ACCOUNT_ISOLATION_PASS' : 'NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS NATIVE_ACCOUNT_ISOLATION_PASS');
-      } finally { await a.close(); await b.close(); }
+        stage = 'native-sqlcipher-receipt-compaction';
+        const receiptId = (index: number) => `native-confirmed-${index}`;
+        if (!prior) {
+          for (let i = 0; i < 100; i++) {
+            const msgId = receiptId(i);
+            await receipts.append({ id: msgId, serverId: 'test-server', channelId: 'test-channel', content: `receipt fixture ${i}` });
+            if (i === 4) { await receipts.mark(msgId, 'sending'); await receipts.mark(msgId, 'unconfirmed'); }
+            else if (i !== 9) { await receipts.mark(msgId, 'sending'); await receipts.mark(msgId, 'confirmed', `confirmed-${i}`); }
+          }
+          const removed = await receipts.pruneConfirmed(25);
+          const expected = Array.from({ length: 100 }, (_, i) => i).filter(i => i !== 4 && i !== 9).slice(0, 25).map(receiptId);
+          if (JSON.stringify(removed) !== JSON.stringify(expected)) throw new Error('CONFIRMED_RECEIPTS_ONLY_REQUIRED');
+          await receipts.append({ id: 'native-after-compaction', serverId: 'test-server', channelId: 'test-channel', content: 'safe new draft' });
+        }
+        const surviving = await receipts.list();
+        if (surviving.length !== 76 || surviving.some(row => row.id === receiptId(0)) ||
+            surviving.find(row => row.id === receiptId(4))?.status !== 'unconfirmed' ||
+            surviving.find(row => row.id === receiptId(9))?.status !== 'queued' ||
+            surviving.find(row => row.id === 'native-after-compaction')?.status !== 'queued') throw new Error('NATIVE_RECEIPT_COMPACTION_PERSISTENCE_FAILED');
+        const marker = prior ? 'NATIVE_RECEIPT_COMPACTION_RESTORE_PASS' : 'NATIVE_RECEIPT_COMPACTION_PASS';
+        setResult(prior ? `NATIVE_SECURE_STORE_RESTORE_PASS NATIVE_SQLCIPHER_RECOVERY_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}` : `NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}`);
+      } finally { await a.close(); await b.close(); await receipts.close(); }
     })().catch((error: unknown) => {
       // This debug-only route uses fixture accounts only. Keep the original
       // failure observable without emitting the generated database key/hash.
