@@ -101,9 +101,14 @@ jobs:
           test -n "$workspace"
           xcodebuild -workspace "$workspace" -list -json > native-evidence/schemes.json
           scheme=$(python3 -c 'import json; d=json.load(open("native-evidence/schemes.json")); print(next(s for s in d["workspace"]["schemes"] if s.startswith("Bridge")))')
-          xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-native-ios" CODE_SIGNING_ALLOWED=NO build 2>&1 | tee native-evidence/ios-build.log
+          # Keychain requires signed application identity even in the simulator.
+          # Ad-hoc simulator signing uses no Apple account/certificate/profile.
+          xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-native-ios" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build 2>&1 | tee native-evidence/ios-build.log
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
           test -n "$app"
+          codesign --verify --strict "$app"
+          codesign -d --entitlements :- "$app" > native-evidence/simulator-entitlements.plist
+          python3 -c 'import plistlib; d=plistlib.load(open("native-evidence/simulator-entitlements.plist","rb")); assert d.get("application-identifier"), "SIMULATOR_KEYCHAIN_APPLICATION_IDENTITY_REQUIRED"'
           ditto -c -k --keepParent "$app" native-evidence/BridgeNativePilot-simulator.zip
       - name: Launch built application in real simulator
         run: |
@@ -121,12 +126,10 @@ jobs:
           curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
           xcrun simctl install "$udid" "$app"
-          xcrun simctl launch "$udid" com.bridge.nativepilot | tee native-evidence/simulator-launch.txt
-          sleep 20
-          xcrun simctl io "$udid" screenshot native-evidence/simulator.png
-          xcrun simctl spawn "$udid" log show --last 2m --style compact --predicate 'process == "BridgeNativePilot"' > native-evidence/app-runtime.log
-          # Launch + screenshot is NOT a SecureStore or PKCE assertion. Android
-          # has automated native storage assertions; iOS still needs XCUITest.
+          # Preserve logs/screens on assertion failure too. Vision reads actual
+          # rendered fixture UI; both launches must expose the required markers.
+          trap 'xcrun simctl spawn "$udid" log show --last 3m --style compact --predicate '\''process == "BridgeNativePilot"'\'' > native-evidence/app-runtime.log; xcrun simctl io "$udid" screenshot native-evidence/final-screen.png' EXIT
+          bash scripts/ios-native-acceptance.sh "$udid"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
