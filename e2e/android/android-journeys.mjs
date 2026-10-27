@@ -24,6 +24,8 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { startHostCpuSampler, parseLoadavg } from './host-cpu.mjs';
+import os from 'node:os';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -1527,31 +1529,43 @@ async function main() {
     // Fixed and small on purpose; stress must not consume the entire emulator
     // CI budget or silently redefine later L01 / FD01 acceptance.
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const launch = await platform.coldLaunch();
-      const initialPid = await pid();
-      assert(/^[0-9]{1,8}$/.test(String(initialPid)),
-        `cold start ${attempt}: no valid app PID after Activity launch`);
-      await attachPage();
-      await until(async () => (await authVisible()) || (await appVisible()), {
-        timeout: 45_000,
-        message: `visible UI after repeated cold start ${attempt}`,
-      });
-      // Catch the delayed process death that earlier cold-launch-only checks
-      // missed: a 2 s OS-observation window is part of the assertion.
-      await sleep(2000);
-      const finalPid = await pid();
-      const newAnrs = await anrCount();
-      samples.push({
-        attempt,
-        totalTimeMs: launch.totalTimeMs,
-        pidStable: finalPid === initialPid,
-        anrCount: newAnrs,
-      });
-      facts.androidColdStartSamples = samples;
-      assert(finalPid === initialPid,
-        `cold start ${attempt}: Android replaced the app process after UI render`);
-      assert(newAnrs === baselineAnrs,
-        `cold start ${attempt}: ActivityManager reported an app ANR`);
+      // #209 measurement (does not change this gate): host CPU contention from
+      // /proc only, for the whole start window, and the guest load average.
+      const hostCpu = startHostCpuSampler({ cores: os.cpus().length });
+      try {
+        const launch = await platform.coldLaunch();
+        const initialPid = await pid();
+        assert(/^[0-9]{1,8}$/.test(String(initialPid)),
+          `cold start ${attempt}: no valid app PID after Activity launch`);
+        await attachPage();
+        await until(async () => (await authVisible()) || (await appVisible()), {
+          timeout: 45_000,
+          message: `visible UI after repeated cold start ${attempt}`,
+        });
+        // Catch the delayed process death that earlier cold-launch-only checks
+        // missed: a 2 s OS-observation window is part of the assertion.
+        await sleep(2000);
+        const host = hostCpu.stop();
+        const guestLoad = await sh('cat /proc/loadavg').then(parseLoadavg).catch(() => null);
+        const finalPid = await pid();
+        const newAnrs = await anrCount();
+        samples.push({
+          attempt,
+          totalTimeMs: launch.totalTimeMs,
+          pidStable: finalPid === initialPid,
+          anrCount: newAnrs,
+          host,
+          guestLoad,
+        });
+        facts.androidColdStartSamples = samples;
+        log('CS01 contention', JSON.stringify({ attempt, totalTimeMs: launch.totalTimeMs, anr: newAnrs !== baselineAnrs, host, guestLoad }));
+        assert(finalPid === initialPid,
+          `cold start ${attempt}: Android replaced the app process after UI render`);
+        assert(newAnrs === baselineAnrs,
+          `cold start ${attempt}: ActivityManager reported an app ANR`);
+      } finally {
+        hostCpu.stop();
+      }
     }
     return { attempts: samples.length, anrs: 0,
       allPidStable: samples.every(row => row.pidStable),
