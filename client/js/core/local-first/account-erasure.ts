@@ -10,8 +10,9 @@
 //      durable storage, no key is created and no record is written, so a
 //      delayed draft/outbox/history task cannot re-create data;
 //   2. close the account's runtimes (open database handles, session caches);
-//   3. delete legacy drafts, every record under the account prefix, then every
-//      key source. Records go before keys, as in EncryptedLocalStore.wipeAccount.
+//   3. delete legacy drafts, remembered navigation, every record under the
+//      account prefix, then every key source. Records go before keys, as in
+//      EncryptedLocalStore.wipeAccount.
 // A failure leaves the mark in place; the startup sweep repeats step 3 for
 // every marked account until it succeeds (idempotent), and also removes any
 // record an in-flight write managed to land between the mark and the sweep.
@@ -29,6 +30,7 @@ import { erasedLocalAccounts, markLocalAccountErased } from './erased-accounts.t
 import { IndexedDbKeyProvider, IndexedDbRecordBackend } from './indexeddb.ts';
 import { iosLocalFirstCipher } from './ios-crypto.ts';
 import { localUserPrefix } from './store.ts';
+import { forgetNavigationOwner } from '../navigation-selection.ts';
 
 export interface LocalAccountErasureResult {
   /** Every record and key source was removed on this run. */
@@ -48,6 +50,8 @@ function hasIndexedDb(): boolean {
 /** Step 3 alone: idempotent, safe to repeat for an already-erased account. */
 async function sweepAccount(userId: string): Promise<void> {
   clearLegacyDraftsForUser(userId);
+  // Remembered server/channel IDs, including the Android native copy (#490).
+  if (!await forgetNavigationOwner(userId)) throw new Error('Navigation preferences were not removed');
   if (hasIndexedDb()) {
     const records = new IndexedDbRecordBackend();
     const keys = new IndexedDbKeyProvider();
