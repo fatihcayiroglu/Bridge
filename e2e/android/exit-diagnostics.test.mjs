@@ -115,16 +115,43 @@ test('ANR CPU pressure keeps only numbers and fixed categories for the expected 
   assert.equal(rest.length, 0, 'another app\'s ANR is not attributed to Bridge');
   assert.deepEqual(record.load, [26.68, 7.72, 2.66]);
   assert.equal(record.cpu.length, 2, 'at most the before and after windows');
+  const zero = { app: 0, webview_renderer: 0, webview_other: 0, system_server: 0, surfaceflinger: 0, graphics_hal: 0, play_services: 0, package_optimization: 0, debug_tools: 0, kernel: 0, other: 0 };
   assert.deepEqual(record.cpu[0], {
     window: 'before', totalPct: 198, appPct: 9.1, webviewRendererPct: 61, systemServerPct: 148,
     topPct: 148, topClass: 'system_server',
+    byClassPct: { ...zero, app: 9.1, webview_renderer: 61, system_server: 148, surfaceflinger: 40, play_services: 33 },
   });
   assert.deepEqual(record.cpu[1], {
     window: 'after', totalPct: 120, appPct: 2, webviewRendererPct: 0, systemServerPct: 80,
     topPct: 80, topClass: 'system_server',
+    byClassPct: { ...zero, app: 2, system_server: 80 },
   });
   const json = JSON.stringify(record);
   assert.doesNotMatch(json, /example\.com|secret|token|gms|com\.google|sandboxed|chromium|other\.app|9136|FocusEvent|avg10/);
+});
+
+test('#209: ANR CPU "other" is split into fixed platform categories without naming any process', () => {
+  const raw = [
+    AM('ANR in com.bridge.app.debug (com.bridge.app.debug/.MainActivity)'),
+    AM('Load: 25.0 / 10.0 / 3.0'),
+    AM('CPU usage from 10ms to 5000ms later:'),
+    AM('  30% 900/com.bridge.app.debug: 20% user + 10% kernel'),
+    AM('  12% 300/android.hardware.graphics.composer3-service.ranchu: 6% user + 6% kernel'),
+    AM('  9% 400/com.google.android.gms.persistent: 8% user + 1% kernel'),
+    AM('  8% 500/dex2oat64: 8% user'),
+    AM('  7% 600/logcat: 3% user + 4% kernel'),
+    AM('  6% 700/kworker/u4:1-events_unbound: 6% kernel'),
+    AM('  5% 800/webview_zygote: 5% user'),
+    AM('  4% 801/com.example.thirdparty: 4% user'),
+    AM('  3% 802//system/bin/surfaceflinger: 3% user'),
+    AM('100% TOTAL: 70% user + 30% kernel'),
+  ].join('\n');
+  const [record] = parseAnrCpuPressure(raw, 'com.bridge.app.debug');
+  assert.deepEqual(record.cpu[0].byClassPct, {
+    app: 30, webview_renderer: 0, webview_other: 5, system_server: 0, surfaceflinger: 3, graphics_hal: 12,
+    play_services: 9, package_optimization: 8, debug_tools: 7, kernel: 6, other: 4,
+  });
+  assert.doesNotMatch(JSON.stringify(record), /gms|google|ranchu|composer3|dex2oat|logcat|kworker|zygote|example|thirdparty|\b(?:300|400|500|600|700|800|801|802|900)\b/);
 });
 
 test('ANR CPU pressure rejects malformed input and bounds its output', () => {
@@ -137,7 +164,8 @@ test('ANR CPU pressure rejects malformed input and bounds its output', () => {
     AM('CPU usage from 0ms to 1ms later:'), AM('  999999% 1/com.bridge.app.debug: x'), AM('7% TOTAL: 7% user')].join('\n');
   const [r] = parseAnrCpuPressure(odd, 'com.bridge.app.debug');
   assert.equal(r.load, null);
-  assert.deepEqual(r.cpu[0], { window: 'after', totalPct: 7, appPct: 0, webviewRendererPct: 0, systemServerPct: 0, topPct: 0, topClass: null });
+  assert.deepEqual(r.cpu[0], { window: 'after', totalPct: 7, appPct: 0, webviewRendererPct: 0, systemServerPct: 0, topPct: 0, topClass: null,
+    byClassPct: { app: 0, webview_renderer: 0, webview_other: 0, system_server: 0, surfaceflinger: 0, graphics_hal: 0, play_services: 0, package_optimization: 0, debug_tools: 0, kernel: 0, other: 0 } });
 });
 
 

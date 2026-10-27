@@ -381,6 +381,10 @@ export function parseActivityManagerAnrs(raw, expectedProcess, limit = 8) {
 }
 
 const ANR_CPU_TOP_CLASSES = ['app', 'webview_renderer', 'system_server', 'surfaceflinger', 'other'];
+// #209: fixed platform categories that split "other" without naming any
+// third-party app. Every class is a category label, never a process name.
+const ANR_CPU_CLASSES = ['app', 'webview_renderer', 'webview_other', 'system_server', 'surfaceflinger',
+  'graphics_hal', 'play_services', 'package_optimization', 'debug_tools', 'kernel', 'other'];
 
 function cpuClass(processName, expectedProcess) {
   if (processName === expectedProcess) return 'app';
@@ -392,12 +396,27 @@ function cpuClass(processName, expectedProcess) {
   return 'other';
 }
 
+/** Finer, still fixed, category of an "other" process (never emitted as a name). */
+function cpuDetailClass(processName, expectedProcess) {
+  const coarse = cpuClass(processName, expectedProcess);
+  if (coarse !== 'other') return coarse;
+  const n = processName.replace(/^\/(?:system|vendor|apex)\/[A-Za-z0-9_./-]*\//, '');
+  if (/^(?:com\.google\.android\.webview|com\.android\.chrome|com\.google\.android\.trichromelibrary|webview_zygote)/.test(n)) return 'webview_other';
+  if (/graphics|composer|gralloc|hwcomposer|gpu|goldfish|ranchu|gfxstream/i.test(n)) return 'graphics_hal';
+  if (/^(?:com\.google\.android\.gms|com\.android\.vending|com\.google\.process\.gapps)/.test(n)) return 'play_services';
+  if (/^(?:dex2oat|dex2oat64|dex2oat32|installd|artd|odrefresh|dexoptanalyzer|profman)\b/.test(n)) return 'package_optimization';
+  if (/^(?:logcat|logd|dumpsys|adbd|sh|toybox|uiautomator|app_process(?:32|64)?|cmd|perfetto|traced)\b/.test(n)) return 'debug_tools';
+  if (/^(?:kworker|kswapd|ksoftirqd|irq\/|rcu_|migration\/|kcompactd|jbd2|ext4|f2fs|kthreadd)/.test(n)) return 'kernel';
+  return 'other';
+}
+
 /**
  * CPU pressure around an ANR of `expectedProcess`, from ActivityManager's own
  * ANR record ("Load:" and the "CPU usage from ..." tables it logs). Only
  * numbers and a fixed set of categories cross this boundary: the load average,
  * the TOTAL CPU, the app's, the WebView renderers' and system_server's share,
- * and which category used the most. No process names of other apps, pids,
+ * which category used the most, and the share of each fixed category in
+ * ANR_CPU_CLASSES (#209: "other" was 30-50% of the CPU in every recorded ANR). No process names of other apps, pids,
  * reason text, paths or identities are emitted.
  *
  * A window that ended before the ANR ("... ms ago") is `before`; one measured
@@ -436,6 +455,7 @@ export function parseAnrCpuPressure(raw, expectedProcess, limit = 3) {
       window = {
         window: section[1] === 'ago' ? 'before' : 'after',
         totalPct: null, appPct: 0, webviewRendererPct: 0, systemServerPct: 0, topPct: 0, topClass: null,
+        byClassPct: Object.fromEntries(ANR_CPU_CLASSES.map((k) => [k, 0])),
       };
       current.cpu.push(window);
       continue;
@@ -452,6 +472,8 @@ export function parseAnrCpuPressure(raw, expectedProcess, limit = 3) {
     else if (klass === 'webview_renderer') window.webviewRendererPct += pct;
     else if (klass === 'system_server') window.systemServerPct += pct;
     if (pct > window.topPct) { window.topPct = pct; window.topClass = klass; }
+    const detail = cpuDetailClass(proc[2], expectedProcess);
+    window.byClassPct[detail] = Math.round((window.byClassPct[detail] + pct) * 10) / 10;
   }
   for (const record of records) {
     for (const w of record.cpu) {
