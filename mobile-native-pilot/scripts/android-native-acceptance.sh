@@ -2,10 +2,12 @@
 set -euo pipefail
 cd mobile-native-pilot
 mkdir -p native-evidence
+node -e 'require("dns").lookup("localhost", (error,address,family)=>{if(error)throw error; console.log({address,family})})' > native-evidence/metro-dns.txt
 npx expo start --localhost --port 8081 > native-evidence/metro-android.log 2>&1 &
 metro_pid=$!
 trap 'kill "$metro_pid" 2>/dev/null || true' EXIT
 for i in $(seq 1 60); do
+  kill -0 "$metro_pid" || { cat native-evidence/metro-android.log; exit 1; }
   if curl -fsS http://127.0.0.1:8081/status >/dev/null; then break; fi
   sleep 1
 done
