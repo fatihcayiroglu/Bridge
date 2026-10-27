@@ -192,3 +192,12 @@ export async function decryptLocalJson<T>(
   const plaintext = await decryptLocalBytes(key, value, scope);
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
+
+/**
+ * SHA-256 of a string, hex. Used to bind the offline grant
+ * (offline-session.ts) to the stored access token without storing the token.
+ */
+export async function localDigestHex(value: string): Promise<string> {
+  const bytes = await webCrypto().subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('');
+}

@@ -29,6 +29,8 @@
   import { apiFetch } from './api-fetch.js';
   import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, channelsChangedDelay, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
+  import { readCachedChannelList, saveCachedChannelList } from './local-first/navigation-cache.ts';
+  import { isNetworkFailure } from './api-error.js';
   import { channelExpiresAt, formatChannelExpiry } from './channel-list/channel-expiry.ts';
   import {
     navigationOwner, lastTextChannel, rememberTextChannel, navigationPreferencesReady, noteNavigationRestoration,
@@ -237,12 +239,26 @@
           log.warn('Kanal kategorileri yüklenemedi; güvenli yedek gruplama kullanılacak', error);
           return null;
         });
-      const response = await channelResponsePromise;
-      if (!response.ok) {
-        log.warn('Kanal listesi isteği başarısız', { status: response.status, serverId: targetServerId });
-        throw new Error('channel-list-load-failed');
+      const response: unknown = await channelResponsePromise.catch((error: unknown) => error);
+      const me0 = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
+      const cacheUser = me0?._id ?? me0?.id ?? null;
+      let data: unknown;
+      // P7 offline reload / server unreachable: the last authorized list for
+      // this server, read-only. It never reconciles or purges local data and
+      // never becomes a remembered selection (see below).
+      let cached: { channels: unknown[]; categories: unknown[] } | null = null;
+      const ok = Boolean(response) && typeof response === 'object' && (response as { ok?: unknown }).ok === true;
+      if (ok) {
+        data = await (response as Response).json() as unknown;
+      } else {
+        cached = cacheUser && isNetworkFailure(response)
+          ? await readCachedChannelList(cacheUser, targetServerId) : null;
+        if (!cached) {
+          log.warn('Kanal listesi isteği başarısız', { status: (response as { status?: unknown } | null)?.status, serverId: targetServerId });
+          throw new Error('channel-list-load-failed');
+        }
+        data = cached.channels;
       }
-      const data = await response.json() as unknown;
 
       // Race guard: geç dönen eski isteğin yanıtı yeni sunucunun state'ini ezemez.
       if (seq !== requestSeq) {
@@ -254,7 +270,7 @@
       // A newly created channel can be selected before its authorized list
       // response arrives. Persist only after that response confirms it. Never
       // overwrite a returning owner's preference with a pre-auth fallback.
-      if (!provisionalPreAuthSelection) {
+      if (!provisionalPreAuthSelection && !cached) {
         const selected = channels.find(c => c._id === activeChannelId);
         if (selected) rememberAuthorizedTextSelection(selected);
       }
@@ -263,7 +279,7 @@
       // deleted, access lost while offline) are purged, not kept for offline
       // search or a later retry.
       const me = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
-      const reconcileUser = me?._id ?? me?.id ?? null;
+      const reconcileUser = cached ? null : me?._id ?? me?.id ?? null;
       if (reconcileUser) {
         void reconcileLocalChannels(reconcileUser, targetServerId, channels.map(c => c._id))
           .catch((error: unknown) => log.warn('Yerel kanal kopyaları temizlenemedi', error));
@@ -281,7 +297,7 @@
       }
       // Render the primary response immediately. Categories arrive below and
       // update this same canonical view when available.
-      categories = [];
+      categories = cached ? sanitizeCategories(cached.categories) : [];
       BridgeRegistry.call('setCurrentServerChannels', channels);
       log.info(`${channels.length} kanal yüklendi`);
       await renderView();
@@ -332,6 +348,7 @@
       // Apply optional presentation metadata only if this request is still the
       // current server. HTTP, network and malformed-JSON failures all preserve
       // the already-rendered channel list and its fallback grouping.
+      if (cached) return;
       const categoryResponse = await categoryResponsePromise;
       if (seq !== requestSeq) return;
       if (categoryResponse?.ok) {
@@ -343,6 +360,10 @@
         } catch (error) {
           log.warn('Kanal kategori yanıtı geçersiz; güvenli yedek gruplama kullanılacak', error);
         }
+      }
+      if (cacheUser) {
+        void saveCachedChannelList(cacheUser, targetServerId, { channels, categories })
+          .catch((error: unknown) => log.warn('Kanal listesi yerel kopyası yazılamadı', error));
       }
     } catch (error) {
       if (seq !== requestSeq) return;

@@ -30,10 +30,20 @@ describe('cross-context security boundaries', () => {
 
   it("marks the service worker's answer to a failed API fetch so the page can tell it from a server 503", () => {
     const src = read('sw.ts');
-    const offline = src.slice(src.indexOf("url.pathname.startsWith('/api/')"), src.indexOf("caches.match(event.request)"));
+    const start = src.indexOf("if (url.pathname.startsWith('/api/')) {");
+    const offline = src.slice(start, src.indexOf('caches.match(event.request)', start));
     expect(offline).toContain("JSON.stringify({ error: 'offline'");
     expect(offline).toContain("headers:    { 'Content-Type': 'application/json', 'X-Bridge-Offline': '1' }");
     expect(read('js', 'core', 'api-error.ts')).toContain("response.headers.get('X-Bridge-Offline') === '1'");
+  });
+
+  it('keeps a network-first copy of the Socket.IO client script only, never of the transport', () => {
+    const src = read('sw.ts');
+    const block = src.slice(src.indexOf("url.pathname === '/socket.io/socket.io.js'"), src.indexOf("if (url.pathname.startsWith('/socket.io/')) return;"));
+    expect(block).toContain('event.respondWith(fetch(event.request).then(');
+    expect(block).toContain('.catch(async (): Promise<Response> => (await caches.match(event.request))');
+    expect(src.indexOf("url.pathname === '/socket.io/socket.io.js'"))
+      .toBeLessThan(src.indexOf("if (url.pathname.startsWith('/socket.io/')) return;"));
   });
 
   it('built service-worker runtime ignores legacy outbox injection and wakes only page replay owners', async () => {

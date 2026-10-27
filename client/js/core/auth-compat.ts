@@ -6,10 +6,14 @@ import { getAPI } from './globals.ts';
 import { createLogger } from './logger.ts';
 import { BridgeRegistry } from './bridge-registry.ts';
 import { t } from './i18n/index.ts';
-import { ApiResponseError, safeApiErrorMessage } from './api-error.ts';
+import { ApiResponseError, isNetworkFailure, safeApiErrorMessage } from './api-error.ts';
+import {
+  clearOfflineSession, recordOfflineSession, tokenAccountId, unlockOfflineSession, type OfflineUser,
+} from './local-first/offline-session.ts';
 import { registrationProblem, type RegistrationProblem } from './registration-rules.ts';
 import { pushTargetsForLogout } from './push-installation.ts';
 import { rememberSignInGrants } from './step-up.ts';
+import { sessionAuthority as currentAuthority, setSessionAuthority } from './session-authority.ts';
 
 type AuthTab = 'login' | 'register';
 
@@ -59,6 +63,14 @@ export function readToken(): string | null {
   }
 }
 
+/** The user of the current server-validated or local-only session (session-authority.ts). */
+let sessionUser: AuthUser | null = null;
+
+function sessionUserId(): string | null {
+  const id = sessionUser?._id ?? sessionUser?.id;
+  return typeof id === 'string' && id ? id : null;
+}
+
 /** Access token'ı mevcut depolama sözleşmesiyle yazar — api-fetch.ts yenileme sonrası kullanır. */
 export function saveToken(token: string): void {
   try {
@@ -66,6 +78,11 @@ export function saveToken(token: string): void {
     localStorage.setItem('bridge_token', token);
   } catch {
     // Depolama kapalıysa geçerli sayfa oturumu yine çalışabilir.
+  }
+  // A refresh inside a server-validated session moves the offline grant to the
+  // new token; the grant always names the token stored now.
+  if (currentAuthority() === 'server' && sessionUser) {
+    void recordOfflineSession(sessionUser, token).catch(error => log.warn('Offline grant could not be renewed', error));
   }
 }
 
@@ -157,6 +174,7 @@ function clearSessionRecovery(): void {
 
 function beginAuthTransition(): number {
   authTransition += 1;
+  setSessionAuthority('none');
   clearSessionRecovery();
   sessionRestoreAttempt = null;
   // Cancel the previous session's refresh before a login can replace its
@@ -388,6 +406,7 @@ export async function startApp(token: string, user: AuthUser, stepUp?: unknown):
   // memory for their short lifetime. A restored session (page reload) carries
   // none, and any grant of an earlier session is dropped either way.
   // Any successfully validated session supersedes pending restore/login work.
+  const previousUserId = sessionUserId();
   beginAuthTransition();
   rememberSignInGrants(stepUp);
   // Yeni oturum: bir sonraki gerçek süre dolumu yine temiz bir çıkış yapabilsin.
@@ -404,12 +423,59 @@ export async function startApp(token: string, user: AuthUser, stepUp?: unknown):
   // izolasyonu (ve onboarding anahtarı) doğru kimliği buradan alır.
   BridgeRegistry.call('setMe', user);
 
+  // Server authority: from now on this device may reopen this account's local
+  // history offline (owner decision on #497). Another account's grant goes.
+  setSessionAuthority('server');
+  sessionUser = user;
+  const userId = sessionUserId();
+  if (previousUserId && previousUserId !== userId) void clearOfflineSession(previousUserId);
+  void recordOfflineSession(user, readToken() ?? token)
+    .catch(error => log.warn('Offline grant could not be stored', error));
+
   const authScreen = el<HTMLElement>('auth-screen');
   const app = el<HTMLElement>('app');
   if (authScreen) authScreen.style.display = 'none';
   if (app) app.style.display = 'flex';
 
   document.dispatchEvent(new CustomEvent('bridge:auth-success', { detail: user }));
+}
+
+/**
+ * Offline reload: shows the signed-in shell for an account whose offline grant
+ * this device verified, with no server authority. Components read their
+ * encrypted local snapshots (`bridge:auth-local`); the socket is not started,
+ * no step-up grants exist and api-fetch.ts sends nothing but the /api/me
+ * check. restoreSession keeps waiting for the network and then either enters
+ * the normal startApp path or ends the session.
+ */
+function startLocalApp(offlineUser: OfflineUser): void {
+  const user: AuthUser = { ...offlineUser };
+  setSessionAuthority('local');
+  sessionUser = user;
+  _loggingOut = false;
+  updateUserPanel(user);
+  (globalThis as Record<string, unknown>).currentUser = user;
+  (globalThis as Record<string, unknown>).me = user;
+  BridgeRegistry.call('setMe', user);
+
+  const authScreen = el<HTMLElement>('auth-screen');
+  const app = el<HTMLElement>('app');
+  if (authScreen) authScreen.style.display = 'none';
+  if (app) app.style.display = 'flex';
+
+  document.dispatchEvent(new CustomEvent('bridge:auth-local', { detail: user }));
+}
+
+/** Server unreachable: open the account's local history if this device holds a valid offline grant. */
+async function enterLocalSession(token: string, transition: number): Promise<void> {
+  if (currentAuthority() !== 'none') return;
+  const result = await unlockOfflineSession(token).catch(() => ({ ok: false as const, reason: 'corrupt' as const }));
+  if (!isCurrentAuthTransition(transition) || currentAuthority() !== 'none' || readToken() !== token) return;
+  if (!result.ok) {
+    log.info('Offline session unavailable', { reason: result.reason });
+    return;
+  }
+  startLocalApp(result.user);
 }
 
 export async function login(): Promise<void> {
@@ -520,6 +586,12 @@ export function logout(): void {
   panelUser = null;
   panelSocketLive = null;
 
+  // An explicit logout (or a 401/403 that ended the session) removes this
+  // device's offline grant: the next offline cold start shows sign-in.
+  const endedUserId = sessionUserId() ?? tokenAccountId(readToken() ?? '');
+  sessionUser = null;
+  void clearOfflineSession(endedUserId);
+
   beginAuthTransition();
   // ══════════════════════════════════════════════════════════════════════
   // P4 — ÇIKIŞ OTURUMU GERÇEKTEN BİTİRİR
@@ -592,7 +664,9 @@ async function restoreSession(): Promise<void> {
     // Bu, daha önce `EmptyServerStart` içinde kapatılan kusurla AYNI sınıftır:
     // başarısız bir istek, olumsuz bir GERÇEK sanılıyordu.
     const TRANSIENT_RETRIES = 3;
-    for (let attempt = 0; attempt < TRANSIENT_RETRIES && !response.ok; attempt++) {
+    // No network (the service worker's offline answer): retrying cannot help.
+    const unreachable = isNetworkFailure(response);
+    for (let attempt = 0; attempt < TRANSIENT_RETRIES && !response.ok && !unreachable; attempt++) {
       const transient = response.status === 429 || response.status >= 500;
       if (!transient) break;
       // Hız sınırı penceresine saygı: artan bekleme.
@@ -607,7 +681,18 @@ async function restoreSession(): Promise<void> {
 
     // Yenileme de başarısızsa apiFetch zaten logout() çağırmıştır.
     if (!response.ok) {
-      if (response.status === 429 || response.status >= 500) deferSessionRecovery(transition);
+      if (unreachable || isNetworkFailure(response) || response.status === 429 || response.status >= 500) {
+        // The server was not reached or could not answer: this is not an
+        // identity rejection. A device holding a valid offline grant opens the
+        // account's local history meanwhile (P7, owner decision on #497).
+        await enterLocalSession(token, transition);
+        if (isCurrentAuthTransition(transition)) deferSessionRecovery(transition);
+      } else if (response.status === 401 || response.status === 403 || response.status === 404) {
+        // An explicit refusal (or an account that no longer exists) ends any
+        // local-only session and its offline grant.
+        void clearOfflineSession(tokenAccountId(token));
+        if (currentAuthority() === 'local') logout();
+      }
       return;
     }
 
@@ -623,7 +708,8 @@ async function restoreSession(): Promise<void> {
   } catch (error) {
     if (!isCurrentAuthTransition(transition)) return;
     log.warn('Oturum geri yüklenemedi', error);
-    deferSessionRecovery(transition);
+    if (isNetworkFailure(error)) await enterLocalSession(token, transition);
+    if (isCurrentAuthTransition(transition)) deferSessionRecovery(transition);
   } finally {
     if (sessionRestoreAttempt === attempt) sessionRestoreAttempt = null;
   }

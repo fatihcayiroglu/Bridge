@@ -581,6 +581,10 @@
     lastForegroundRefreshAt = 0;
     liveSinceLoad = null;
     BridgeRegistry.call('setMessagesOffline', false);
+    // The ended session's messages leave the view (even hidden) before anyone
+    // else signs in on this page.
+    BridgeRegistry.call('setMessages', []);
+    notifyUpdated(); // the list panel re-reads only on this signal
     if (lastHistoryUserId) closeLocalFirstHistoryRuntime(lastHistoryUserId);
     lastHistoryUserId = '';
   }
@@ -632,8 +636,19 @@
     void loadMessages(channelId);
   }
 
+  /**
+   * P7 offline reload: a channel opened in a local-only session shows its
+   * cached window. When the server validates the session, the same channel is
+   * read again from the server; joining the room alone would not fetch what
+   * was written meanwhile.
+   */
+  function onAuthSuccess(): void {
+    if (channelId) void loadMessages(channelId);
+  }
+
   onMount(() => {
     document.addEventListener('bridge:channel-selected', onChannelSelected);
+    document.addEventListener('bridge:auth-success', onAuthSuccess);
     document.addEventListener('bridge:socket-ready', onSocketReady);
     document.addEventListener('bridge:socket-reconnected', onSocketReconnected);
     document.addEventListener('bridge:auth-logout', onAuthLogout);
@@ -664,6 +679,7 @@
     joinedChannel = null;
     joinedSocket = null;
     document.removeEventListener('bridge:channel-selected', onChannelSelected);
+    document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:socket-ready', onSocketReady);
     document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
     document.removeEventListener('bridge:auth-logout', onAuthLogout);
