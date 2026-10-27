@@ -4,8 +4,10 @@
 // yet, and constructing it does not read storage or open a browser.
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
+import { io } from 'socket.io-client';
 import { createBridgeReadApi, type BridgeReadApi } from './bridge-read-api.mjs';
 import { createBrowserSignIn } from './browser-sign-in.mjs';
+import { createBridgeRealtime, type BridgeRealtime } from './bridge-realtime.mjs';
 import { createNativeAuthApi } from './native-auth-api.mjs';
 import { createPkceAttempt } from './pkce.mjs';
 import { createSessionCoordinator, type SessionCoordinator, type SessionState } from './session-coordinator.mjs';
@@ -17,6 +19,8 @@ export type PilotSession = {
   signInWithBrowser(): Promise<SessionState>;
   /** Reads with the current validated session only; fenced against account changes. */
   read: BridgeReadApi;
+  /** Channel messaging over the existing Socket.IO contract; one socket per session epoch. */
+  realtime: BridgeRealtime;
 };
 
 const pkceCrypto = {
@@ -45,11 +49,12 @@ export function createPilotSession(origin: string, redirectUri: string): PilotSe
     openAuthSession: (url, redirect) => WebBrowser.openAuthSessionAsync(url, redirect, { preferEphemeralSession: true }),
   });
   const read = createBridgeReadApi({ origin, getSession: () => coordinator.getSession() });
+  const realtime = createBridgeRealtime({ origin, coordinator, connect: (url, options) => io(url, options) });
 
   async function signInWithBrowser(): Promise<SessionState> {
     const callback = await browser.start();
     const issued = await authApi.exchangeCode(callback);
     return coordinator.signIn(issued);
   }
-  return { coordinator, signInWithBrowser, read };
+  return { coordinator, signInWithBrowser, read, realtime };
 }
