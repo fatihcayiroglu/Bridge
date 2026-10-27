@@ -22,6 +22,8 @@ import { createNativeAuthApi } from '../src/native-auth-api.mjs';
 import { createSessionCoordinator } from '../src/session-coordinator.mjs';
 import { createNativeCredentialPort } from '../src/native-credential-port.mjs';
 import { createBridgeReadApi } from '../src/bridge-read-api.mjs';
+import { createBridgeRealtime } from '../src/bridge-realtime.mjs';
+import { io as socketIo } from 'socket.io-client';
 
 const ORIGIN = process.env.BRIDGE_IT_ORIGIN;
 const REDIRECT = process.env.BRIDGE_IT_REDIRECT;
@@ -300,4 +302,99 @@ test('the browser never receives a refresh token in JSON; native responses never
   assert.equal(tok.status, 200);
   assert.deepEqual(tok.headers.getSetCookie(), []);
   assert.equal(tok.headers.get('cache-control'), 'no-store');
+});
+
+async function csrfHeaders(access) {
+  const csrf = await (await fetch(`${ORIGIN}/api/csrf-token`, { headers: { Authorization: `Bearer ${access}` } })).json();
+  return { Authorization: `Bearer ${access}`, 'X-CSRF-Token': csrf.token, 'Content-Type': 'application/json' };
+}
+
+function realtimeFor(s) {
+  return createBridgeRealtime({ origin: ORIGIN, coordinator: s.coordinator, connect: socketIo, confirmTimeoutMs: 8000 });
+}
+
+async function online(rt) {
+  rt.start();
+  for (let i = 0; i < 100 && rt.getStatus() !== 'online'; i += 1) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(rt.getStatus(), 'online');
+}
+
+test('navigation + realtime: a native session lists its server and channel, sends a confirmed message, and another account receives it', async () => {
+  const a = await browserRegister('rta');
+  const b = await browserRegister('rtb');
+  const sa = await signIn(a);
+  const sb = await signIn(b);
+  // A creates a community with the native access token (CSRF applies to Bearer writes).
+  const created = await fetch(`${ORIGIN}/api/servers`, { method: 'POST', headers: await csrfHeaders(sa.coordinator.getSession().token),
+    body: JSON.stringify({ name: 'native-it' }) });
+  assert.equal(created.status < 300, true, `create server ${created.status}`);
+  const servers = await sa.read.listServers();
+  const server = servers.find((x) => x.name === 'native-it');
+  assert.ok(server, 'the new server is listed for its owner');
+  const channels = await sa.read.listChannels(server.id);
+  assert.ok(channels.length >= 1, 'at least one channel');
+  const channel = channels[0];
+  // B joins through an invite created by A.
+  const invite = await (await fetch(`${ORIGIN}/api/servers/invites`, { method: 'POST', headers: await csrfHeaders(sa.coordinator.getSession().token),
+    body: JSON.stringify({ serverId: server.id }) })).json();
+  const used = await fetch(`${ORIGIN}/api/servers/invites/${encodeURIComponent(invite.code)}/use`, { method: 'POST',
+    headers: await csrfHeaders(sb.coordinator.getSession().token), body: '{}' });
+  assert.equal(used.status < 300, true, `invite use ${used.status}`);
+
+  const ra = realtimeFor(sa);
+  const rb = realtimeFor(sb);
+  try {
+    await online(ra);
+    await online(rb);
+    ra.joinChannel(channel.id);
+    rb.joinChannel(channel.id);
+    await new Promise((r) => setTimeout(r, 500)); // channel:join has no acknowledgement in the server contract
+    const received = new Promise((resolve) => rb.onMessage((m) => { if (m.content.startsWith('hello from native')) resolve(m); }));
+    const content = `hello from native ${crypto.randomBytes(4).toString('hex')}`;
+    const result = await ra.send({ serverId: server.id, channelId: channel.id, content });
+    assert.equal(result.status, 'confirmed', JSON.stringify(result));
+    const got = await received;
+    assert.equal(got.content, content);
+    assert.equal(got.userId, a.userId);
+    const history = await sb.read.listMessages(channel.id, { limit: 10 });
+    assert.ok(history.messages.some((m) => m.content === content), 'the message is in persisted history');
+  } finally {
+    ra.dispose();
+    rb.dispose();
+  }
+});
+
+test('realtime refused for a non-member: the send fails with the server code, nothing is persisted', async () => {
+  const a = await browserRegister('nma');
+  const x = await browserRegister('nmx');
+  const sa = await signIn(a);
+  const sx = await signIn(x);
+  await fetch(`${ORIGIN}/api/servers`, { method: 'POST', headers: await csrfHeaders(sa.coordinator.getSession().token), body: JSON.stringify({ name: 'private-it' }) });
+  const server = (await sa.read.listServers()).find((s) => s.name === 'private-it');
+  const channel = (await sa.read.listChannels(server.id))[0];
+  const rx = realtimeFor(sx);
+  try {
+    await online(rx);
+    rx.joinChannel(channel.id);
+    const result = await rx.send({ serverId: server.id, channelId: channel.id, content: 'intruder' });
+    assert.equal(result.status, 'failed', JSON.stringify(result));
+    assert.equal(result.code, 'NOT_A_MEMBER');
+    const history = await sa.read.listMessages(channel.id, { limit: 10 });
+    assert.equal(history.messages.some((m) => m.content === 'intruder'), false);
+  } finally {
+    rx.dispose();
+  }
+});
+
+test('realtime after sign-out: the socket is closed and a send is not attempted', async () => {
+  const a = await browserRegister('rto');
+  const sa = await signIn(a);
+  const ra = realtimeFor(sa);
+  try {
+    await online(ra);
+    await sa.coordinator.signOut();
+    assert.equal(ra.getStatus(), 'offline');
+  } finally {
+    ra.dispose();
+  }
 });

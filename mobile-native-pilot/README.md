@@ -109,7 +109,21 @@ proxy. 10/10 in three consecutive runs, covering:
 - logout (server confirmed); logout-everywhere from the web; account switch;
 - no refresh token in browser JSON and no cookies on native responses.
 
-Negative control: with native auth unconfigured on the server, 0/10.
+Realtime (added the same day; now 13 cases in that file):
+- a native session lists its real server and channel;
+- it sends a channel message that the server's own echo confirms;
+- a second account receives it live, and it is in persisted history;
+- a non-member's send is refused with the server's NOT_A_MEMBER code and nothing
+  is persisted;
+- sign-out closes the socket.
+
+`integration/token-expiry.it.mjs`, against a server with `ACCESS_TOKEN_TTL=10s`, shows:
+- the socket handshake with an expired token is refused;
+- exactly one rotation follows;
+- the socket reconnects, and reads reuse the rotated token without signing out.
+
+Negative control: with native auth unconfigured on the server, 0/10 (before the realtime
+cases were added).
 
 ## Local setup on a suitable development machine
 
