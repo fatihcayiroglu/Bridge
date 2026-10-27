@@ -28,15 +28,18 @@ public final class WebViewBridgeContentBaselineActivity extends android.app.Acti
     static final String FILTERS = "*,*::before,*::after{filter:none!important;"
             + "backdrop-filter:none!important;-webkit-backdrop-filter:none!important}";
     static final String SHADOWS = "*,*::before,*::after{box-shadow:none!important;text-shadow:none!important}";
-    static final String EFFECTS = FILTERS + SHADOWS
-            + "*,*::before,*::after{-webkit-background-clip:border-box!important;background-clip:border-box!important;"
-            + "-webkit-text-fill-color:currentColor!important;animation:none!important;transition:none!important}";
+    static final String TEXT_CLIP = "*,*::before,*::after{-webkit-background-clip:border-box!important;"
+            + "background-clip:border-box!important;-webkit-text-fill-color:currentColor!important}";
+    static final String ANIMATIONS = "*,*::before,*::after{animation:none!important;transition:none!important}";
+    static final String EFFECTS = FILTERS + SHADOWS + TEXT_CLIP + ANIMATIONS;
     private WebView view;
 
     /** CSS for a known variant; null for "none" or anything unknown. */
     static String variantCss(String variant) {
         if ("no-filters".equals(variant)) return FILTERS;
         if ("no-shadows".equals(variant)) return SHADOWS;
+        if ("no-text-clip".equals(variant)) return TEXT_CLIP;
+        if ("no-animations".equals(variant)) return ANIMATIONS;
         if ("no-effects".equals(variant)) return EFFECTS;
         return null;
     }

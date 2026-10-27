@@ -17,9 +17,13 @@ public class WebViewBridgeContentBaselineActivityTest {
         assertEquals("no-filters", WebViewBridgeContentBaselineActivity.knownVariant("no-filters"));
         assertTrue(WebViewBridgeContentBaselineActivity.variantCss("no-filters").contains("filter:none!important"));
         assertTrue(WebViewBridgeContentBaselineActivity.variantCss("no-shadows").contains("box-shadow:none!important"));
+        String clip = WebViewBridgeContentBaselineActivity.variantCss("no-text-clip");
+        assertTrue(clip.contains("background-clip:border-box!important") && !clip.contains("animation"));
+        String animations = WebViewBridgeContentBaselineActivity.variantCss("no-animations");
+        assertTrue(animations.contains("animation:none!important") && !animations.contains("filter"));
         String effects = WebViewBridgeContentBaselineActivity.variantCss("no-effects");
         assertTrue(effects.contains("filter:none!important") && effects.contains("box-shadow:none!important")
-                && effects.contains("animation:none!important"));
+                && effects.contains("animation:none!important") && effects.contains("background-clip:border-box!important"));
     }
 
     @Test
