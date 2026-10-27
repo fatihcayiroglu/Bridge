@@ -1,7 +1,8 @@
 import type { SessionCoordinator } from './session-coordinator.mjs';
 
 export type RealtimeCode =
-  | 'INVALID_ORIGIN' | 'INVALID_ADAPTER' | 'INVALID_ID' | 'INVALID_CONTENT' | 'NOT_JOINED';
+  | 'INVALID_ORIGIN' | 'INVALID_ADAPTER' | 'INVALID_ID' | 'INVALID_CONTENT' | 'NOT_JOINED'
+  | 'IDEMPOTENCY_CONFLICT' | 'IDEMPOTENCY_CAPACITY';
 
 export declare class RealtimeError extends Error {
   readonly code: RealtimeCode;

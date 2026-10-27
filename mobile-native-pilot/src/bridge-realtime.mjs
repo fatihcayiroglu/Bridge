@@ -55,6 +55,8 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
   let tokenUsed = null;
   let status = 'offline'; // offline | connecting | online | auth-failed
   let lifecycle = 0;
+  let ackEpoch = null;
+  const ackPayloads = new Map(); // bounded, account-scoped replay identity
   const joined = new Set();
   const pending = new Map(); // key → { resolve, timer }
   const messageListeners = new Set();
@@ -72,6 +74,7 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
 
   function teardown(next = 'offline') {
     lifecycle += 1;
+    if (ackEpoch !== coordinator.getSession()?.epoch) { ackPayloads.clear(); ackEpoch = null; }
     const s = socket;
     socket = null;
     socketEpoch = null;
@@ -173,7 +176,7 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
   return Object.freeze({
     start() { open(); },
     stop() { teardown('offline'); },
-    dispose() { unsubscribe(); teardown('offline'); },
+    dispose() { unsubscribe(); teardown('offline'); ackPayloads.clear(); },
     getStatus: () => status,
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     onMessage(listener) { messageListeners.add(listener); return () => messageListeners.delete(listener); },
@@ -193,6 +196,13 @@ export function createBridgeRealtime({ origin, coordinator, connect, confirmTime
       if (ackId !== undefined && (typeof ackId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(ackId))) return Promise.reject(new RealtimeError('INVALID_ID'));
       const admittedEpoch = coordinator.getSession()?.epoch;
       const admittedLifecycle = lifecycle;
+      if (ackEpoch !== admittedEpoch) { ackPayloads.clear(); ackEpoch = admittedEpoch; }
+      if (ackId) {
+        const identity = JSON.stringify([serverId, channelId, content]);
+        if (ackPayloads.has(ackId) && ackPayloads.get(ackId) !== identity) return Promise.reject(new RealtimeError('IDEMPOTENCY_CONFLICT'));
+        if (!ackPayloads.has(ackId) && ackPayloads.size >= 256) return Promise.reject(new RealtimeError('IDEMPOTENCY_CAPACITY'));
+        ackPayloads.set(ackId, identity);
+      }
       const run = () => {
         if (admittedEpoch === undefined || coordinator.getSession()?.epoch !== admittedEpoch || lifecycle !== admittedLifecycle) return { status: 'unconfirmed', reason: 'SESSION_ENDED' };
         if (!socket || status !== 'online') return { status: 'unconfirmed', reason: 'OFFLINE' };

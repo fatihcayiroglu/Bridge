@@ -1,5 +1,8 @@
 # Bridge native pilot continuation — 27 October 2026
 
+Later publication/backend qualification work is recorded in
+`FOLLOWUP-2026-10-27.md`. The historical results below describe the earlier cycle.
+
 P7 remains OPEN. This is an isolated local continuation of PR #517 at
 `1969a2a148aafdce4a1320ef66ddd7aa036b3f7c`, on
 `codex/bridge-native-outbox-recovery-20261027`. No merge, deployment or production

@@ -217,3 +217,20 @@ test('ackId sends require the exact correlated ACK; echoes and duplicate/wrong A
   assert.deepEqual(await next, { status: 'confirmed', messageId: 'second' });
   rt.dispose();
 });
+
+test('an ackId cannot identify two payloads in one account; another account has its own namespace', async () => {
+  const { rt, s, io, coordinator } = setup({ timeout: 5000 });
+  rt.joinChannel('c1');
+  const first = rt.send({ serverId: 's1', channelId: 'c1', content: 'original', ackId: 'stable' });
+  await tick();
+  await assert.rejects(rt.send({ serverId: 's1', channelId: 'c1', content: 'changed', ackId: 'stable' }), e => e.code === 'IDEMPOTENCY_CONFLICT');
+  s.fire('message:ack', { ackId: 'stable', channelId: 'c1', messageId: 'original-id' });
+  assert.equal((await first).messageId, 'original-id');
+  coordinator.set({ epoch: 2, userId: 'other' });
+  const next = io.sockets[1]; next.fire('connect'); rt.joinChannel('c1');
+  const other = rt.send({ serverId: 's1', channelId: 'c1', content: 'different account', ackId: 'stable' });
+  await tick();
+  next.fire('message:ack', { ackId: 'stable', channelId: 'c1', messageId: 'other-id' });
+  assert.equal((await other).messageId, 'other-id');
+  rt.dispose();
+});

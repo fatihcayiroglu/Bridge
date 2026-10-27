@@ -23,6 +23,7 @@ import { createSessionCoordinator } from '../src/session-coordinator.mjs';
 import { createNativeCredentialPort } from '../src/native-credential-port.mjs';
 import { createBridgeReadApi } from '../src/bridge-read-api.mjs';
 import { createBridgeRealtime } from '../src/bridge-realtime.mjs';
+import { createOutbox } from '../src/outbox.mjs';
 import { io as socketIo } from 'socket.io-client';
 
 const ORIGIN = process.env.BRIDGE_IT_ORIGIN;
@@ -397,4 +398,90 @@ test('realtime after sign-out: the socket is closed and a send is not attempted'
   } finally {
     ra.dispose();
   }
+});
+
+async function createOutboxCommunity(s) {
+  const name = `outbox-${crypto.randomBytes(6).toString('hex')}`;
+  const created = await fetch(`${ORIGIN}/api/servers`, { method: 'POST',
+    headers: await csrfHeaders(s.coordinator.getSession().token), body: JSON.stringify({ name }) });
+  assert.ok(created.ok, `create community: ${created.status}`);
+  const server = (await s.read.listServers()).find(row => row.name === name);
+  assert.ok(server);
+  const channel = (await s.read.listChannels(server.id))[0]; assert.ok(channel);
+  return { serverId: server.id, channelId: channel.id };
+}
+
+test('outbox: offline draft, persisted send with deliberately lost ACK, reconnect and same-id replay yield one history row', { timeout: 60000 }, async () => {
+  const a = await browserRegister('oback');
+  const sa = await signIn(a); // genuine PKCE consent + token exchange above
+  const destination = await createOutboxCommunity(sa);
+  const ackId = crypto.randomUUID();
+  const content = `lost-ack-${crypto.randomBytes(8).toString('hex')}`;
+  let dropped = 0, emitted = [];
+  const rt = createBridgeRealtime({ origin: ORIGIN, coordinator: sa.coordinator, confirmTimeoutMs: 1500,
+    connect(origin, options) {
+      const socket = socketIo(origin, options);
+      const on = socket.on.bind(socket), emit = socket.emit.bind(socket);
+      // Only the first inbound ACK is dropped. Transport, auth, writes, and
+      // subsequent replay ACK all come from the real Socket.IO backend.
+      socket.on = (event, listener) => on(event, event === 'message:ack' ? ack => {
+        if (ack.ackId === ackId && dropped === 0) { dropped++; return; }
+        listener(ack);
+      } : listener);
+      socket.emit = (event, ...args) => { if (event === 'message:send') emitted.push({ ...args[0] }); return emit(event, ...args); };
+      return socket;
+    } });
+  const box = createOutbox({ coordinator: sa.coordinator, realtime: rt, createId: () => ackId });
+  try {
+    assert.equal((await sa.read.getMe()).id, a.userId);
+    const id = box.enqueue({ ...destination, content });
+    await box.flush(); assert.equal(emitted.length, 0, 'draft remains offline');
+    await online(rt); rt.joinChannel(destination.channelId);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await box.flush();
+    assert.equal(dropped, 1, 'the server actually sent the intentionally lost ACK');
+    assert.equal(box.snapshot()[0].status, 'unconfirmed');
+    const before = (await sa.read.listMessages(destination.channelId, { limit: 50 })).messages.filter(m => m.content === content);
+    assert.equal(before.length, 1, 'persisted before acknowledgement loss is retried');
+    rt.stop(); await online(rt); rt.joinChannel(destination.channelId);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await box.retry(id);
+    assert.equal(box.snapshot()[0].status, 'confirmed');
+    assert.equal(emitted.length, 2);
+    assert.equal(emitted[0].ackId, emitted[1].ackId);
+    assert.deepEqual(emitted[0], emitted[1], 'replay retains payload and identity');
+    const after = (await sa.read.listMessages(destination.channelId, { limit: 50 })).messages.filter(m => m.content === content);
+    assert.equal(after.length, 1);
+    assert.equal(String(after[0]._id), String(before[0]._id));
+    assert.equal(String(after[0]._id), box.snapshot()[0].messageId);
+  } finally { box.dispose(); rt.dispose(); await sa.coordinator.signOut(); }
+});
+
+test('ACK namespace: concurrent same-user replay deduplicates; another user may use the identical ackId', { timeout: 60000 }, async () => {
+  const a = await signIn(await browserRegister('obca'));
+  const b = await signIn(await browserRegister('obcb'));
+  const destination = await createOutboxCommunity(a);
+  const inviteResponse = await fetch(`${ORIGIN}/api/servers/invites`, { method: 'POST',
+    headers: await csrfHeaders(a.coordinator.getSession().token), body: JSON.stringify({ serverId: destination.serverId }) });
+  assert.ok(inviteResponse.ok);
+  const invite = await inviteResponse.json();
+  const joined = await fetch(`${ORIGIN}/api/servers/invites/${encodeURIComponent(invite.code)}/use`, { method: 'POST',
+    headers: await csrfHeaders(b.coordinator.getSession().token), body: '{}' }); assert.ok(joined.ok);
+  const sockets = [realtimeFor(a), realtimeFor(a), realtimeFor(b)];
+  const ackId = crypto.randomUUID();
+  const contentA = `concurrent-A-${crypto.randomBytes(6).toString('hex')}`;
+  const contentB = `same-id-B-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    for (const rt of sockets) { await online(rt); rt.joinChannel(destination.channelId); }
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const results = await Promise.all(sockets.map((rt, i) => rt.send({ ...destination, ackId, content: i === 2 ? contentB : contentA })));
+    assert.ok(results.every(result => result.status === 'confirmed'), JSON.stringify(results));
+    assert.equal(results[0].messageId, results[1].messageId);
+    assert.notEqual(results[0].messageId, results[2].messageId);
+    const history = (await a.read.listMessages(destination.channelId, { limit: 50 })).messages;
+    const rowsA = history.filter(row => row.content === contentA), rowsB = history.filter(row => row.content === contentB);
+    assert.equal(rowsA.length, 1); assert.equal(rowsB.length, 1);
+    assert.equal(String(rowsA[0].userId), a.coordinator.getState().userId);
+    assert.equal(String(rowsB[0].userId), b.coordinator.getState().userId);
+  } finally { sockets.forEach(rt => rt.dispose()); await a.coordinator.signOut(); await b.coordinator.signOut(); }
 });

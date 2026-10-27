@@ -92,6 +92,9 @@ export function createSessionCoordinator({ credentials, authApi, createReadApi }
   /** Starts a transition: everything decided under an older epoch is now stale. */
   function begin(nextPhase, nextReason = null) {
     epoch += 1;
+    // Eager secret release is memory hygiene. Public isolation independently
+    // relies on phase + epoch below; removing just this assignment is therefore
+    // equivalent at the public API boundary, not evidence of token disclosure.
     accessToken = null;
     refreshToken = null;
     userId = null;
