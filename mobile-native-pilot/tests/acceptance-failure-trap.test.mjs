@@ -14,7 +14,8 @@ function run(body) {
   const script = `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\nfunction cleanup() { local status=$?; acceptance_record_failure "$status" ${JSON.stringify(dir)} android; exit "$status"; }\ntrap cleanup EXIT\n${body}\n`;
   const file = path.join(dir, 'case.sh');
   fs.writeFileSync(file, script);
-  const r = spawnSync('bash', [file], { encoding: 'utf8' });
+  // Each case runs inside its own temporary directory; nothing touches the package.
+  const r = spawnSync('bash', [file], { encoding: 'utf8', cwd: dir });
   const record = path.join(dir, 'native-failure-stage.txt');
   return { status: r.status, stderr: r.stderr, record: fs.existsSync(record) ? fs.readFileSync(record, 'utf8') : null };
 }
