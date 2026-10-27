@@ -234,20 +234,25 @@ test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () 
   assert.match(source, /renderer: summarizeRendererOverlap\(facts\.androidColdStartSamples\)/);
 });
 
-test('#209 SF03 reduced-motion A/B always restores the setting and never asserts on stalls', () => {
+test('#209 SF03 reduced-motion A/B runs last, is bounded, restores state and records its own exits', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const sf03 = source.slice(source.indexOf("await measure('SF03'"), source.indexOf("await productExitCheckpoint('after-reduced-motion')"));
-  assert.ok(source.indexOf("await measure('SF03'") > source.indexOf("await measure('SF01'"));
-  assert.ok(source.indexOf("await measure('SF03'") < source.indexOf("await check('A02'"));
+  const sf03 = source.slice(source.indexOf("await measure('SF03'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  // After every product verdict, exit checkpoint and EX01/EX02 (6179ee0e: a
+  // kill inside SF03 was charged to PD01).
+  for (const earlier of ["await check('PD01'", "productExitCheckpoint('final')", "await measure('SF02'", 'EX02 independent']) {
+    assert.ok(source.indexOf("await measure('SF03'") > source.indexOf(earlier), earlier);
+  }
+  assert.doesNotMatch(source, /productExitCheckpoint\('after-reduced-motion'\)/);
   assert.match(sf03, /settings put global animator_duration_scale 0/);
-  const restore = sf03.slice(sf03.indexOf('} finally {'));
-  assert.match(restore, /step\('restore-setting'[^]*settings delete global animator_duration_scale/);
-  // Later checks get a fresh normal-motion process, not the reduced-motion one.
-  assert.ok(restore.indexOf("step('relaunch-normal'") > restore.indexOf("step('restore-setting'"));
+  const restore = sf03.slice(sf03.indexOf("step('restore-setting'"));
+  assert.match(restore, /settings delete global animator_duration_scale/);
+  assert.ok(restore.indexOf("step('relaunch-normal'") > 0);
   assert.match(restore, /step\('reattach-normal', \(\) => attachPage\(\)/);
-  // Every device/page wait is time-bounded (the first run hung for 55 min).
-  assert.doesNotMatch(sf03, /await (platform\.coldLaunch|attachPage|page\.evaluate|until|sh)\(/);
+  assert.match(sf03, /classifyAndroidDependencyDeath\(exitRows, appPid\)/);
+  assert.match(sf03, /return \{ attempt, exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass \}/);
   assert.match(sf03, /matchMedia\('\(prefers-reduced-motion: reduce\)'\)/);
   assert.match(sf03, /reducedMotionSeen/);
+  // Every device/page wait is time-bounded (the first run hung for 55 min).
+  assert.doesNotMatch(sf03, /await (platform\.coldLaunch|attachPage|page\.evaluate|until|sh|androidFailureShell)\(/);
   assert.doesNotMatch(sf03, /assert\(/);
 });

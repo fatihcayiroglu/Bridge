@@ -47,8 +47,13 @@ test('every omitted, failed, skipped or measurement-only mandatory check is reje
 test('independent acceptance inventory matches all declared product checks and measurements', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const product = source.slice(source.indexOf('async function main('), source.indexOf('  // EX01 runs AFTER'));
+  // After EX01/EX02 only the declared #209 SF03 experiment may run, and never a check.
+  const tail = source.slice(source.indexOf('  // EX01 runs AFTER'), source.indexOf('\nmain()\n'));
+  assert.deepEqual([...tail.matchAll(/await check\('([A-Z0-9-]+)'/g)].map(m => m[1]), []);
+  assert.deepEqual([...tail.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]), ['SF03']);
   assert.deepEqual([...product.matchAll(/await check\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(), [...PRODUCT_CHECKS].sort());
-  assert.deepEqual([...product.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(), [...PRODUCT_MEASUREMENTS].sort());
+  assert.deepEqual([...`${product}${tail}`.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(),
+    [...PRODUCT_MEASUREMENTS].sort());
 });
 
 test('measurements cannot be omitted, counted as PASS or renamed to hide an unknown check', () => {
