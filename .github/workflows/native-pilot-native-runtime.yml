@@ -1,0 +1,145 @@
+name: Native pilot APK and iOS simulator acceptance
+on:
+  pull_request:
+    paths: ['mobile-native-pilot/**', '.github/workflows/native-pilot-native-runtime.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  EXPO_PUBLIC_NATIVE_SELF_TEST: '1'
+  CI: '1'
+  # Expo --localhost binds the address returned for localhost. The native
+  # reverse tunnel and readiness probe use IPv4; keep resolution deterministic.
+  NODE_OPTIONS: --dns-result-order=ipv4first
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: mobile-native-pilot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Exact dependencies and native Android generation
+        run: |
+          mkdir -p native-evidence
+          git rev-parse HEAD > native-evidence/head.txt
+          npm ci --no-fund
+          npm audit --audit-level=low
+          npx expo prebuild --platform android --no-install
+      - name: Build actual debug APK including SQLCipher
+        run: |
+          set -o pipefail
+          cd android
+          ./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 2>&1 | tee ../native-evidence/android-build.log
+          test -s app/build/outputs/apk/debug/app-debug.apk
+      - name: Enable runner KVM
+        run: sudo chmod 666 /dev/kvm
+      - name: Boot real app, native secure storage and encrypted crash recovery
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash mobile-native-pilot/scripts/android-native-acceptance.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-android-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            mobile-native-pilot/android/app/build/outputs/apk/debug/app-debug.apk
+            mobile-native-pilot/native-evidence/
+          retention-days: 7
+          if-no-files-found: error
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: mobile-native-pilot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Exact dependencies and native iOS generation
+        run: |
+          mkdir -p native-evidence
+          git rev-parse HEAD > native-evidence/head.txt
+          # First run failed with Xcode 16.4 / Swift 6.1: ExpoModulesJSI's
+          # package manifest requires Swift tools 6.2. Do not patch the vendor
+          # manifest or disable that build; select the compatible installed tool.
+          test -d /Applications/Xcode_26.3.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          xcodebuild -version > native-evidence/xcode-version.txt
+          swift --version > native-evidence/swift-version.txt
+          npm ci --no-fund
+          npm audit --audit-level=low
+          npx expo prebuild --platform ios --no-install
+          cd ios
+          pod install 2>&1 | tee ../native-evidence/pods.log
+          # Do not synthesize a provisioning Team ID or Keychain sharing group.
+          # Apple issues app IDs when a team provisions an app; this throwaway
+          # simulator build uses no account/profile. Actual SecureStore writes,
+          # reads and restart recovery are mandatory runtime acceptance below.
+      - name: Build actual iOS simulator application
+        run: |
+          set -o pipefail
+          workspace=$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)
+          test -n "$workspace"
+          xcodebuild -workspace "$workspace" -list -json > native-evidence/schemes.json
+          scheme=$(python3 -c 'import json; d=json.load(open("native-evidence/schemes.json")); print(next(s for s in d["workspace"]["schemes"] if s.startswith("Bridge")))')
+          # The simulator app is signed ad-hoc; do not claim device signing.
+          xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-native-ios" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build 2>&1 | tee native-evidence/ios-build.log
+          app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$app"
+          codesign --verify --strict "$app"
+          codesign -d --entitlements :- "$app" > native-evidence/simulator-entitlements.plist
+          # A missing team-prefixed application-identifier is expected with
+          # ad-hoc simulator signing. If present, it must name this bundle;
+          # real Keychain access is tested by the app, not inferred from plist.
+          python3 -c 'import plistlib; d=plistlib.load(open("native-evidence/simulator-entitlements.plist","rb")); ident=d.get("application-identifier"); assert not ident or ident=="com.bridge.nativepilot" or ident.endswith(".com.bridge.nativepilot"), "WRONG_SIGNED_BUNDLE_ID"'
+          ditto -c -k --keepParent "$app" native-evidence/BridgeNativePilot-simulator.zip
+      - name: Launch built application in real simulator
+        run: |
+          set -o pipefail
+          node -e 'require("dns").lookup("localhost", (error,address,family)=>{if(error)throw error; console.log({address,family})})' > native-evidence/metro-dns.txt
+          xcrun simctl list devices available -j > native-evidence/simulators.json
+          udid=$(python3 -c 'import json; d=json.load(open("native-evidence/simulators.json")); print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))')
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          npx expo start --localhost --port 8081 > native-evidence/metro-ios.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8081/status && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8081/status
+          # Compile the development bundle before observing app UI. The previous
+          # fixed 20s screenshot captured only 'Bundling 39%', not application UI.
+          curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
+          app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
+          xcrun simctl install "$udid" "$app" 2>&1 | tee native-evidence/simulator-install.txt
+          # Preserve logs/screens on assertion failure too. Vision reads actual
+          # rendered fixture UI; both launches must expose the required markers.
+          trap 'xcrun simctl spawn "$udid" log show --last 3m --style compact --predicate '\''process == "BridgeNativePilot" OR process == "SpringBoard" OR process == "runningboardd" OR process == "securityd"'\'' > native-evidence/app-runtime.log || true; xcrun simctl io "$udid" screenshot native-evidence/final-screen.png || true' EXIT
+          bash scripts/ios-native-acceptance.sh "$udid"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-ios-${{ github.run_id }}-${{ github.run_attempt }}
+          path: mobile-native-pilot/native-evidence/
+          retention-days: 7
+          if-no-files-found: error

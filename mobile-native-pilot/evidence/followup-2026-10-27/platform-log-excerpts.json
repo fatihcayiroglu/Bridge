@@ -1,0 +1,30 @@
+{
+  "android": {
+    "run": 40534247361,
+    "job": 122297445472,
+    "head": "ffae5f766a1776362a9aa17946a5f8990c1aaa1f",
+    "lines": [
+      "2026-10-27T15:54:19.6757966Z [android-journeys 15:54:19]   FAIL CS01: cold start 1: ActivityManager reported an app ANR",
+      "2026-10-27T15:55:15.6690207Z [android-journeys 15:55:15]   FAIL L01: L01 process died; cannot claim hot resume",
+      "2026-10-27T16:02:00.8242716Z [android-journeys 16:02:00]   FAIL ANR01: Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass",
+      "2026-10-27T16:02:01.6634251Z [android-journeys 16:02:01]   MEASURED ANR03 {\\\"originPrecision\\\":\\\"ms\\\",\\\"finalRead\\\":true,\\\"eventReads\\\":3,\\\"eventReadFailures\\\":0,\\\"dialogSamples\\\":[{\\\"label\\\":\\\"after-startup\\\",\\\"available\\\":true,\\\"anrDialogs\\\":1,\\\"focusedOnAnrDialog\\\":null},{\\\"label\\\":\\\"before-L01-home\\\",\\\"available\\\":true,\\\"anrDialogs\\\":1,\\\"focusedOnAnrDialog\\\":null},{\\\"label\\\":\\\"end\\\",\\\"available\\\":true,\\\"anrDialogs\\\":0,\\\"focusedOnAnrDialog\\\":null}],\\\"available\\\":true,\\\"coverage\\\":\\\"observed-only\\\",\\\"events\\\":17,\\\"processes\\\":8,\\\"unparsedLines\\\":0,\\\"truncated\\\":false,\\\"preOriginEvents\\\":0,\\\"postWindowEvents\\\":0,\\\"anrCount\\\":1,\\\"anrs\\\":[{\\\"atMs\\\":44187,\\\"process\\\":2,\\\"reasonClass\\\":\\\"input-focus-event\\\",\\\"killAfterMs\\\":39543,\\\"killReasonClass\\\":\\\"user-request-after-error\\\",\\\"diedAfterMs\\\":40360,\\\"step\\\":\\\"CS01\\\",\\\"killStep\\\":\\\"L01\\\"}]}",
+      "2026-10-27T16:02:04.9767438Z [android-journeys 16:02:04]   MEASURED ANR02 {\\\"complete\\\":true,\\\"supported\\\":true,\\\"error\\\":false,\\\"fatalAnrs\\\":1,\\\"records\\\":15,\\\"capacity\\\":16,\\\"coverage\\\":\\\"complete\\\",\\\"traces\\\":[{\\\"traceAvailable\\\":true,\\\"mainState\\\":\\\"Native\\\",\\\"top\\\":\\\"running-code\\\",\\\"subsystem\\\":\\\"framework-only\\\",\\\"nativeHint\\\":\\\"graphics\\\",\\\"topOperation\\\":\\\"frame-sync\\\",\\\"ownerOperation\\\":\\\"none\\\",\\\"mainNativeOperation\\\":\\\"other\\\",\\\"renderState\\\":\\\"Native\\\",\\\"renderNativeHint\\\":\\\"graphics\\\",\\\"renderNativeOperation\\\":\\\"other\\\"}]}",
+      "2026-10-27T16:02:04.9850726Z [android-journeys 16:02:04]   MEASURED SF02 {\\\"calibratedInRun\\\":false,\\\"calibration\\\":\\\"upstream-webview-controls AN00/AN00-L\\\",\\\"coldStarts\\\":{\\\"measured\\\":1,\\\"installed\\\":1,\\\"stalls\\\":6,\\\"maxMs\\\":7832,\\\"byWhere\\\":{\\\"binder\\\":1,\\\"render\\\":5},\\\"byMsg\\\":{\\\"activity-thread\\\":1,\\\"frame\\\":5},\\\"byVia\\\":{\\\"bridge\\\":1,\\\"none\\\":5},\\\"malformed\\\":0},\\\"phases\\\":{\\\"measured\\\":1,\\\"precisions\\\":[\\\"ms\\\"],\\\"straddling\\\":1,\\\"phases\\\":{\\\"before-displayed\\\":{\\\"stalls\\\":3,\\\"totalMs\\\":9502,\\\"maxMs\\\":7832,\\\"byWhere\\\":{\\\"binder\\\":1,\\\"render\\\":2}},\\\"displayed-to-attached\\\":{\\\"stalls\\\":0,\\\"totalMs\\\":0,\\\"maxMs\\\":0,\\\"byWhere\\\":{}},\\\"attached-to-visible\\\":{\\\"stalls\\\":2,\\\"totalMs\\\":1106,\\\"maxMs\\\":703,\\\"byWhere\\\":{\\\"render\\\":2}},\\\"after-visible\\\":{\\\"stalls\\\":2,\\\"totalMs\\\":616,\\\"maxMs\\\":311,\\\"byWhere\\\":{\\\"render\\\":2}}},\\\"attribution\\\":\\\"by dispatch start; marks are host instants mapped to the device clock\\\"},\\\"renderer\\\":{\\\"measured\\\":1,\\\"stalls\\\":7,\\\"stallMs\\\":11224,\\\"rendererBusyMs\\\":1046,\\\"longFrameMs\\\":null,\\\"stallsMostlyBusy\\\":0,\\\"stallsMostlyIdle\\\":7,\\\"beforeFirstContentfulPaint\\\":1,\\\"pageTimingRead\\\":1,\\\"longTaskSupported\\\":1,\\\"longAnimationFrameSupported\\\":0,\\\"longTasks\\\":{\\\"count\\\":5,\\\"totalMs\\\":1648,\\\"maxMs\\\":1063},\\\"longAnimationFrames\\\":{\\\"count\\\":0,\\\"totalMs\\\":0,\\\"maxMs\\\":0,\\\"scriptMs\\\":0,\\\"styleLayoutMs\\\":0},\\\"clock\\\":\\\"device wall clock on both sides (performance.timeOrigin, logcat -v epoch)\\\"}}",
+      "2026-10-27T16:09:04.7432048Z MEASURED ANR03   system ANR timeline: when each Bridge ANR was declared, during which check, and what ended that process"
+    ]
+  },
+  "wayland": {
+    "run": 40110110689,
+    "job": 120919864685,
+    "head": "6dab3452dd344aa012a082f11e09a40f54950f11",
+    "lines": [
+      "2026-10-24T16:11:01.6122585Z FAIL: packaged Bridge did not create a Wayland xdg-toplevel surface in 60s",
+      "2026-10-24T16:11:01.6166666Z [4418:1024/161001.771512:ERROR:content/browser/browser_main_loop.cc:274] Gdk: gdk_seat_get_keyboard: assertion 'GDK_IS_SEAT (seat)' failed",
+      "2026-10-24T16:11:01.6174658Z [4453:1024/161001.838202:ERROR:ui/ozone/platform/wayland/common/drm_render_node_path_finder.cc:45] drmGetDevices2() has not found any devices: Invalid argument (22)",
+      "2026-10-24T16:11:01.6183054Z [4418:1024/161002.231939:ERROR:content/browser/browser_main_loop.cc:274] Gtk: gtk_widget_get_scale_factor: assertion 'GTK_IS_WIDGET (widget)' failed",
+      "2026-10-24T16:11:01.6185387Z [4418:1024/161002.235076:ERROR:content/browser/browser_main_loop.cc:274] Gdk: gdk_seat_get_keyboard: assertion 'GDK_IS_SEAT (seat)' failed",
+      "2026-10-24T16:11:01.6188132Z [4483:1024/161002.245267:ERROR:gpu/ipc/client/command_buffer_proxy_impl.cc:285] ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer."
+    ]
+  },
+  "scope": "Read-only decoded original failing job-log excerpts; full artifacts not downloaded, no local reproduction or matched experiment. No causal fix established."
+}

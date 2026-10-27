@@ -10,6 +10,7 @@ import { ApiResponseError, safeApiErrorMessage } from './api-error.ts';
 import { registrationProblem, type RegistrationProblem } from './registration-rules.ts';
 import { pushTargetsForLogout } from './push-installation.ts';
 import { rememberSignInGrants } from './step-up.ts';
+import { installNativeAuthConsent } from './native-auth-consent.ts';
 
 type AuthTab = 'login' | 'register';
 
@@ -805,6 +806,8 @@ function bindAuthShellEvents(): void {
 }
 
 async function bootstrapAuthentication(): Promise<void> {
+  // Before anything routes: a /native-auth request is remembered for consent after sign-in.
+  installNativeAuthConsent();
   if (consumeResetLink()) return;
   if (!await consumeSsoSessionHandoff()) await restoreSession();
   consumeEmailVerifiedFlag();

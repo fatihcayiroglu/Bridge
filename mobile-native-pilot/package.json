@@ -1,0 +1,33 @@
+{
+  "name": "bridge-native-pilot",
+  "private": true,
+  "version": "0.0.1",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "expo": "~57.0.0",
+    "expo-crypto": "~57.0.4",
+    "expo-secure-store": "~57.0.4",
+    "expo-sqlite": "57.0.4",
+    "expo-web-browser": "~57.0.3",
+    "react": "19.2.3",
+    "react-native": "0.86.0",
+    "socket.io-client": "~4.8.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.3",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  }
+}
