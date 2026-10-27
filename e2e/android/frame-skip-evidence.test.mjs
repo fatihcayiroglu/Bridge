@@ -325,7 +325,7 @@ test('#209 SF06 cold-starts fixed CSS variants in two opposite rounds and counts
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const sf06 = source.slice(source.indexOf("await measure('SF06'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
   assert.ok(source.indexOf("await measure('SF06'") > source.indexOf("await measure('SF05'"));
-  assert.match(sf06, /const VARIANTS = \['none', 'no-filters', 'no-shadows', 'no-effects'\];/);
+  assert.match(sf06, /const VARIANTS = \['none', 'no-filters', 'no-shadows', 'no-text-clip', 'no-animations', 'no-effects'\];/);
   assert.match(sf06, /\[\.\.\.VARIANTS, \.\.\.\[\.\.\.VARIANTS\]\.reverse\(\)\]/);
   assert.match(sf06, /--es variant \$\{variant\}/);
   assert.match(sf06, /variantConfirmed: logged === variant/);
