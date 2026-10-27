@@ -5,7 +5,7 @@ export const PRODUCT_CHECKS = Object.freeze([
   'L03', 'L04', 'N01', 'N02', 'D01', 'K01', 'K02', 'DL01', 'DL04', 'DL02', 'DL03',
   'P01', 'P03', 'V02', 'P06', 'P07', 'V03', 'P02', 'UI01', 'UI02', 'F01', 'P05', 'LO01', 'ANR01', 'PD01',
 ]);
-export const PRODUCT_MEASUREMENTS = Object.freeze(['FD02', 'P04', 'N03', 'PERF02', 'PERF01', 'ANR03', 'ANR02', 'SF01', 'SF02', 'SF03', 'SF04', 'SF05']);
+export const PRODUCT_MEASUREMENTS = Object.freeze(['FD02', 'P04', 'N03', 'PERF02', 'PERF01', 'ANR03', 'ANR02', 'SF01', 'SF02', 'SF03', 'SF04', 'SF05', 'SF06']);
 
 export function assessSuiteEvidence(evidence, { expectedCommit = null, expectedSuite = 'product' } = {}) {
   const fail = reason => ({ status: 'FAIL', reason });
