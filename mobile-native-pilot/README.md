@@ -17,6 +17,21 @@ used as evidence that authentication, messaging, offline sync, uploads, or calls
 - The SDK/toolchain and device build have **not been installed or validated** in this
   cloud environment. Do not describe this as an APK/IPA or working acceptance build.
 
+## Dormant read-only HTTP contract (not wired to the app)
+
+`src/bridge-read-api.mjs` now provides an injectable read-only bridge for the existing
+`/api/me`, `/api/servers`, `/api/servers/:sid/channels`, and
+`/api/channels/:cid/messages` endpoints. Its Node contract tests use fake HTTP responses:
+**they are not real backend, native networking, permission, or performance tests**.
+The adapter deliberately requires HTTPS and an externally supplied, memory-only
+`{ token, epoch }` session snapshot. The epoch MUST change after login, logout,
+or account switch; responses from an older snapshot are rejected. It does not
+persist tokens, implement login/2FA/WebAuthn, send messages, reconnect sockets,
+perform an automatic retry, or touch user data. No Bridge account is used.
+The React Native fixture screens do not call this adapter. Connecting them is
+blocked on native secure credential storage, a session lifecycle contract,
+real integration tests, and explicit owner-reviewed acceptance gates.
+
 ## Local setup on a suitable development machine
 
 1. Use Node.js >=22.19 and a supported Android SDK or macOS/Xcode (for iOS).
