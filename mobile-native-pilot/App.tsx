@@ -3,12 +3,14 @@ import { FlatList, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } 
 import * as Crypto from 'expo-crypto';
 import { createPilotSession } from './src/pilot-session';
 import { createMessagingController, type MessagingSnapshot } from './src/messaging-controller.mjs';
+import NativeAcceptanceProbe from './src/NativeAcceptanceProbe';
 
 function Action({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
     style={[styles.button, disabled && styles.disabled]}><Text style={styles.buttonText}>{label}</Text></Pressable>;
 }
 export default function App() {
+  if (__DEV__ && process.env.EXPO_PUBLIC_NATIVE_SELF_TEST === '1') return <NativeAcceptanceProbe />;
   const origin = process.env.EXPO_PUBLIC_BRIDGE_ORIGIN ?? '';
   let valid = false;
   try { const url = new URL(origin); valid = url.protocol === 'https:' && url.origin === origin && !url.username && !url.password; } catch {}

@@ -70,6 +70,20 @@ test('missing native methods or platform constant cannot silently fall back', ()
   }), { code: 'INVALID_NATIVE_ADAPTER' });
 });
 
+test('Android uses native Keystore without requiring an iOS-only Keychain constant', async () => {
+  const { native, calls } = fixture();
+  delete native.WHEN_UNLOCKED_THIS_DEVICE_ONLY;
+  const port = createNativeCredentialPort({ secureStore: native, platform: 'android' });
+  await port.writeToken('android-fixture-token');
+  assert.equal(await port.readToken(), 'android-fixture-token');
+  await port.clearToken();
+  assert.equal(await port.readToken(), null);
+  const operations = calls.filter(event => event[0] !== 'available');
+  assert.ok(operations.every(event => !('keychainAccessible' in event[2])));
+  assert.ok(operations.every(event => event[2].requireAuthentication === false));
+  assert.throws(() => createNativeCredentialPort({ secureStore: native, platform: 'web' }), { code: 'INVALID_NATIVE_ADAPTER' });
+});
+
 test('rejects unsafe empty, whitespace, control, oversized or non-string tokens before native IO', async () => {
   const { native, calls } = fixture();
   const port = createNativeCredentialPort({ secureStore: native });
