@@ -1,19 +1,32 @@
 // Session lifecycle for the RN pilot: the single owner of "who is signed in".
-// It joins the native credential port (Keychain/Keystore) and the read-only API.
+// It joins the native credential port (Keychain/Keystore), the native token
+// endpoints (code exchange, rotating refresh, revocation) and the read API.
+//
+// Credentials
+// - The REFRESH token is the only persisted secret (credential port). The access
+//   token lives in memory only and is exposed through getSession() solely while
+//   the session is authenticated.
+// - Every refresh rotates. The successor is persisted BEFORE it is used; a
+//   successor that cannot be persisted, or that arrives for a superseded session,
+//   is revoked server-side (best effort) and never adopted.
+// - There is no grace window: if the app dies, or the response is lost, after the
+//   server rotated, the stored token is consumed. Presenting it is reuse; the
+//   server revokes the family and the user signs in again. Replay protection is
+//   never weakened to avoid that sign-in.
 //
 // Invariants (each is a test in tests/session-coordinator.test.mjs):
-// - A stored token is never trusted until GET /api/me accepts it; until then
-//   getSession() returns null, so no other request can use it.
-// - Every transition increments a monotonic epoch. Memory is cleared at the
-//   call site, before any await, so a request started for one session cannot
-//   be answered into the next (the read API fences on {token, epoch}).
-// - Native storage operations run in call order (the port serialises them) and
-//   any operation decided by an older epoch is dropped when a newer transition
-//   happened first: a slow restore can never erase or overwrite a newer sign-in.
-// - A 401/403 counts only for the epoch that produced it; a late refusal from a
-//   previous account cannot sign out the current one.
-// - Storage failures fail closed: no session is reported that could not be
-//   persisted, and a credential that could not be deleted is reported as such.
+// - A stored credential is never trusted until the server rotates it and
+//   GET /api/me names the account; until then getSession() returns null.
+// - Every account transition increments a monotonic epoch and clears memory at
+//   the call site, before any await. A request or refresh started for one session
+//   cannot be answered into the next (the read API fences on {token, epoch}).
+// - Refresh is single-flight per session: concurrent 401s share one rotation; a
+//   401 for an access token that was already replaced does not rotate again.
+// - Native storage operations run in call order (the port serialises them); a
+//   newer transition's storage operation is always queued after an older one.
+// - Storage failures fail closed. invalid_grant ends the session and clears it.
+// - Sign-out clears locally first, then revokes server-side, and reports honestly
+//   whether the server confirmed it ('confirmed' | 'unconfirmed').
 // - Emitted state never contains a token. Nothing here logs.
 
 export class SessionError extends Error {
@@ -26,47 +39,49 @@ export class SessionError extends Error {
 
 const PHASES = Object.freeze({
   IDLE: 'idle',                     // not started
-  RESTORING: 'restoring',           // reading/validating a stored credential
+  RESTORING: 'restoring',           // reading / rotating / validating a stored credential, or persisting a sign-in
   SIGNED_OUT: 'signed-out',
-  AUTHENTICATED: 'authenticated',   // server-validated (restore) or server-issued (sign-in)
-  UNVERIFIED: 'unverified',         // stored credential could not be checked (offline); not trusted
-  STORAGE_FAILED: 'storage-failed', // native storage refused; nothing is trusted
+  AUTHENTICATED: 'authenticated',   // server-validated session; access token in memory
+  UNVERIFIED: 'unverified',         // stored credential could not be checked (offline); nothing trusted
+  STORAGE_FAILED: 'storage-failed', // native storage refused; nothing trusted
 });
 export const SESSION_PHASES = PHASES;
 
-// Answers of GET /api/me that mean "this credential is no longer valid".
-const REJECTED = new Set(['AUTH_REQUIRED', 'FORBIDDEN', 'NOT_FOUND', 'REQUEST_REJECTED']);
-// Answers that say nothing about the credential (keep it, trust nothing).
-const UNKNOWN = new Set(['NETWORK_FAILURE', 'SERVER_UNAVAILABLE', 'RATE_LIMITED', 'BAD_RESPONSE', 'ABORTED']);
+// GET /api/me answers meaning "this account/session is not usable".
+const ME_REJECTED = new Set(['AUTH_REQUIRED', 'FORBIDDEN', 'NOT_FOUND', 'REQUEST_REJECTED']);
 
-function validToken(token) {
-  return typeof token === 'string' && token.length > 0 && token.length <= 8192;
-}
 function validUserId(id) {
   return typeof id === 'string' && id.length > 0 && id.length <= 200;
 }
+function validSecret(value, max) {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
 
 /**
- * @param credentials  NativeCredentialPort (readToken/writeToken/clearToken)
- * @param createReadApi (getSession) => BridgeReadApi; used to validate a restored token
- * @param serverLogout optional () => Promise<void>; best effort, never blocks local sign-out
+ * @param credentials   NativeCredentialPort (readToken/writeToken/clearToken), holds the refresh token
+ * @param authApi       { refresh(refreshToken), revoke(refreshToken) } (native-auth-api)
+ * @param createReadApi (getSession) => { getMe() }; used to name the account of a restored session
  */
-export function createSessionCoordinator({ credentials, createReadApi, serverLogout = null }) {
+export function createSessionCoordinator({ credentials, authApi, createReadApi }) {
   if (!credentials || typeof credentials.readToken !== 'function' ||
       typeof credentials.writeToken !== 'function' || typeof credentials.clearToken !== 'function' ||
-      typeof createReadApi !== 'function' || (serverLogout !== null && typeof serverLogout !== 'function')) {
+      !authApi || typeof authApi.refresh !== 'function' || typeof authApi.revoke !== 'function' ||
+      typeof createReadApi !== 'function') {
     throw new SessionError('INVALID_COORDINATOR');
   }
 
   let epoch = 0;
   let phase = PHASES.IDLE;
-  let token = null;        // memory only; exposed through getSession() when authenticated
+  let accessToken = null;   // memory only
+  let refreshToken = null;  // memory copy of the persisted credential; never emitted
   let userId = null;
   let reason = null;
+  let serverSignOut = null; // null | 'pending' | 'confirmed' | 'unconfirmed'
+  let flight = null;        // { epoch, promise } single-flight refresh
   const listeners = new Set();
 
   function snapshot() {
-    return Object.freeze({ phase, epoch, userId, reason });
+    return Object.freeze({ phase, epoch, userId, reason, serverSignOut });
   }
   function emit() {
     const state = snapshot();
@@ -77,26 +92,80 @@ export function createSessionCoordinator({ credentials, createReadApi, serverLog
   /** Starts a transition: everything decided under an older epoch is now stale. */
   function begin(nextPhase, nextReason = null) {
     epoch += 1;
-    token = null;
+    accessToken = null;
+    refreshToken = null;
     userId = null;
+    flight = null;
     phase = nextPhase;
     reason = nextReason;
+    serverSignOut = null;
     return epoch;
   }
   const current = (mine) => mine === epoch;
 
-  async function clearStored(mine, failurePhaseReason) {
+  /** Best-effort server revocation of a credential this client will not use. */
+  function discard(token) {
+    if (!token) return;
+    Promise.resolve().then(() => authApi.revoke(token)).catch(() => {});
+  }
+
+  function failStorage(mine, why) {
+    if (!current(mine)) return;
+    accessToken = null; refreshToken = null; userId = null; flight = null;
+    phase = PHASES.STORAGE_FAILED; reason = why;
+    emit();
+  }
+
+  async function clearStored(mine) {
     try {
       await credentials.clearToken();
       return true;
     } catch {
-      if (current(mine)) {
-        phase = PHASES.STORAGE_FAILED;
-        reason = failurePhaseReason;
-        emit();
-      }
+      failStorage(mine, 'CLEAR_FAILED');
       return false;
     }
+  }
+
+  /**
+   * Rotates `presented` and persists the successor.
+   * → { ok, tokens } | { rejected, why } | { unknown, why } | { stale } | { storageFailed }
+   */
+  async function rotate(mine, presented) {
+    let tokens;
+    try {
+      tokens = await authApi.refresh(presented);
+    } catch (error) {
+      if (!current(mine)) return { stale: true };
+      if (error?.code === 'INVALID_GRANT') return { rejected: true, why: error.reason === 'reuse' ? 'SESSION_REUSED' : 'SESSION_REJECTED' };
+      // OUTCOME_UNKNOWN / RATE_LIMITED / BAD_RESPONSE / NETWORK_FAILURE: the presented
+      // token may or may not be consumed. It is kept; it is never retried here.
+      return { unknown: true, why: typeof error?.code === 'string' ? error.code : 'OUTCOME_UNKNOWN' };
+    }
+    // The successor now exists server-side and the presented token is consumed.
+    if (!current(mine)) { discard(tokens.refreshToken); return { stale: true }; }
+    try {
+      await credentials.writeToken(tokens.refreshToken);
+    } catch {
+      discard(tokens.refreshToken);
+      failStorage(mine, 'WRITE_FAILED');
+      // The stored (consumed) predecessor must not be presented again either.
+      await clearStored(mine);
+      return { storageFailed: true };
+    }
+    if (!current(mine)) {
+      // Superseded while writing: the newer transition's own storage operation is
+      // queued after ours, so storage ends in the newer state.
+      discard(tokens.refreshToken);
+      return { stale: true };
+    }
+    return { ok: true, tokens };
+  }
+
+  async function endLocally(mine, why) {
+    if (!current(mine)) return;
+    phase = PHASES.SIGNED_OUT; reason = why; accessToken = null; refreshToken = null; userId = null; flight = null;
+    emit();
+    await clearStored(mine);
   }
 
   async function restore() {
@@ -108,12 +177,10 @@ export function createSessionCoordinator({ credentials, createReadApi, serverLog
     } catch (error) {
       if (!current(mine)) return snapshot();
       if (error?.code === 'INVALID_STORED_TOKEN') {
-        // Corrupt slot: never usable. Remove it, unless a newer transition owns storage now.
-        phase = PHASES.SIGNED_OUT; reason = 'CORRUPT_CREDENTIAL'; emit();
-        await clearStored(mine, 'CLEAR_FAILED');
+        await endLocally(mine, 'CORRUPT_CREDENTIAL');
         return snapshot();
       }
-      phase = PHASES.STORAGE_FAILED; reason = 'READ_FAILED'; emit();
+      failStorage(mine, 'READ_FAILED');
       return snapshot();
     }
     if (!current(mine)) return snapshot();
@@ -122,62 +189,71 @@ export function createSessionCoordinator({ credentials, createReadApi, serverLog
       return snapshot();
     }
 
-    // Validate with the stored token in a private snapshot: getSession() stays null.
-    const probe = Object.freeze({ token: stored, epoch: mine });
+    const outcome = await rotate(mine, stored);
+    if (outcome.stale || outcome.storageFailed) return snapshot();
+    if (outcome.rejected) { await endLocally(mine, outcome.why); return snapshot(); }
+    if (outcome.unknown) {
+      // Keep the credential (memory copy only, never exposed); trust nothing.
+      refreshToken = stored;
+      phase = PHASES.UNVERIFIED; reason = outcome.why; emit();
+      return snapshot();
+    }
+
+    // Name the account with the fresh access token, in a private snapshot.
+    const probe = Object.freeze({ token: outcome.tokens.accessToken, epoch: mine });
     const api = createReadApi(() => (current(mine) ? probe : null));
     let me;
     try {
       me = await api.getMe();
     } catch (error) {
       if (!current(mine)) return snapshot();
-      const code = error?.code;
-      if (code === 'SESSION_CHANGED') return snapshot();
-      if (REJECTED.has(code)) {
-        phase = PHASES.SIGNED_OUT; reason = code === 'NOT_FOUND' ? 'ACCOUNT_GONE' : 'SESSION_REJECTED'; emit();
-        await clearStored(mine, 'CLEAR_FAILED');
+      if (ME_REJECTED.has(error?.code)) {
+        discard(outcome.tokens.refreshToken);
+        await endLocally(mine, error.code === 'NOT_FOUND' ? 'ACCOUNT_GONE' : 'SESSION_REJECTED');
         return snapshot();
       }
-      phase = PHASES.UNVERIFIED; reason = UNKNOWN.has(code) ? code : 'BAD_RESPONSE'; emit();
+      refreshToken = outcome.tokens.refreshToken;
+      phase = PHASES.UNVERIFIED; reason = typeof error?.code === 'string' ? error.code : 'BAD_RESPONSE'; emit();
       return snapshot();
     }
     if (!current(mine)) return snapshot();
     if (!me || !validUserId(me.id)) {
+      refreshToken = outcome.tokens.refreshToken;
       phase = PHASES.UNVERIFIED; reason = 'BAD_RESPONSE'; emit();
       return snapshot();
     }
-    token = stored;
+    accessToken = outcome.tokens.accessToken;
+    refreshToken = outcome.tokens.refreshToken;
     userId = me.id;
-    phase = PHASES.AUTHENTICATED;
-    reason = null;
+    phase = PHASES.AUTHENTICATED; reason = null;
     emit();
     return snapshot();
   }
 
-  /** Adopts a server-issued session (password or 2FA sign-in). */
+  /** Adopts the tokens of a completed code exchange (native-auth-api exchangeCode). */
   async function signIn(issued) {
-    if (!issued || issued.kind !== 'session' || !validToken(issued.token) || !validUserId(issued.userId)) {
+    if (!issued || !validSecret(issued.accessToken, 8192) || !validSecret(issued.refreshToken, 512) || !validUserId(issued.userId)) {
       throw new SessionError('INVALID_SESSION');
     }
     const previousUser = userId;
     const mine = begin(PHASES.RESTORING); // not usable until it is persisted
     emit();
     try {
-      await credentials.writeToken(issued.token);
+      await credentials.writeToken(issued.refreshToken);
     } catch {
+      discard(issued.refreshToken);
       if (current(mine)) {
-        // Fail closed: a session that cannot be stored is not adopted, and any partial
-        // write is removed.
-        phase = PHASES.STORAGE_FAILED; reason = 'WRITE_FAILED'; emit();
-        await clearStored(mine, 'WRITE_FAILED');
+        failStorage(mine, 'WRITE_FAILED');
+        await clearStored(mine);
       }
       throw new SessionError('STORAGE_FAILED');
     }
     if (!current(mine)) {
-      // Superseded while writing (sign-out or another sign-in came later). Their own
-      // storage operation is queued after ours, so the newer state wins in storage too.
+      discard(issued.refreshToken);
       throw new SessionError('SUPERSEDED');
     }
-    token = issued.token;
+    accessToken = issued.accessToken;
+    refreshToken = issued.refreshToken;
     userId = issued.userId;
     phase = PHASES.AUTHENTICATED;
     reason = previousUser && previousUser !== issued.userId ? 'ACCOUNT_SWITCHED' : null;
@@ -185,21 +261,57 @@ export function createSessionCoordinator({ credentials, createReadApi, serverLog
     return snapshot();
   }
 
+  /**
+   * A request answered 401 with `failed` = the {token, epoch} snapshot it used.
+   * Resolves to a fresh session snapshot, or null when the session ended or a
+   * refresh is not possible now. Concurrent callers share one rotation.
+   */
+  function refreshAfterUnauthorized(failed) {
+    if (!failed || failed.epoch !== epoch || phase !== PHASES.AUTHENTICATED) return Promise.resolve(null);
+    // The access token that failed was already replaced: no second rotation.
+    if (failed.token !== accessToken) return Promise.resolve(accessToken ? { token: accessToken, epoch } : null);
+    if (flight && flight.epoch === epoch) return flight.promise;
+
+    const mine = epoch;
+    const presented = refreshToken;
+    const promise = (async () => {
+      const outcome = await rotate(mine, presented);
+      if (flight?.promise === promise) flight = null;
+      if (outcome.ok) {
+        accessToken = outcome.tokens.accessToken;
+        refreshToken = outcome.tokens.refreshToken;
+        emit();
+        return { token: accessToken, epoch };
+      }
+      if (outcome.rejected) await endLocally(mine, outcome.why);
+      return null;
+    })();
+    flight = { epoch: mine, promise };
+    return promise;
+  }
+
   async function endSession(nextReason) {
+    const presented = refreshToken;
     const mine = begin(PHASES.SIGNED_OUT, nextReason);
+    // The local clear is queued before anything else can be.
+    const cleared = clearStored(mine);
+    serverSignOut = presented ? 'pending' : null;
     emit();
-    if (serverLogout) {
-      // Not awaited before the local clear, and its failure changes nothing locally.
-      Promise.resolve().then(serverLogout).catch(() => {});
+    await cleared;
+    if (!presented) return snapshot();
+    let confirmed = false;
+    try { await authApi.revoke(presented); confirmed = true; } catch { confirmed = false; }
+    if (current(mine)) {
+      serverSignOut = confirmed ? 'confirmed' : 'unconfirmed';
+      emit();
     }
-    await clearStored(mine, 'CLEAR_FAILED');
     return snapshot();
   }
 
   return Object.freeze({
-    /** Read-API snapshot: only a validated or server-issued session is ever exposed. */
+    /** Read-API snapshot: only a server-validated session is ever exposed. */
     getSession() {
-      return phase === PHASES.AUTHENTICATED && token ? { token, epoch } : null;
+      return phase === PHASES.AUTHENTICATED && accessToken ? { token: accessToken, epoch } : null;
     },
     getState: snapshot,
     subscribe(listener) {
@@ -209,16 +321,9 @@ export function createSessionCoordinator({ credentials, createReadApi, serverLog
     },
     restore,
     signIn,
+    refreshAfterUnauthorized,
     signOut: () => endSession('SIGNED_OUT'),
     /** After the server confirmed the account deletion. */
     accountDeleted: () => endSession('ACCOUNT_DELETED'),
-    /**
-     * A request answered 401/403. Only the session that sent it can be ended by it:
-     * pass the epoch of the snapshot the request used.
-     */
-    reportAuthFailure(failedEpoch) {
-      if (phase !== PHASES.AUTHENTICATED || failedEpoch !== epoch) return Promise.resolve(snapshot());
-      return endSession('SESSION_REJECTED');
-    },
   });
 }

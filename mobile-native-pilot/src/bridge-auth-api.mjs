@@ -2,12 +2,11 @@
 // (POST /api/login, POST /api/logout) and server/routes/twoFactor.ts (POST /api/2fa/check)
 // as of main c061d72f. It never logs, stores or retries credentials.
 //
-// Boundary, by design of the current server: the refresh token is only ever sent as an
-// httpOnly cookie scoped to /api/refresh. This adapter omits cookies, so the native
-// session has NO refresh capability and ends when the access token expires (server
-// default 15 min); logout therefore cannot revoke a server-side refresh session it
-// never held. How a native client should receive a refresh token is a backend/security
-// decision that is NOT made here.
+// Not used to establish the pilot's session. These endpoints deliver the refresh token
+// only as an httpOnly cookie, so a session started here could not be renewed. Native
+// sessions come from system-browser sign-in with code + PKCE (browser-sign-in.mjs,
+// native-auth-api.mjs; server docs/NATIVE_AUTH.md), which returns a rotating refresh
+// token without changing these browser responses.
 export class BridgeAuthError extends Error {
   constructor(code) {
     super(code);

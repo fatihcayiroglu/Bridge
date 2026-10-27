@@ -51,12 +51,39 @@ logout, and handle failed native deletion without claiming logout complete.
 Native device uninstall, backup/restore, passcode/biometric and multi-account
 behaviors remain open and BLOCK any production replacement.
 
+## Session lifecycle (contract-tested; no screen wired yet)
+
+Sign-in uses the system browser (Android Custom Tabs / iOS
+ASWebAuthenticationSession, ephemeral) and authorization code + PKCE (S256)
+against the server endpoints described in `docs/NATIVE_AUTH.md` on the server
+branch. The web page keeps enforcing password, CAPTCHA, e-mail verification,
+2FA, WebAuthn and SSO. `src/session-coordinator.mjs` then:
+
+- persists only the rotating refresh token, through the credential port;
+- keeps the access token in memory;
+- refreshes in single flight;
+- persists each successor before using it;
+- fences every account transition with an epoch;
+- clears locally before revoking server-side, and reports
+  `serverSignOut: confirmed | unconfirmed`.
+
+After a crash or lost response between a server rotation and local
+persistence, the next refresh is reuse: the server revokes the session and the
+user signs in again. Reuse detection is not relaxed.
+
+The tests are Node contract tests over fakes (SecureStore, fetch, browser).
+They are not Keychain/Keystore, system-browser, backend or device evidence.
+The server endpoints must be deployed and `NATIVE_AUTH_REDIRECT_URIS`
+configured before any device test. For the pilot, the redirect address is the
+private-use scheme `com.bridge.nativepilot:/oauth` (declared in `app.json`).
+Production should use verified App Links / Universal Links instead: another
+installed app can claim a custom scheme (docs/NATIVE_AUTH.md, T2).
+
 ## Local setup on a suitable development machine
 
 1. Use Node.js >=22.19 and a supported Android SDK or macOS/Xcode (for iOS).
-2. In `mobile-native-pilot`, run `npm install` and `npx expo install --fix`
-   to resolve SDK-compatible package versions. Commit a generated lockfile only
-   after confirming the exact dependency graph and successful builds.
+2. In `mobile-native-pilot`, run `npm ci` (the lockfile is committed; see
+   `DEPENDENCY_AUDIT.md` for the open audit finding).
 3. Run `npm test`, `npm run typecheck`, then `npm run android` or `npm run ios`.
 4. Benchmark **release builds** on real Android/iOS devices before interpreting
    performance; development-mode results do not count.

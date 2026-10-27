@@ -1,6 +1,6 @@
 import type { BridgeReadApi, SessionSnapshot } from './bridge-read-api.mjs';
 import type { NativeCredentialPort } from './native-credential-port.mjs';
-import type { IssuedSession } from './bridge-auth-api.mjs';
+import type { ExchangedSession, NativeAuthApi } from './native-auth-api.mjs';
 
 export type SessionErrorCode =
   | 'INVALID_COORDINATOR'
@@ -22,12 +22,14 @@ export declare const SESSION_PHASES: Readonly<{
   AUTHENTICATED: 'authenticated'; UNVERIFIED: 'unverified'; STORAGE_FAILED: 'storage-failed';
 }>;
 
-/** Never contains a token. `reason` explains the last transition when it matters. */
+/** Never contains a token. */
 export type SessionState = Readonly<{
   phase: SessionPhase;
   epoch: number;
   userId: string | null;
   reason: string | null;
+  /** After sign-out: whether the server confirmed the revocation. */
+  serverSignOut: null | 'pending' | 'confirmed' | 'unconfirmed';
 }>;
 
 export interface SessionCoordinator {
@@ -35,18 +37,18 @@ export interface SessionCoordinator {
   getState(): SessionState;
   subscribe(listener: (state: SessionState) => void): () => void;
   restore(): Promise<SessionState>;
-  signIn(issued: IssuedSession): Promise<SessionState>;
+  signIn(issued: Pick<ExchangedSession, 'accessToken' | 'refreshToken' | 'userId'>): Promise<SessionState>;
+  /**
+   * After a 401 for the snapshot `failed`. Shares one rotation between callers.
+   * A 403 STEP_UP_REQUIRED is not a session failure; do not pass it.
+   */
+  refreshAfterUnauthorized(failed: NonNullable<SessionSnapshot>): Promise<SessionSnapshot>;
   signOut(): Promise<SessionState>;
   accountDeleted(): Promise<SessionState>;
-  /**
-   * For a request that the server refused because the SESSION is invalid (401, or a
-   * 403 account refusal). A 403 STEP_UP_REQUIRED is not a session failure; do not pass it.
-   */
-  reportAuthFailure(failedEpoch: number | string): Promise<SessionState>;
 }
 
 export declare function createSessionCoordinator(config: {
   credentials: NativeCredentialPort;
+  authApi: Pick<NativeAuthApi, 'refresh' | 'revoke'>;
   createReadApi: (getSession: () => SessionSnapshot) => Pick<BridgeReadApi, 'getMe'>;
-  serverLogout?: (() => Promise<void>) | null;
 }): SessionCoordinator;
