@@ -1,0 +1,114 @@
+✔ password sign-in returns the server-issued session; cookies are omitted (7.8853ms)
+✔ a 2FA account gets only an opaque challenge, never a token, and completes with /api/2fa/check (0.8076ms)
+✔ server refusals are classified without echoing server text (1.9775ms)
+✔ malformed success answers fail closed (0.8466ms)
+✔ inputs and origin are validated before any request (0.621ms)
+✔ logout posts without credentials and reports refusals (0.425ms)
+✔ GET /api/me reads only authenticated profile and does not expose token in result (32.5208ms)
+✔ lists only mapped server and visible channel fields using confirmed routes (1.3151ms)
+✔ lists message envelope with bounded limit without claiming send or live sync (1.1653ms)
+✔ rejects non-HTTPS, embedded credentials, redirects to paths, and invalid adapters (0.8153ms)
+✔ invalid URL ids and message limits fail before a network call (2.4686ms)
+✔ an absent or invalid session blocks all traffic and does not ask the server (3.0627ms)
+✔ rejects a response from the previous session after the transport resolves (0.5079ms)
+✔ rejects a response if account switches while JSON is being decoded (0.3645ms)
+✔ maps authorization, account-change and server errors without response-body leakage (1.1824ms)
+✔ malformed responses fail closed with no empty-list fallback (2.5193ms)
+✔ invalid JSON, network failures and abort are typed without leaking error details (0.5254ms)
+✔ forwards cancellation signal without retrying automatically (0.3073ms)
+✔ connects with the current access token over websocket and rejoins channels on reconnect (2.1016ms)
+✔ a send is confirmed only by our own message:new echo for that channel and content (4.7645ms)
+✔ error:message fails the in-flight send; sends are serial so the refusal is unambiguous (1.2094ms)
+✔ no echo: UNCONFIRMED after the timeout, and nothing is ever resent (29.6054ms)
+✔ offline sends are refused as UNCONFIRMED/OFFLINE without emitting; inputs are validated (1.5313ms)
+✔ auth refusal: one refresh with the failed token, then reconnect with the rotated token (1.0338ms)
+✔ auth refusal that cannot be refreshed ends realtime as auth-failed; transport errors do not refresh (0.7729ms)
+✔ account switch / sign-out: the old socket is torn down, pending sends end UNCONFIRMED, old events are ignored (0.8852ms)
+✔ defence in depth: an old socket can neither deliver events nor obtain the new account token after a switch (0.3086ms)
+✔ only https origins and complete adapters are accepted (0.3152ms)
+✔ queued sends cannot cross an account transition even if the new account joins the same channel (1.4073ms)
+✔ ackId sends require the exact correlated ACK; echoes and duplicate/wrong ACKs cannot settle another send (1.1536ms)
+✔ failed and cancelled tests are counted, never called surviving mutants (2.6728ms)
+✔ timeouts, crashes, missing summaries and skipped tests are not clean survivors (0.249ms)
+✖ an actual unresolved Node test reports cancellation and is detected (810.0615ms)
+✔ secure credential capability reads, writes and clears on an isolated key (2.8232ms)
+✔ missing native methods or platform constant cannot silently fall back (0.6102ms)
+✔ rejects unsafe empty, whitespace, control, oversized or non-string tokens before native IO (0.753ms)
+✔ invalid token returned by native store never becomes a successful session (0.2867ms)
+✔ unavailable native store blocks reading, writing and clearing rather than using AsyncStorage (0.4529ms)
+✔ native rejection is opaque and never claims a successful deletion (0.6089ms)
+✔ availability errors fail closed with a generic error (0.2122ms)
+✔ later logout deletion cannot finish before an earlier in-flight write (0.3659ms)
+✔ a failed operation does not permanently wedge the operation queue (0.9188ms)
+✔ base64url matches Node for every tail length (2.2197ms)
+✔ PKCE: 43-char verifier, challenge = BASE64URL(SHA256(verifier)), fresh values per attempt (1.58ms)
+✔ opens the Bridge web consent with S256 and returns code + verifier for the matching callback (1.5321ms)
+✔ callback validation: injected/foreign codes, wrong addresses, denial and cancel are refused (1.8554ms)
+✔ a newer attempt supersedes an older one; the older callback is never accepted (4.0723ms)
+✔ adapter rejects non-https origins and redirect addresses carrying a query or fragment (0.3609ms)
+✔ code exchange posts the verifier without cookies and returns tokens + account (0.7352ms)
+✔ refresh classification: invalid_grant carries the reason; a lost answer is OUTCOME_UNKNOWN, not a failure (0.7882ms)
+✔ revocation uses the existing /api/refresh/logout body contract; failures are reported, not hidden (0.3688ms)
+✔ offline drafts flush in order, concurrent callers share one flight, confirmed entries never resend (2.8006ms)
+✔ lost ACK: explicit retry preserves the original id; a deduplicating server persists only once (0.7728ms)
+✔ switch/sign-out clears drafts immediately and late completion cannot write into the new account (0.3531ms)
+✔ a server rejection blocks younger sends; snapshots cannot mutate the queue (0.2577ms)
+✔ restart is explicitly non-durable; bounds, invalid input and disposal fail closed (0.4422ms)
+✔ normal sign-in: refresh token persisted, access token only in memory (2.4046ms)
+✔ restore: the stored token is rotated, the successor stored, the account named, before anything is usable (5.8435ms)
+✔ expired access token: one 401 → one rotation → the request succeeds with the new token (1.085ms)
+✔ concurrent 401s share one rotation; a late 401 for a replaced token does not rotate again (0.8774ms)
+✔ replayed or revoked refresh token: signed out, stored credential deleted (0.4526ms)
+✔ crash between server rotation and local persistence: the next start is reuse → whole session revoked → sign in again (0.8344ms)
+✔ lost refresh response (outcome unknown): no automatic retry; nothing trusted; the next attempt fails closed as reuse (0.4987ms)
+✔ offline restore before reaching the server keeps the credential for a later start (0.5456ms)
+✔ native storage failure persisting a rotated token: fail closed, successor revoked, nothing usable (1.174ms)
+✔ native storage failure at sign-in: not adopted, issued session revoked (0.9253ms)
+✔ storage read failure fails closed: nothing sent, nothing deleted (0.2834ms)
+✔ account switch during a refresh: the late rotation for A is not adopted into B and is revoked (0.6903ms)
+✔ cross-account isolation: a read sent for A cannot be answered into B (0.5232ms)
+✔ logout: local state cleared first, then server revocation confirmed (0.32ms)
+✔ logout clears the device before the server is asked: storage empty while revocation is still in flight (1.5157ms)
+✔ logout offline: signed out locally, server revocation honestly reported as unconfirmed (0.2435ms)
+✔ logout during a refresh: storage ends empty and the late successor is revoked (0.6752ms)
+✔ sign-in while a slow restore is writing: storage ends with the new account (0.6355ms)
+✔ restore of a deleted account (404 from /api/me): signed out as ACCOUNT_GONE (0.5219ms)
+✔ a corrupt stored credential is never sent and is removed (0.2122ms)
+✔ account deletion signs out and clears; epochs only increase; no state carries a token (0.3584ms)
+✔ a transition forgets the previous account at once (0.9964ms)
+✔ invalid inputs and wiring are refused (0.4694ms)
+✔ records bounded, ordered, first-occurrence-only JS milestones (1.3338ms)
+✔ refuses arbitrary labels and backwards clocks; does not store sensitive values (0.4121ms)
+ℹ tests 81
+ℹ suites 0
+ℹ pass 80
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6311.3388
+
+✖ failing tests:
+
+test at mobile-native-pilot\tests\mutation-result.test.mjs:23:1
+✖ an actual unresolved Node test reports cancellation and is detected (810.0615ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'INVALID'
+  - 'DETECTED'
+  
+      at TestContext.<anonymous> (file:///C:/Users/fatih/Documents/Codex/2026-10-13/bi/work/bridge-recovery/mobile-native-pilot/tests/mutation-result.test.mjs:28:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'INVALID',
+    expected: 'DETECTED',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

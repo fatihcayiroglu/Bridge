@@ -1,7 +1,8 @@
 import type { SessionCoordinator } from './session-coordinator.mjs';
 
 export type RealtimeCode =
-  | 'INVALID_ORIGIN' | 'INVALID_ADAPTER' | 'INVALID_ID' | 'INVALID_CONTENT' | 'NOT_JOINED';
+  | 'INVALID_ORIGIN' | 'INVALID_ADAPTER' | 'INVALID_ID' | 'INVALID_CONTENT' | 'NOT_JOINED'
+  | 'IDEMPOTENCY_CONFLICT' | 'IDEMPOTENCY_CAPACITY';
 
 export declare class RealtimeError extends Error {
   readonly code: RealtimeCode;
@@ -23,8 +24,8 @@ export interface BridgeRealtime {
   onStatus(listener: (status: RealtimeStatus) => void): () => void;
   onMessage(listener: (message: ChannelMessage) => void): () => void;
   joinChannel(channelId: string): void;
-  /** Never resends: channel messages have no idempotency key in the server contract. */
-  send(input: { serverId: string; channelId: string; content: string }): Promise<SendResult>;
+  /** Never resends internally. Outbox retries must retain the original ackId. */
+  send(input: { serverId: string; channelId: string; content: string; ackId?: string }): Promise<SendResult>;
 }
 
 export declare function createBridgeRealtime(config: {

@@ -1,0 +1,19 @@
+{
+  "tools": {
+    "docker": null,
+    "podman": null,
+    "psql": null,
+    "postgres": null,
+    "redis-server": null,
+    "wsl": "C:\\Windows\\system32\\wsl.EXE"
+  },
+  "ports": {
+    "5432": "not listening",
+    "6379": "not listening",
+    "8443": "not listening"
+  },
+  "wsl": {
+    "status": "TIMEOUT",
+    "timeout_seconds": 8
+  }
+}

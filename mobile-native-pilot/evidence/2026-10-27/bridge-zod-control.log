@@ -1,0 +1,17 @@
+PASS plugin: minimal valid
+PASS plugin: full valid
+PASS plugin: empty name refused (min)
+PASS plugin: bad enum refused
+PASS plugin: no commands refused (array min)
+PASS plugin: bannerTitle union
+PASS plugin: refusal has message
+PASS output: text line
+PASS output: image url
+PASS output: invalid url refused
+PASS output: unknown literal refused
+PASS output: issues[].message
+PASS mcp: known command
+PASS mcp: unknown command refused
+PASS mcp: strict refuses extra keys
+PASS mcp: param type enforced
+zod 4.6.7 under @expo/cli: 16/16 decisions as expected

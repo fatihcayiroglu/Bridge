@@ -1,0 +1,148 @@
+TAP version 13
+# Subtest: normal sign-in: refresh token persisted, access token only in memory
+ok 1 - normal sign-in: refresh token persisted, access token only in memory
+  ---
+  duration_ms: 2.3905
+  type: 'test'
+  ...
+# Subtest: restore: the stored token is rotated, the successor stored, the account named, before anything is usable
+ok 2 - restore: the stored token is rotated, the successor stored, the account named, before anything is usable
+  ---
+  duration_ms: 5.2895
+  type: 'test'
+  ...
+# Subtest: expired access token: one 401 → one rotation → the request succeeds with the new token
+ok 3 - expired access token: one 401 → one rotation → the request succeeds with the new token
+  ---
+  duration_ms: 1.1276
+  type: 'test'
+  ...
+# Subtest: concurrent 401s share one rotation; a late 401 for a replaced token does not rotate again
+ok 4 - concurrent 401s share one rotation; a late 401 for a replaced token does not rotate again
+  ---
+  duration_ms: 0.9942
+  type: 'test'
+  ...
+# Subtest: replayed or revoked refresh token: signed out, stored credential deleted
+ok 5 - replayed or revoked refresh token: signed out, stored credential deleted
+  ---
+  duration_ms: 0.4714
+  type: 'test'
+  ...
+# Subtest: crash between server rotation and local persistence: the next start is reuse → whole session revoked → sign in again
+ok 6 - crash between server rotation and local persistence: the next start is reuse → whole session revoked → sign in again
+  ---
+  duration_ms: 0.8274
+  type: 'test'
+  ...
+# Subtest: lost refresh response (outcome unknown): no automatic retry; nothing trusted; the next attempt fails closed as reuse
+ok 7 - lost refresh response (outcome unknown): no automatic retry; nothing trusted; the next attempt fails closed as reuse
+  ---
+  duration_ms: 0.5575
+  type: 'test'
+  ...
+# Subtest: offline restore before reaching the server keeps the credential for a later start
+ok 8 - offline restore before reaching the server keeps the credential for a later start
+  ---
+  duration_ms: 0.5069
+  type: 'test'
+  ...
+# Subtest: native storage failure persisting a rotated token: fail closed, successor revoked, nothing usable
+ok 9 - native storage failure persisting a rotated token: fail closed, successor revoked, nothing usable
+  ---
+  duration_ms: 0.9978
+  type: 'test'
+  ...
+# Subtest: native storage failure at sign-in: not adopted, issued session revoked
+ok 10 - native storage failure at sign-in: not adopted, issued session revoked
+  ---
+  duration_ms: 0.8479
+  type: 'test'
+  ...
+# Subtest: storage read failure fails closed: nothing sent, nothing deleted
+ok 11 - storage read failure fails closed: nothing sent, nothing deleted
+  ---
+  duration_ms: 0.3426
+  type: 'test'
+  ...
+# Subtest: account switch during a refresh: the late rotation for A is not adopted into B and is revoked
+ok 12 - account switch during a refresh: the late rotation for A is not adopted into B and is revoked
+  ---
+  duration_ms: 0.9596
+  type: 'test'
+  ...
+# Subtest: cross-account isolation: a read sent for A cannot be answered into B
+ok 13 - cross-account isolation: a read sent for A cannot be answered into B
+  ---
+  duration_ms: 0.535
+  type: 'test'
+  ...
+# Subtest: logout: local state cleared first, then server revocation confirmed
+ok 14 - logout: local state cleared first, then server revocation confirmed
+  ---
+  duration_ms: 0.3466
+  type: 'test'
+  ...
+# Subtest: logout clears the device before the server is asked: storage empty while revocation is still in flight
+ok 15 - logout clears the device before the server is asked: storage empty while revocation is still in flight
+  ---
+  duration_ms: 1.4395
+  type: 'test'
+  ...
+# Subtest: logout offline: signed out locally, server revocation honestly reported as unconfirmed
+ok 16 - logout offline: signed out locally, server revocation honestly reported as unconfirmed
+  ---
+  duration_ms: 0.2475
+  type: 'test'
+  ...
+# Subtest: logout during a refresh: storage ends empty and the late successor is revoked
+ok 17 - logout during a refresh: storage ends empty and the late successor is revoked
+  ---
+  duration_ms: 0.646
+  type: 'test'
+  ...
+# Subtest: sign-in while a slow restore is writing: storage ends with the new account
+ok 18 - sign-in while a slow restore is writing: storage ends with the new account
+  ---
+  duration_ms: 0.4931
+  type: 'test'
+  ...
+# Subtest: restore of a deleted account (404 from /api/me): signed out as ACCOUNT_GONE
+ok 19 - restore of a deleted account (404 from /api/me): signed out as ACCOUNT_GONE
+  ---
+  duration_ms: 0.2531
+  type: 'test'
+  ...
+# Subtest: a corrupt stored credential is never sent and is removed
+ok 20 - a corrupt stored credential is never sent and is removed
+  ---
+  duration_ms: 0.1212
+  type: 'test'
+  ...
+# Subtest: account deletion signs out and clears; epochs only increase; no state carries a token
+ok 21 - account deletion signs out and clears; epochs only increase; no state carries a token
+  ---
+  duration_ms: 0.2824
+  type: 'test'
+  ...
+# Subtest: a transition forgets the previous account at once
+ok 22 - a transition forgets the previous account at once
+  ---
+  duration_ms: 0.807
+  type: 'test'
+  ...
+# Subtest: invalid inputs and wiring are refused
+ok 23 - invalid inputs and wiring are refused
+  ---
+  duration_ms: 0.4235
+  type: 'test'
+  ...
+1..23
+# tests 23
+# suites 0
+# pass 23
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 767.4677
