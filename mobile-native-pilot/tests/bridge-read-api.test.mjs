@@ -30,7 +30,7 @@ async function rejectsCode(promise, code) {
 }
 
 test('GET /api/me reads only authenticated profile and does not expose token in result', async () => {
-  const { api, calls } = harness(json({
+  const { api, calls } = harness(() => json({
     _id: 'user_1', displayName: 'Bridge Friend', email: 'private@example.test',
   }));
   assert.deepEqual(await api.getMe(), { id: 'user_1', displayName: 'Bridge Friend' });
@@ -54,7 +54,7 @@ test('lists only mapped server and visible channel fields using confirmed routes
 });
 
 test('lists message envelope with bounded limit without claiming send or live sync', async () => {
-  const { api, calls } = harness(json({
+  const { api, calls } = harness(() => json({
     messages: [{ _id: 'msg-01', content: 'Hello' }],
     hasMore: true,
     nextCursor: 'opaque-next',
