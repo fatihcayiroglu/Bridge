@@ -2813,6 +2813,29 @@ async function main() {
     log('EX02 independent debugger-paused storage comparison', JSON.stringify(facts.androidPausedPreferenceControl));
   }
 
+  // #209 SF03/SF04 helpers. Each wait runs under its own deadline and logs a
+  // fixed stage name (the first SF03 hung silently for 55 min); an overrun
+  // fails the measurement naming the stage.
+  const boundedStage = tag => async (name, work, ms) => {
+    log(`${tag} stage`, name);
+    let timer;
+    try {
+      return await Promise.race([work(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${tag} stage ${name} exceeded ${ms} ms`)), ms);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  // EX01/EX02 leave a signed-in session; the auth screen is what #209 renders first.
+  const signOutToAuthScreen = async tag => {
+    await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await until(() => page.evaluate(() => !!document.getElementById('tab-security')), { timeout: 15_000, message: `${tag} settings open` });
+    await page.evaluate(() => document.getElementById('tab-security')?.click());
+    await until(() => page.evaluate(() => !!document.querySelector('[data-testid="sec-logout"]')), { timeout: 15_000, message: `${tag} security tab` });
+    await page.evaluate(() => document.querySelector('[data-testid="sec-logout"]')?.click());
+    await until(() => authVisible(), { timeout: 20_000, message: `${tag} auth screen after sign-out` });
+  };
+
   // #209 SF03: steady-state A/B of the auth screen's continuous compositor
   // work, in ONE process: normal motion, reduced motion, normal motion again
   // (ABA, so drift shows). SF02 found the page's own thread idle during
@@ -2827,15 +2850,7 @@ async function main() {
   // fixed stage name. Measurement only.
   await measure('SF03', 'auth-screen steady-state main-thread stalls: normal vs reduced motion (same process, ABA; measurement)', async () => {
     if (MODE !== 'android') throw new Skip('actual Android WebView and stall probe required');
-    const step = async (name, work, ms) => {
-      log('SF03 stage', name);
-      let timer;
-      try {
-        return await Promise.race([work(), new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`SF03 stage ${name} exceeded ${ms} ms`)), ms);
-        })]);
-      } finally { clearTimeout(timer); }
-    };
+    const step = boundedStage('SF03');
     const WINDOW_MS = 10_000;
     const windows = [];
     let appPid = null;
@@ -2855,15 +2870,7 @@ async function main() {
       // EX01/EX02 leave a signed-in session; the blobs live on the auth screen.
       signedOutFirst = !(await step('auth-check', () => authVisible(), 10_000));
       if (signedOutFirst) {
-        await step('sign-out', async () => {
-          await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')
-            ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-          await until(() => page.evaluate(() => !!document.getElementById('tab-security')), { timeout: 15_000, message: 'SF03 settings open' });
-          await page.evaluate(() => document.getElementById('tab-security')?.click());
-          await until(() => page.evaluate(() => !!document.querySelector('[data-testid="sec-logout"]')), { timeout: 15_000, message: 'SF03 security tab' });
-          await page.evaluate(() => document.querySelector('[data-testid="sec-logout"]')?.click());
-          await until(() => authVisible(), { timeout: 20_000, message: 'SF03 auth screen after sign-out' });
-        }, 60_000);
+        await step('sign-out', () => signOutToAuthScreen('SF03'), 60_000);
       }
       for (const [label, reducedMotion] of [['normal-a', 'no-preference'], ['reduced', 'reduce'], ['normal-b', 'no-preference']]) {
         await step(`media-${label}`, () => page.emulateMedia({ reducedMotion }), 10_000);
@@ -2904,6 +2911,87 @@ async function main() {
       && !windows[0].reduceMatches && windows[0].blobsAnimated > 0 && !windows[2].reduceMatches;
     return { design: 'same process ABA; prefers-reduced-motion emulated over CDP', windowMs: WINDOW_MS,
       applied, signedOutFirst, windows, processExit, probeMalformed: timeline?.malformed ?? null };
+  });
+
+  // #209 SF04: SF03 (68d342c6, 40428021986) found the auth screen's
+  // steady-state animation nearly stall-free (0 / 0 / 1 stall of 772 ms in
+  // three 10 s windows, normal / reduced / normal), so the multi-second
+  // stalls belong to FIRST frames. SF04 isolates Bridge's first render from
+  // WebView start-up: warm reloads of the page in one already-running
+  // process, ABA: normal, the three 90px-blurred `.auth-blob` layers hidden
+  // from document start, normal again. Hiding is a document-start style
+  // gated by a sessionStorage flag set before each reload; each reload
+  // records whether the blobs actually rendered. Stalls are counted by
+  // dispatch start from reload to auth screen + 3 s. Runs last, after SF03,
+  // within the probe's 90 s window of its own cold start. Measurement only.
+  await measure('SF04', 'warm-reload first-render main-thread stalls: normal vs auth-blob layers hidden (same process, ABA; measurement)', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android WebView and stall probe required');
+    const step = boundedStage('SF04');
+    const HIDE_FLAG = 'bridge-sf04-hide-auth-blobs';
+    const reloads = [];
+    let appPid = null;
+    let failure = null;
+    let processExit = null;
+    let timeline = null;
+    try {
+      const origin = await step('clock', () => deviceClockOrigin(), 20_000);
+      if (!origin) throw new Error('SF04 needs the device clock to place its windows');
+      const toDevice = hostMs => origin.epochMs + (hostMs - origin.hostMs);
+      await step('launch', () => platform.coldLaunch(), 60_000);
+      appPid = await step('pid', () => pid(), 20_000);
+      await step('attach', () => attachPage(), 75_000);
+      await step('visible', () => until(async () => (await authVisible()) || (await appVisible()),
+        { timeout: 45_000, message: 'SF04 visible UI' }), 60_000);
+      if (!(await step('auth-check', () => authVisible(), 10_000))) {
+        await step('sign-out', () => signOutToAuthScreen('SF04'), 60_000);
+      }
+      await step('init-script', () => page.addInitScript(flag => {
+        try {
+          if (sessionStorage.getItem(flag) !== '1') return;
+          const style = document.createElement('style');
+          style.textContent = '.auth-blob{display:none!important}';
+          document.documentElement.appendChild(style);
+        } catch { /* evidence only */ }
+      }, HIDE_FLAG), 10_000);
+      for (const [label, hide] of [['normal-a', false], ['blobs-hidden', true], ['normal-b', false]]) {
+        await step(`flag-${label}`, () => page.evaluate(({ flag, on }) => {
+          if (on) sessionStorage.setItem(flag, '1'); else sessionStorage.removeItem(flag);
+        }, { flag: HIDE_FLAG, on: hide }), 10_000);
+        const from = Date.now();
+        await step(`reload-${label}`, () => page.reload({ waitUntil: 'load', timeout: 45_000 }), 50_000);
+        await step(`auth-${label}`, () => until(() => authVisible(), { timeout: 30_000, message: `SF04 auth screen ${label}` }), 35_000);
+        const visibleMs = Date.now() - from;
+        await sleep(3000);
+        const state = await step(`state-${label}`, () => page.evaluate(() => ({
+          blobs: document.querySelectorAll('.auth-blob').length,
+          blobsRendered: [...document.querySelectorAll('.auth-blob')]
+            .filter(b => getComputedStyle(b).display !== 'none').length,
+        })), 10_000);
+        reloads.push({ label, hide, visibleMs, ...state, hostFrom: from, hostTo: Date.now() });
+      }
+      timeline = await step('timeline', () => startupStallTimeline(appPid), 20_000);
+      for (const row of reloads) {
+        Object.assign(row, { probe: stallsInWindow(timeline, toDevice(row.hostFrom), toDevice(row.hostTo)) });
+        delete row.hostFrom; delete row.hostTo;
+      }
+    } catch (err) {
+      failure = err;
+    }
+    await step('flag-clear', () => page.evaluate(flag => sessionStorage.removeItem(flag), HIDE_FLAG), 10_000).catch(() => {});
+    if (appPid) {
+      const exitRows = await step('exit-evidence', () => androidFailureShell(`dumpsys activity exit-info ${PKG}`), 20_000)
+        .then(raw => parseApplicationExits(raw, 32)).catch(() => null);
+      const { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass } =
+        classifyAndroidDependencyDeath(exitRows, appPid);
+      processExit = { exitMatched, isDependencyDeath, dependencyKind, providerClass, dyingProcessClass };
+    }
+    if (failure) {
+      throw new Error(`${String(failure?.message ?? failure).slice(0, 1500)}; SF04 process exit: ${JSON.stringify(processExit)}`);
+    }
+    const applied = reloads.length === 3 && reloads.every(row => row.blobs > 0 && row.probe.covered)
+      && reloads[1].blobsRendered === 0 && reloads[0].blobsRendered > 0 && reloads[2].blobsRendered > 0;
+    return { design: 'same process ABA warm reloads; auth-blob layers hidden from document start in B',
+      applied, reloads, processExit, probeMalformed: timeline?.malformed ?? null };
   });
 
   peerSock.close();

@@ -236,7 +236,7 @@ test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () 
 
 test('#209 SF03 is a same-process ABA run last, bounded, verified and records its own exit', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const sf03 = source.slice(source.indexOf("await measure('SF03'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  const sf03 = source.slice(source.indexOf("await measure('SF03'"), source.indexOf("await measure('SF04'"));
   // After every product verdict, exit checkpoint and EX01/EX02 (6179ee0e: a
   // kill inside SF03 was charged to PD01).
   for (const earlier of ["await check('PD01'", "productExitCheckpoint('final')", "await measure('SF02'", 'EX02 independent']) {
@@ -251,12 +251,10 @@ test('#209 SF03 is a same-process ABA run last, bounded, verified and records it
   assert.match(sf03, /windows\[1\]\.reduceMatches && windows\[1\]\.blobsAnimated === 0/);
   assert.match(sf03, /row\.probe\.covered/);
   assert.match(sf03, /classifyAndroidDependencyDeath\(exitRows, appPid\)/);
-  // Every device/page wait is time-bounded (the first run hung for 55 min);
-  // the sign-out sequence awaits inside its own bounded step.
-  const signOut = sf03.indexOf("step('sign-out', async () => {");
-  assert.ok(signOut > 0);
-  const unbounded = sf03.slice(0, signOut) + sf03.slice(sf03.indexOf('}, 60_000);', signOut));
-  assert.doesNotMatch(unbounded, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.evaluate|page\.emulateMedia|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
+  // Every device/page wait is time-bounded (the first run hung for 55 min).
+  assert.match(sf03, /const step = boundedStage\('SF03'\);/);
+  assert.match(sf03, /step\('sign-out', \(\) => signOutToAuthScreen\('SF03'\), 60_000\)/);
+  assert.doesNotMatch(sf03, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.evaluate|page\.emulateMedia|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
   assert.doesNotMatch(sf03, /assert\(/);
 });
 
@@ -276,4 +274,22 @@ test('#209 SF03 windows count stalls by start and refuse an uncovered window', (
   assert.equal(stallsInWindow(timeline, t0 + 15000, t0 + 25000).stalls, 1);
   assert.equal(stallsInWindow(timeline, t0 + 85000, t0 + 95000).covered, false);
   assert.equal(stallsInWindow(timeline, t0 + 10, t0 + 5).available, false);
+});
+
+test('#209 SF04 is a same-process warm-reload ABA, verified per reload, bounded and run last', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const sf04 = source.slice(source.indexOf("await measure('SF04'"), source.indexOf('peerSock.close();\n}\n\nmain()'));
+  assert.ok(source.indexOf("await measure('SF04'") > source.indexOf("await measure('SF03'"));
+  assert.match(sf04, /\['normal-a', false\], \['blobs-hidden', true\], \['normal-b', false\]/);
+  // Hidden from document start, only while the flag is set; the flag is always cleared.
+  assert.match(sf04, /page\.addInitScript\(flag => \{[^]*sessionStorage\.getItem\(flag\) !== '1'[^]*\.auth-blob\{display:none!important\}/);
+  assert.match(sf04, /step\('flag-clear', \(\) => page\.evaluate\(flag => sessionStorage\.removeItem\(flag\), HIDE_FLAG\)/);
+  // Applied only when the page proves the condition of every reload.
+  assert.match(sf04, /reloads\[1\]\.blobsRendered === 0 && reloads\[0\]\.blobsRendered > 0 && reloads\[2\]\.blobsRendered > 0/);
+  assert.match(sf04, /row\.probe\.covered/);
+  assert.match(sf04, /classifyAndroidDependencyDeath\(exitRows, appPid\)/);
+  assert.match(sf04, /const step = boundedStage\('SF04'\);/);
+  assert.doesNotMatch(sf04, /settings (put|delete)/);
+  assert.doesNotMatch(sf04, /^\s*(?:[a-zA-Z]+ = |const [a-zA-Z]+ = )?await (platform\.coldLaunch|attachPage|page\.[a-zA-Z]+|until|sh|androidFailureShell|deviceClockOrigin|authVisible)\(/m);
+  assert.doesNotMatch(sf04, /assert\(/);
 });

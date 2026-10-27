@@ -27,7 +27,7 @@ test('summary CLI rejects missing, malformed and structurally empty evidence wit
 
 test('verdict accepts the complete native inventory without converting measurements to PASS', () => {
   assert.deepEqual(assessSuiteEvidence(completeProduct(), { expectedCommit: commit }), { status: 'PASS', reason: null });
-  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 10); // #209 adds SF01, SF02 and SF03 (measurements only)
+  assert.equal(PRODUCT_CHECKS.length, 36); assert.equal(PRODUCT_MEASUREMENTS.length, 11); // #209 adds SF01-SF04 (measurements only)
 });
 
 test('every omitted, failed, skipped or measurement-only mandatory check is rejected', () => {
@@ -47,10 +47,10 @@ test('every omitted, failed, skipped or measurement-only mandatory check is reje
 test('independent acceptance inventory matches all declared product checks and measurements', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const product = source.slice(source.indexOf('async function main('), source.indexOf('  // EX01 runs AFTER'));
-  // After EX01/EX02 only the declared #209 SF03 experiment may run, and never a check.
+  // After EX01/EX02 only the declared #209 SF03/SF04 experiments may run, and never a check.
   const tail = source.slice(source.indexOf('  // EX01 runs AFTER'), source.indexOf('\nmain()\n'));
   assert.deepEqual([...tail.matchAll(/await check\('([A-Z0-9-]+)'/g)].map(m => m[1]), []);
-  assert.deepEqual([...tail.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]), ['SF03']);
+  assert.deepEqual([...tail.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]), ['SF03', 'SF04']);
   assert.deepEqual([...product.matchAll(/await check\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(), [...PRODUCT_CHECKS].sort());
   assert.deepEqual([...`${product}${tail}`.matchAll(/await measure\('([A-Z0-9-]+)'/g)].map(m => m[1]).sort(),
     [...PRODUCT_MEASUREMENTS].sort());
