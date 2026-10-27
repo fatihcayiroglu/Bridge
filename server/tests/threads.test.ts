@@ -17,7 +17,10 @@ jest.mock('../db/index', () => {
   return db;
 });
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { messages: () => (_req: unknown, _res: unknown, next: () => void) => next() },
+  limits: {
+    messages: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    moderation: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  },
   rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 jest.mock('../lib/notifications', () => ({ processNotifications: jest.fn().mockResolvedValue(undefined) }));

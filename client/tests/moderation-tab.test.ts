@@ -50,9 +50,9 @@ vi.mock('../js/core/globals.js', () => ({ getAPI: () => '' }));
 vi.mock('../js/core/bridge-registry.js', () => ({
   BridgeRegistry: {
     has:  (k: string) => k in registryMap,
-    call: (k: string) => {
+    call: (k: string, ...args: unknown[]) => {
       const v = registryMap[k];
-      return typeof v === 'function' ? (v as () => unknown)() : v;
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown)(...args) : v;
     },
     register: (k: string, fn: unknown) => { registryMap[k] = fn; },
     unregister: (k: string) => { delete registryMap[k]; },
@@ -640,6 +640,48 @@ describe('rapor kuyruğu — raporlanan içerik', () => {
     const [file, cut] = [...document.querySelectorAll('.mod-report-content')].map(n => n.textContent ?? '');
     expect(file).toContain(t('moderation_report_attachment', undefined, { name: 'proof.png' }));
     expect(cut).toContain(t('moderation_report_truncated'));
+  });
+
+  // P7 B5 (093): a thread reply's report carries its thread. The reply is not in
+  // the channel's message list, so the jump opens the channel and then the thread.
+  it('a thread reply is labelled; its jump opens the channel, then the thread', async () => {
+    const navigate = vi.fn(async () => true);
+    const openThread = vi.fn();
+    registryMap.navigateToChannel = navigate;
+    registryMap.openExistingThread = openThread;
+    apiMock = withReports([reportRow({ threadId: 't1', currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('.mod-report-kind')?.textContent).toBe(t('moderation_report_thread_reply')));
+    jump()!.click();
+    await waitFor(() => expect(openThread).toHaveBeenCalledWith('t1'));
+    expect(navigate.mock.calls[0]!.slice(0, 2)).toEqual(['c1', undefined]);
+  });
+
+  it('a channel message report has no thread label and jumps straight to the message', async () => {
+    const navigate = vi.fn(async () => true);
+    const openThread = vi.fn();
+    registryMap.navigateToChannel = navigate;
+    registryMap.openExistingThread = openThread;
+    apiMock = withReports([reportRow({ currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    expect(document.querySelector('.mod-report-kind')).toBeNull();
+    jump()!.click();
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    expect(navigate.mock.calls[0]!.slice(0, 2)).toEqual(['c1', 'm1']);
+    expect(openThread).not.toHaveBeenCalled();
+  });
+
+  it('a thread jump stops, and says so, when the channel cannot be opened', async () => {
+    const openThread = vi.fn();
+    registryMap.navigateToChannel = vi.fn(async () => false);
+    registryMap.openExistingThread = openThread;
+    apiMock = withReports([reportRow({ threadId: 't1', currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(jump()).toBeTruthy());
+    jump()!.click();
+    await waitFor(() => expect(document.body.textContent).toContain(t('ui_raporlanan_mesaj_su_anda_acilamiyor')));
+    expect(openThread).not.toHaveBeenCalled();
   });
 
   it('the snapshot author name wins over the current one; a cleared snapshot says so', async () => {

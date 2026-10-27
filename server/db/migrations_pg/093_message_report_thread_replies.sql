@@ -1,0 +1,19 @@
+-- 093: P7 B5 — thread replies are reportable.
+--
+-- Only channel messages had a report path. A thread reply lives in
+-- thread_messages, in the same server and channel, and is moderated by the same
+-- people, so it uses the same report row:
+--   "threadId" NULL     — "messageId" is a channel message (messages), as before;
+--   "threadId" not NULL — "messageId" is a reply in that thread (thread_messages).
+-- Everything else is unchanged:
+--   · 085's evidence snapshot;
+--   · 088's retention past channel expiry or deletion (keyed by "channelId");
+--   · 090's recorded channel visibility;
+--   · the open-report unique index on ("reporterId", "messageId"). Both tables
+--     key rows by random v4 UUIDs, so ids do not collide across them in practice.
+--
+-- No foreign key, as with "messageId" since 085: deleting a reply or its thread
+-- must not delete the report filed about it.
+-- Adding a nullable column with no default or CHECK is a catalog-only change. It
+-- does not scan or rewrite message_reports.
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "threadId" TEXT;

@@ -647,6 +647,10 @@ test('message reports are durable, permission-scoped, duplicate-safe and idempot
   const messages = read('server/routes/messages.ts');
   const moderation = read('server/routes/moderation.ts');
   const renderer = read('client/js/core/MessageRenderer.svelte');
+  const reportDialog = read('client/js/core/ReportDialog.svelte');
+  const threadPanel = read('client/js/core/ThreadPanel.svelte');
+  const threads = read('server/routes/threads.ts');
+  const reportRequest = read('server/lib/reportRequest.ts');
   const modUi = read('client/js/core/server-settings/tabs/ModerationTab.svelte');
 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS message_reports/);
@@ -659,6 +663,13 @@ test('message reports are durable, permission-scoped, duplicate-safe and idempot
   assert.match(messages, /PERMS\.READ_HISTORY/);
   assert.match(messages, /Message not available/);
   assert.match(messages, /MessageReports\.create/);
+  // P7 B5 (093): thread replies use the same reasons, bound, 404 and store.
+  assert.match(threads, /router\.post\('\/:threadId\/messages\/:messageId\/report'/);
+  assert.match(threads, /PERMS\.READ_HISTORY/);
+  assert.match(threads, /Message not available/);
+  assert.match(threads, /MessageReports\.create\(\{[\s\S]{0,80}threadId/);
+  for (const route of [messages, threads]) assert.match(route, /parseReportRequest\(req\.body\)/);
+  assert.match(reportRequest, /REPORT_DETAIL_MAX = 500/);
 
   assert.match(moderation, /router\.get\('\/reports'/);
   // P7 D2 x B5 (migrations 088/090): a live channel's permissions decide (VIEW_CHANNELS
@@ -674,7 +685,10 @@ test('message reports are durable, permission-scoped, duplicate-safe and idempot
   assert.match(moderation, /result\.kind === 'updated'/);
 
   assert.match(renderer, /Mesajı raporla/);
-  assert.match(renderer, /maxlength="500"/);
+  // One report form (P7 B5): channel messages and thread replies share it, and its
+  // note limit matches the server's REPORT_DETAIL_MAX.
+  assert.match(reportDialog, /maxlength="500"/);
+  for (const surface of [renderer, threadPanel]) assert.match(surface, /<ReportDialog /);
   assert.match(modUi, /t\(['"]moderation_message_reports['"]/);
   assert.match(modUi, /t\(['"]pin_jump['"]/);
   assert.match(modUi, /resolveReport\(report, 'dismissed'\)/);

@@ -6,7 +6,7 @@ import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router = express.Router({ mergeParams: true });
 
 const MAX_MEMBER_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
-import { Auth, Users, Members, Servers, Messages, Channels, Roles, ChannelPermissions, MessageReports } from '../db/repositories';
+import { Auth, Users, Members, Servers, Messages, Channels, Roles, ChannelPermissions, MessageReports, Threads } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import type { JwtPayload } from '../middleware/auth';
 import { getMemberPerms, hasPermission, canActOn, PERMS } from './roles';
@@ -181,8 +181,12 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
     const channelId = String(row.channelId ?? '');
     const channel = await reportChannel(serverId, channelId);
     if (!await canModerateReport(_u.id, serverId, channelId, channel.live, row)) continue;
+    // P7 B5 (093): a thread reply's current row is in thread_messages.
+    const threadId = typeof row.threadId === 'string' && row.threadId ? row.threadId : null;
     const [message, reporter] = await Promise.all([
-      channel.live ? Messages.findById(String(row.messageId ?? '')) : Promise.resolve(null),
+      !channel.live ? Promise.resolve(null)
+        : threadId ? Threads.findMessageInThread(threadId, String(row.messageId ?? ''))
+          : Messages.findById(String(row.messageId ?? '')),
       Users.findById(String(row.reporterId ?? '')),
     ]);
     // P7 B5 (#336): the snapshot taken at report time is the reported content.
@@ -192,7 +196,7 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
     if (!message && evidence.state !== 'captured') continue;
     const evidenceName = typeof evidence.authorName === 'string' && evidence.authorName ? evidence.authorName : null;
     visible.push({
-      id: String(row._id), messageId: String(row.messageId), channelId,
+      id: String(row._id), messageId: String(row.messageId), channelId, threadId,
       reason: String(row.reason ?? 'other'), detail: String(row.detail ?? ''),
       createdAt: Number(row.createdAt ?? 0),
       // `available: false`: the channel expired or was deleted; only the evidence remains.

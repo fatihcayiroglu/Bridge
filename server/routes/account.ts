@@ -91,7 +91,7 @@ const EXPORT_SOURCES: Array<{ key: string; table: string; column: string; column
   // REPORTED author's message and name — another person's data, shown only to
   // the channel's moderators — so it is not part of the reporter's export.
   { key: 'messageReports',     table: 'message_reports',    column: 'reporterId',
-    columns: ['_id', 'serverId', 'channelId', 'messageId', 'reporterId', 'reason', 'detail',
+    columns: ['_id', 'serverId', 'channelId', 'messageId', 'threadId', 'reporterId', 'reason', 'detail',
               'status', 'createdAt', 'resolvedAt', 'resolvedBy', 'resolution'] },
 ];
 

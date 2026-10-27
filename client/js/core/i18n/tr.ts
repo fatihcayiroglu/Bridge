@@ -2216,6 +2216,7 @@ const translations: Record<string, string> = {
   "moderation_report_deleted_since": "Raporlandıktan sonra sohbetten kaldırıldı — raporlanan hâli gösteriliyor.",
   "moderation_report_removed": "Mesaj artık yok — raporlanan hâli gösteriliyor.",
   "moderation_report_channel_gone": "Kanal artık yok",
+  "moderation_report_thread_reply": "Thread yanıtı",
   "moderation_report_no_snapshot": "Bridge kopya saklamaya başlamadan önce raporlandı — mesajın şimdiki hâli gösteriliyor.",
   "moderation_report_now": "Şimdi: {text}",
   "moderation_report_truncated": "(kısaltıldı)",
