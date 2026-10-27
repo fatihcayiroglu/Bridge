@@ -11,9 +11,11 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.bridge.nativepilot"
+      "package": "com.bridge.nativepilot",
+      "allowBackup": false
     },
     "plugins": [
+      ["expo-sqlite", { "useSQLCipher": true }],
       [
         "expo-secure-store",
         {
