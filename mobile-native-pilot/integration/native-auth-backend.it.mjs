@@ -24,6 +24,7 @@ import { createNativeCredentialPort } from '../src/native-credential-port.mjs';
 import { createBridgeReadApi } from '../src/bridge-read-api.mjs';
 import { createBridgeRealtime } from '../src/bridge-realtime.mjs';
 import { createOutbox } from '../src/outbox.mjs';
+import { createMessagingController } from '../src/messaging-controller.mjs';
 import { io as socketIo } from 'socket.io-client';
 
 const ORIGIN = process.env.BRIDGE_IT_ORIGIN;
@@ -410,6 +411,25 @@ async function createOutboxCommunity(s) {
   const channel = (await s.read.listChannels(server.id))[0]; assert.ok(channel);
   return { serverId: server.id, channelId: channel.id };
 }
+
+test('messaging screen controller: real session selects a channel, sends and reconciles persisted history', { timeout: 60000 }, async () => {
+  const session = await signIn(await browserRegister('screen'));
+  const destination = await createOutboxCommunity(session);
+  const rt = realtimeFor(session);
+  const controller = createMessagingController({ ...session, realtime: rt, createId: () => crypto.randomUUID() });
+  const content = `controller-proof-${crypto.randomBytes(8).toString('hex')}`;
+  try {
+    await controller.start(); await online(rt);
+    await controller.selectServer(destination.serverId);
+    await controller.selectChannel(destination.channelId);
+    await controller.send(content);
+    const state = controller.snapshot();
+    assert.equal(state.drafts.length, 1); assert.equal(state.drafts[0].status, 'confirmed');
+    const persisted = state.messages.filter(message => message.content === content);
+    assert.equal(persisted.length, 1);
+    assert.equal(String(persisted[0]._id), state.drafts[0].messageId);
+  } finally { controller.dispose(); await session.coordinator.signOut(); }
+});
 
 test('outbox: offline draft, persisted send with deliberately lost ACK, reconnect and same-id replay yield one history row', { timeout: 60000 }, async () => {
   const a = await browserRegister('oback');

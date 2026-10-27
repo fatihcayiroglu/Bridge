@@ -1,7 +1,7 @@
 // The pilot's session wiring: one coordinator per app process, over the native
 // Keychain/Keystore port, the native token endpoints, system-browser sign-in
-// (Custom Tabs / ASWebAuthenticationSession) and the read API. No screen uses it
-// yet, and constructing it does not read storage or open a browser.
+// (Custom Tabs / ASWebAuthenticationSession) and the read API. Configured pilot
+// screens use it; constructing it does not read storage or open a browser.
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { io } from 'socket.io-client';

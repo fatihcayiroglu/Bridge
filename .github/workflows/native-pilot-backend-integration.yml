@@ -117,7 +117,7 @@ jobs:
             import {readFileSync} from "node:fs";
             import {classifyNodeRun} from "./mobile-native-pilot/scripts/mutation-result.mjs";
             const result=classifyNodeRun({stdout:readFileSync("integration-evidence/native-backend.tap","utf8"),status:0});
-            if(result.outcome!=="SURVIVED" || result.counts.tests!==15) throw Error(JSON.stringify(result));
+            if(result.outcome!=="SURVIVED" || result.counts.tests!==16) throw Error(JSON.stringify(result));
             console.log(JSON.stringify(result.counts));'
       - name: Independent database persisted-row and scoped-uniqueness proof
         run: |
