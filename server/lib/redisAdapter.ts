@@ -1181,6 +1181,20 @@ export interface HealthCheckResult {
   clusterWarning?: string;
 }
 
+function redisHealthUrl(raw: string | null): string | undefined {
+  try {
+    const url = new URL(raw || '');
+    if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') return undefined;
+    if (url.username || url.password) url.username = '***';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
 async function healthCheck(): Promise<HealthCheckResult> {
   if (!_isRedisAvailable || !_pubClient) {
     return {
@@ -1213,7 +1227,7 @@ async function healthCheck(): Promise<HealthCheckResult> {
       singleton:  true,
       latencyMs,
       usedMemory: usedMemoryMatch?.[1]?.trim() || 'unknown',
-      url:        (REDIS_URL || '').replace(/:[^@]+@/, ':***@'),
+      url:        redisHealthUrl(REDIS_URL),
     };
   } catch (err) {
     return { redis: false, error: err instanceof Error ? err instanceof Error ? err.message : String(err) : String(err) };
