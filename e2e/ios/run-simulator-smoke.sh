@@ -157,6 +157,11 @@ if [ -n "$launched_pid" ] && [ "$launched" = 1 ]; then
   kill "$LOGGER" 2>/dev/null || true
   step "OS log lines about the URL hand-off"
   grep -i -E "Opening URL|open URL with scheme|systemModalAlert|Deactivation reason|application:open" "$OSLOG" | tail -30 | cut -c1-260 || true
+  # Which system service raised a modal for the app (service and verdict names
+  # only; these lines carry the bundle id, never account data).
+  step "system services that prompted for the app"
+  grep -E "^[^ ]+ [^ ]+ [A-Za-z]+ +(tccd|nehelper|usernotificationsd)\[" "$OSLOG" \
+    | grep -i -E "kTCCService[A-Za-z]*|LocalNetwork|requestAuthorization|prompt" | tail -12 | cut -c1-200 || true
 fi
 # I04 — what iOS itself decides: LaunchServices routes the scheme to Bridge (not to another app).
 routed=$(grep -E "Opening URL \(com\.bridge\.app://[^)]*\) with com\.bridge\.app|requests to open URL with scheme com\.bridge\.app" "${OSLOG:-/dev/null}" 2>/dev/null | head -1 | cut -c1-200)
@@ -171,9 +176,20 @@ fi
 # tap that alert, so without the dispatch line this is UNVERIFIED (never PASS) — and a FAIL if no
 # such alert was shown. The bridge's handling of the URL is covered by mobile/tests/deep-link-scheme
 # and the same JS path on the Android emulator (DL04).
+# Only a modal raised AFTER the URL request can be its confirmation. Run
+# 40495735869 showed one 25 s before the request (at launch) and still counted
+# it here, which turned a missing confirmation into UNVERIFIED.
+url_line=$(grep -n -m1 -E "Opening URL \(com\.bridge\.app://" "${OSLOG:-/dev/null}" 2>/dev/null | cut -d: -f1)
+modal_before=0; modal_after=0
+if [ -n "$url_line" ]; then
+  head -n "$((url_line - 1))" "$OSLOG" | grep -q "systemModalAlert" && modal_before=1
+  tail -n +"$url_line" "$OSLOG" | grep -q "systemModalAlert" && modal_after=1
+fi
 if console | grep -q "Deep link dispatched: navigate:channel"; then
   record PASS I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "bridge dispatch line in the app console"
-elif grep -q "systemModalAlert" "${OSLOG:-/dev/null}" 2>/dev/null; then
+elif [ "$modal_after" = 0 ] && [ "$modal_before" = 1 ]; then
+  record FAIL I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "no dispatch; the only system modal alert was raised before the URL request (e.g. at launch), so it is not the open confirmation"
+elif [ "$modal_after" = 1 ]; then
   record UNVERIFIED I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "iOS showed its open-confirmation alert (systemModalAlert); a headless run cannot accept it — needs a device or UI automation"
 else
   record FAIL I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "no dispatch and no confirmation alert; $(console | grep -i -E 'deep|appUrlOpen' | tail -3 | tr '\n' ' ' | cut -c1-300)"

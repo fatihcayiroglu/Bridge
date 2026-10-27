@@ -1,7 +1,7 @@
 // Unit controls for evidence classification. These are NOT simulator evidence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyNativeOpenConfirmation } from './native-open-confirmation.mjs';
+import { classifySystemAlert, verifyNativeOpenConfirmation } from './native-open-confirmation.mjs';
 
 function scenario(options = {}) {
   const facts = {};
@@ -19,7 +19,13 @@ function scenario(options = {}) {
           if (options.preexisting || (lookups > 1 && !options.noAlert)) return [{ ELEMENT: 'native-alert' }];
           return [];
         }
-        if (route === '/alert/text') return options.wrongApp ? 'Open in another app?' : 'Open in “Bridge”?';
+        if (route === '/alert/text') {
+          // A launch-time alert the element query does not report.
+          if (options.hiddenAlert) return options.hiddenAlert;
+          const shown = options.preexisting || (lookups > 1 && !options.noAlert);
+          if (!shown) throw new Error('no such alert');
+          return options.wrongApp ? 'Open in another app?' : 'Open in “Bridge”?';
+        }
         throw new Error('Unexpected native command');
       },
       native: async (name, args) => {
@@ -66,6 +72,34 @@ test('requires observed native confirmation and explicit Open before same-proces
   assert(!serialized.includes('private-target-id'));
   assert(!serialized.includes('com.bridge.app'));
   assert(!serialized.includes('Open in'));
+});
+
+test('classifies system alerts into bounded categories only', () => {
+  assert.equal(classifySystemAlert('Open in “Bridge”?'), 'open-confirmation-bridge');
+  assert.equal(classifySystemAlert('Open in another app?'), 'open-confirmation-other');
+  assert.equal(classifySystemAlert('“Bridge” Would Like to Send You Notifications'), 'notifications');
+  assert.equal(classifySystemAlert('“Bridge” would like to find and connect to devices on your local network.'), 'local-network');
+  assert.equal(classifySystemAlert('“Bridge” Would Like to Access the Microphone'), 'permission-other');
+  assert.equal(classifySystemAlert('Something private: alice@example.com'), 'other');
+  assert.equal(classifySystemAlert(''), null);
+  assert.equal(classifySystemAlert(undefined), null);
+});
+
+test('a hidden launch-time alert fails before the OS request and records only its category', async () => {
+  const run = scenario({ hiddenAlert: '“Bridge” Would Like to Send You Notifications' });
+  await assert.rejects(verifyNativeOpenConfirmation(run.deps), /notifications system alert was already up/);
+  assert.equal(run.facts.systemAlertBeforeRequest, 'notifications');
+  assert(!run.actions.some(a => a[0] === 'OS-openurl'));
+  assert(!run.actions.some(a => a[0] === 'alert'));
+  assert(!JSON.stringify(run.facts).includes('Would Like'));
+});
+
+test('a missing confirmation records the category of whatever alert is up, without acting on it', async () => {
+  const run = scenario({ noAlert: true });
+  await assert.rejects(verifyNativeOpenConfirmation(run.deps), /native OS open-confirmation alert/);
+  assert.equal(run.facts.systemAlertBeforeRequest, null);
+  assert.equal(run.facts.systemAlertAtTimeout, null);
+  assert(!run.actions.some(a => a[0] === 'alert'));
 });
 
 for (const [name, options] of [
