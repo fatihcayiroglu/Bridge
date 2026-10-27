@@ -23,6 +23,7 @@ function deps(overrides: Partial<NativeDeepLinkDeps> = {}): NativeDeepLinkDeps {
     get: vi.fn(async () => json([{ _id: 'channel-secret' }])),
     toast: vi.fn(),
     signedIn: () => true,
+    sessionOwner: () => 'test-user',
     openDm: vi.fn(async () => true),
     openGroupDm: vi.fn(async () => true),
     ...overrides,
