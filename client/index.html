@@ -32,6 +32,17 @@
   }
   var root = document.documentElement;
   root.setAttribute('data-theme', theme);
+  // #209: with a stored session the sign-in screen is not the first thing to
+  // paint. Its three animated glow layers cost about 5 viewports of software
+  // compositing per frame on Android cold start, and a signed-in user only
+  // saw it flash. auth-compat clears this when the session check resolves;
+  // the fallback reveals the sign-in screen if the app never gets that far.
+  try {
+    if (localStorage.getItem('token') || localStorage.getItem('bridge_token')) {
+      root.setAttribute('data-session', 'restoring');
+      setTimeout(function () { root.removeAttribute('data-session'); }, 15000);
+    }
+  } catch (e) { /* depolama kapalı — oturum yok sayılır */ }
   root.style.colorScheme = theme === 'light' ? 'light' : 'dark';
   // <body> henüz yok; hazır olur olmaz aynı sözleşme oraya da yazılır.
   document.addEventListener('DOMContentLoaded', function () {
