@@ -11,6 +11,8 @@ export type BridgeReadCode =
   | 'NETWORK_FAILURE'
   | 'BAD_RESPONSE'
   | 'FORBIDDEN'
+  | 'NOT_FOUND'
+  | 'RATE_LIMITED'
   | 'SERVER_UNAVAILABLE'
   | 'REQUEST_REJECTED';
 

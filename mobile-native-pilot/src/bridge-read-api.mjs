@@ -41,7 +41,11 @@ function requiredList(value) {
 function classifyStatus(status) {
   if (status === 401) return 'AUTH_REQUIRED';
   if (status === 403) return 'FORBIDDEN';
+  // GET /api/me answers 404 when the account no longer exists (deleted).
+  if (status === 404) return 'NOT_FOUND';
   if (status === 409) return 'SESSION_CHANGED';
+  // A rate limit says nothing about the session; callers must not treat it as a rejection.
+  if (status === 429) return 'RATE_LIMITED';
   if (status >= 500) return 'SERVER_UNAVAILABLE';
   return 'REQUEST_REJECTED';
 }
