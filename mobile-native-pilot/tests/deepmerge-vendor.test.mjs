@@ -6,16 +6,24 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Install-independent: the unit-test job runs without `npm ci`, so the vendored file is
+// loaded by path and the wiring is proven from the committed lockfile `npm ci` installs.
 const require = createRequire(import.meta.url);
-const SOURCE = process.env.DEEPMERGE_UNDER_TEST ?? require.resolve('deepmerge');
+const SOURCE = process.env.DEEPMERGE_UNDER_TEST ?? path.resolve('vendor/deepmerge/dist/cjs.js');
 const deepmerge = require(SOURCE);
 
-test('@expo/config loads the vendored copy, pinned by the override', () => {
-  const fromExpoConfig = createRequire(require.resolve('@expo/config/package.json')).resolve('deepmerge');
-  assert.equal(fs.realpathSync(fromExpoConfig), fs.realpathSync(path.resolve('vendor/deepmerge/dist/cjs.js')));
+test('the lockfile installs only the vendored copy, for @expo/config too', () => {
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   assert.equal(pkg.overrides.deepmerge, '$deepmerge');
   assert.equal(pkg.dependencies.deepmerge, 'file:vendor/deepmerge');
+  const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')).packages;
+  const installs = Object.keys(lock).filter((k) => /(^|\/)node_modules\/deepmerge$/.test(k));
+  assert.deepEqual(installs, ['node_modules/deepmerge'], 'one deepmerge install, hoisted (no nested registry copy)');
+  assert.deepEqual(lock['node_modules/deepmerge'], { resolved: 'vendor/deepmerge', link: true });
+  assert.equal(lock['vendor/deepmerge'].version, '4.3.1-bridge.1');
+  assert.ok(!JSON.stringify(lock).includes('deepmerge/-/deepmerge-'), 'no registry tarball of deepmerge');
+  // @expo/config declares deepmerge and has no nested copy, so it resolves the hoisted link.
+  assert.ok(lock['node_modules/@expo/config'].dependencies.deepmerge);
 });
 
 test('GHSA-gcqx-w48m-w2h4: a "__proto__" key never becomes the prototype of a result', () => {
