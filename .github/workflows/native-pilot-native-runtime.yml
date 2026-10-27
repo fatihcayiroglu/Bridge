@@ -8,6 +8,9 @@ permissions:
 env:
   EXPO_PUBLIC_NATIVE_SELF_TEST: '1'
   CI: '1'
+  # Expo --localhost binds the address returned for localhost. The native
+  # reverse tunnel and readiness probe use IPv4; keep resolution deterministic.
+  NODE_OPTIONS: --dns-result-order=ipv4first
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -38,7 +41,7 @@ jobs:
         run: |
           set -o pipefail
           cd android
-          ./gradlew :app:assembleDebug --no-daemon --max-workers=2 2>&1 | tee ../native-evidence/android-build.log
+          ./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 2>&1 | tee ../native-evidence/android-build.log
           test -s app/build/outputs/apk/debug/app-debug.apk
       - name: Enable runner KVM
         run: sudo chmod 666 /dev/kvm
@@ -105,6 +108,7 @@ jobs:
       - name: Launch built application in real simulator
         run: |
           set -o pipefail
+          node -e 'require("dns").lookup("localhost", (error,address,family)=>{if(error)throw error; console.log({address,family})})' > native-evidence/metro-dns.txt
           xcrun simctl list devices available -j > native-evidence/simulators.json
           udid=$(python3 -c 'import json; d=json.load(open("native-evidence/simulators.json")); print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))')
           xcrun simctl boot "$udid"
