@@ -79,7 +79,13 @@ jobs:
         run: |
           mkdir -p native-evidence
           git rev-parse HEAD > native-evidence/head.txt
+          # First run failed with Xcode 16.4 / Swift 6.1: ExpoModulesJSI's
+          # package manifest requires Swift tools 6.2. Do not patch the vendor
+          # manifest or disable that build; select the compatible installed tool.
+          test -d /Applications/Xcode_26.3.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
           xcodebuild -version > native-evidence/xcode-version.txt
+          swift --version > native-evidence/swift-version.txt
           npm ci --no-fund
           npm audit --audit-level=low
           npx expo prebuild --platform ios --no-install
