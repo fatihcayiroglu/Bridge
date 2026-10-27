@@ -101,9 +101,14 @@ jobs:
           test -n "$workspace"
           xcodebuild -workspace "$workspace" -list -json > native-evidence/schemes.json
           scheme=$(python3 -c 'import json; d=json.load(open("native-evidence/schemes.json")); print(next(s for s in d["workspace"]["schemes"] if s.startswith("Bridge")))')
-          xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-native-ios" CODE_SIGNING_ALLOWED=NO build 2>&1 | tee native-evidence/ios-build.log
+          # Keychain requires signed application identity even in the simulator.
+          # Ad-hoc simulator signing uses no Apple account/certificate/profile.
+          xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-native-ios" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build 2>&1 | tee native-evidence/ios-build.log
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
           test -n "$app"
+          codesign --verify --strict "$app"
+          codesign -d --entitlements :- "$app" > native-evidence/simulator-entitlements.plist
+          python3 -c 'import plistlib; d=plistlib.load(open("native-evidence/simulator-entitlements.plist","rb")); assert d.get("application-identifier"), "SIMULATOR_KEYCHAIN_APPLICATION_IDENTITY_REQUIRED"'
           ditto -c -k --keepParent "$app" native-evidence/BridgeNativePilot-simulator.zip
       - name: Launch built application in real simulator
         run: |
