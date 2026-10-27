@@ -12,6 +12,8 @@ import { createNativeAuthApi } from './native-auth-api.mjs';
 import { createPkceAttempt } from './pkce.mjs';
 import { createSessionCoordinator, type SessionCoordinator, type SessionState } from './session-coordinator.mjs';
 import { pilotNativeCredentialPort } from './expo-credential-port';
+import { openNativeOutboxJournal } from './native-outbox-journal';
+import { createPersistentOutbox, type PersistentOutbox } from './persistent-outbox.mjs';
 
 export type PilotSession = {
   coordinator: SessionCoordinator;
@@ -21,6 +23,7 @@ export type PilotSession = {
   read: BridgeReadApi;
   /** Channel messaging over the existing Socket.IO contract; one socket per session epoch. */
   realtime: BridgeRealtime;
+  outbox: PersistentOutbox;
 };
 
 const pkceCrypto = {
@@ -56,5 +59,6 @@ export function createPilotSession(origin: string, redirectUri: string): PilotSe
     const issued = await authApi.exchangeCode(callback);
     return coordinator.signIn(issued);
   }
-  return { coordinator, signInWithBrowser, read, realtime };
+  const outbox = createPersistentOutbox({ coordinator, realtime, createId: () => Crypto.randomUUID(), openJournal: accountId => openNativeOutboxJournal(accountId, origin) });
+  return { coordinator, signInWithBrowser, read, realtime, outbox };
 }

@@ -2,8 +2,8 @@
 // stable-ID retry; reconnect only flushes drafts that have not been attempted.
 import { createOutbox } from './outbox.mjs';
 
-export function createMessagingController({ coordinator, read, realtime, createId }) {
-  const box = createOutbox({ coordinator, realtime, createId });
+export function createMessagingController({ coordinator, read, realtime, createId, outbox }) {
+  const box = outbox ?? createOutbox({ coordinator, realtime, createId });
   const listeners = new Set();
   let disposed = false, sequence = 0;
   let state = { session: coordinator.getState(), connection: realtime.getStatus(), servers: [], channels: [],
@@ -40,6 +40,7 @@ export function createMessagingController({ coordinator, read, realtime, createI
     if (!current(seq, epoch)) return;
     emit(); if (realtime.getStatus() === 'online') await history();
   }
+  const unsubscribeOutbox = box.subscribe?.(emit) ?? (() => {});
   const unsubscribeSession = coordinator.subscribe(session => {
     if (disposed) return;
     if (session.epoch !== state.session.epoch || session.phase !== 'authenticated') {
@@ -53,7 +54,7 @@ export function createMessagingController({ coordinator, read, realtime, createI
     state.connection = connection; emit();
     if (connection === 'online') {
       if (state.channelId) realtime.joinChannel(state.channelId);
-      void flush();
+      void flush().catch(() => { if (!disposed) error(); });
     }
   });
   const unsubscribeMessage = realtime.onMessage(message => {
@@ -63,7 +64,7 @@ export function createMessagingController({ coordinator, read, realtime, createI
   return Object.freeze({
     snapshot,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async start() { if (disposed) return; realtime.start(); await loadServers(); },
+    async start() { if (disposed) return; if (coordinator.getSession()) await box.ready?.(); if (disposed) return; realtime.start(); await loadServers(); },
     async selectServer(serverId) {
       const seq = ++sequence, epoch = coordinator.getSession()?.epoch;
       state = { ...state, serverId, channelId: null, channels: [], messages: [], error: null }; emit();
@@ -78,7 +79,7 @@ export function createMessagingController({ coordinator, read, realtime, createI
     },
     async send(content) {
       if (!state.serverId || !state.channelId) throw new Error('CHANNEL_REQUIRED');
-      box.enqueue({ serverId: state.serverId, channelId: state.channelId, content }); emit(); await flush();
+      await box.enqueue({ serverId: state.serverId, channelId: state.channelId, content }); emit(); await flush();
     },
     async retry(id) {
       const row = box.snapshot().find(row => row.id === id);
@@ -89,6 +90,6 @@ export function createMessagingController({ coordinator, read, realtime, createI
       if (current(seq, epoch)) { emit(); await history(); }
     },
     refresh: history,
-    dispose() { disposed = true; sequence++; unsubscribeSession(); unsubscribeStatus(); unsubscribeMessage(); box.dispose(); realtime.dispose(); listeners.clear(); },
+    dispose() { disposed = true; sequence++; unsubscribeSession(); unsubscribeStatus(); unsubscribeMessage(); unsubscribeOutbox(); box.dispose(); realtime.dispose(); listeners.clear(); },
   });
 }

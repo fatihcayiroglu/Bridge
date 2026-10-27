@@ -49,7 +49,7 @@ function ConnectedPilot({ origin }: { origin: string }) {
   return <SafeAreaView style={styles.root}>
     <Text style={styles.title}>Bridge</Text>
     <Text style={styles.muted}>Experimental native pilot • {state.connection === 'online' ? 'Connected' : 'Offline / reconnecting'}</Text>
-    <Text style={styles.muted}>Outbox is memory-only. Closing the app loses queued drafts.</Text>
+    <Text style={styles.muted}>Encrypted local outbox pilot. Unconfirmed sends require an explicit retry.</Text>
     {(notice || state.error) && <Text accessibilityRole="alert" style={styles.error}>{notice ?? 'Could not refresh messages. Try again.'}</Text>}
     {state.session.phase !== 'authenticated' ? <View><Text style={styles.text}>Session: {state.session.phase}</Text>
       <Action label="Sign in with your browser" disabled={busy} onPress={() => void perform(() => runtime.session.signInWithBrowser())} /></View> : <>
