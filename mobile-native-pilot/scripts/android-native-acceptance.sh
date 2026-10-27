@@ -38,11 +38,13 @@ function assert_native_marker() {
 adb shell am start -W -n com.bridge.nativepilot/.MainActivity > native-evidence/first-launch.txt
 assert_native_marker NATIVE_SQLCIPHER_WRITE_PASS native-evidence/first-ui.xml
 grep -q NATIVE_SECURE_STORE_ROUNDTRIP_PASS native-evidence/first-ui.xml
+grep -q NATIVE_RECEIPT_COMPACTION_PASS native-evidence/first-ui.xml
 adb shell am force-stop com.bridge.nativepilot
 adb shell am start -W -n com.bridge.nativepilot/.MainActivity > native-evidence/restart-launch.txt
 assert_native_marker NATIVE_SQLCIPHER_RECOVERY_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_SECURE_STORE_RESTORE_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_ACCOUNT_ISOLATION_PASS native-evidence/restart-ui.xml
+grep -q NATIVE_RECEIPT_COMPACTION_RESTORE_PASS native-evidence/restart-ui.xml
 adb shell screencap -p /sdcard/native-acceptance.png
 adb pull /sdcard/native-acceptance.png native-evidence/android.png
 adb logcat -d > native-evidence/android-logcat.txt
