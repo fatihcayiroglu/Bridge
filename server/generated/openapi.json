@@ -445,6 +445,220 @@
         }
       }
     },
+    "/refresh/native-authorize": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Native sign-in consent (browser form POST, code + PKCE)",
+        "description": "Top-level form POST from the Bridge web page, authenticated only by the httpOnly `bridge_refresh` cookie. Answers with a 303 redirect to the exact allowlisted app address (NATIVE_AUTH_REDIRECT_URIS) carrying a single-use, 60 s authorization code and the echoed state. Never returns the code in a body. See docs/NATIVE_AUTH.md.",
+        "operationId": "nativeAuthorize",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "redirect_uri",
+                  "code_challenge",
+                  "code_challenge_method",
+                  "state"
+                ],
+                "properties": {
+                  "redirect_uri": {
+                    "type": "string"
+                  },
+                  "code_challenge": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{43}$"
+                  },
+                  "code_challenge_method": {
+                    "type": "string",
+                    "enum": [
+                      "S256"
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{16,128}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "303": {
+            "description": "Redirect to the app with code and state"
+          },
+          "400": {
+            "description": "Unknown redirect address or malformed request (never redirects)"
+          },
+          "401": {
+            "description": "No valid browser session"
+          },
+          "403": {
+            "description": "Not a same-origin submission"
+          },
+          "503": {
+            "description": "Native sign-in not configured or store unavailable"
+          }
+        }
+      }
+    },
+    "/native-auth/token": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Exchange a native authorization code (PKCE S256) for tokens",
+        "operationId": "nativeAuthToken",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grant_type",
+                  "code",
+                  "code_verifier",
+                  "redirect_uri"
+                ],
+                "properties": {
+                  "grant_type": {
+                    "type": "string",
+                    "enum": [
+                      "authorization_code"
+                    ]
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "code_verifier": {
+                    "type": "string",
+                    "minLength": 43,
+                    "maxLength": 128
+                  },
+                  "redirect_uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Access token, rotating refresh token and the account (no cookies, no-store)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token_type": {
+                      "type": "string",
+                      "enum": [
+                        "Bearer"
+                      ]
+                    },
+                    "access_token": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "integer"
+                    },
+                    "refresh_token": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request or invalid_grant (the code is consumed by any attempt)"
+          },
+          "503": {
+            "description": "temporarily_unavailable"
+          }
+        }
+      }
+    },
+    "/native-auth/refresh": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Rotate a native refresh token",
+        "description": "Same rotation and reuse detection as /refresh, but the successor is returned in the body and cookies are neither read nor set.",
+        "operationId": "nativeAuthRefresh",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "refresh_token"
+                ],
+                "properties": {
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 512
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New access token and the rotated refresh token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token_type": {
+                      "type": "string",
+                      "enum": [
+                        "Bearer"
+                      ]
+                    },
+                    "access_token": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "integer"
+                    },
+                    "refresh_token": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request"
+          },
+          "401": {
+            "description": "invalid_grant with reason reuse | expired | revoked | not_found | user_not_found"
+          },
+          "503": {
+            "description": "temporarily_unavailable (the token may or may not have been consumed)"
+          }
+        }
+      }
+    },
     "/logout": {
       "post": {
         "tags": [
