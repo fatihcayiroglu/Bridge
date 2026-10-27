@@ -36,11 +36,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.19.0'
-      - name: Install isolated pilot dependencies (lockfile pending)
-        run: npm install --no-fund
+      - name: Install isolated pilot dependencies from the committed lockfile
+        run: npm ci --no-fund
       - name: Type-check RN prototype
         run: npm run typecheck
       - name: Export Android JS bundle (not APK)
         run: npx expo export --platform android --output-dir ./ci-export-android
       - name: Export iOS JS bundle (not IPA)
         run: npx expo export --platform ios --output-dir ./ci-export-ios
+
+  dependency-audit:
+    # Gating and unsuppressed: any advisory at high or above fails this job until
+    # it is fixed or the owner records an explicit decision. See
+    # mobile-native-pilot/DEPENDENCY_AUDIT.md for the current findings.
+    name: Pilot dependency audit (npm audit, high+)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mobile-native-pilot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Audit the committed lockfile
+        run: npm audit --audit-level=high
