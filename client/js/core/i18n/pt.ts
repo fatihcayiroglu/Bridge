@@ -2450,6 +2450,9 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "Nenhum bot ou webhook instalado",
   "automation_link_exemption_save_failed": "Não foi possível salvar a exceção da integração.",
   "automation_link_exemption_saved": "Exceção da integração salva.",
+  "native_auth_consent_title": "Entrar no app Bridge?",
+  "native_auth_consent_message": "Continue somente se você iniciou o login pelo app Bridge neste dispositivo. O app será conectado como {name}.",
+  "native_auth_consent_continue": "Continuar no app",
 };
 
 export default translations;
