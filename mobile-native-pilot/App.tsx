@@ -33,7 +33,7 @@ function ConnectedPilot({ origin }: { origin: string }) {
       if (epoch.current !== next.session.epoch) { epoch.current = next.session.epoch; setDraft(''); setNotice(null); }
       setState(next);
     });
-    void runtime.session.coordinator.restore().then(() => runtime.controller.start()).catch(() => { if (alive.current) setNotice('Session restoration failed. Please sign in again.'); });
+    void runtime.session.restore().then(() => runtime.controller.start()).catch(() => { if (alive.current) setNotice('Session restoration failed. Please sign in again.'); });
     return () => { alive.current = false; unsubscribe(); runtime.controller.dispose(); };
   }, [runtime]);
   async function perform(work: () => Promise<unknown>) {

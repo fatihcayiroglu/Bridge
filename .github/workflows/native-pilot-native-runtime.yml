@@ -135,7 +135,7 @@ jobs:
           # Preserve logs/screens on assertion failure too. Vision reads actual
           # rendered fixture UI; both launches must expose the required markers.
           trap 'xcrun simctl spawn "$udid" log show --last 3m --style compact --predicate '\''process == "BridgeNativePilot" OR process == "SpringBoard" OR process == "runningboardd" OR process == "securityd"'\'' > native-evidence/app-runtime.log || true; xcrun simctl io "$udid" screenshot native-evidence/final-screen.png || true' EXIT
-          bash scripts/ios-native-acceptance.sh "$udid"
+          bash scripts/ios-native-acceptance.sh "$udid" "$app"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

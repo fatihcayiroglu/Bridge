@@ -4,6 +4,13 @@ import { SafeAreaView, Text } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
 import { openNativeOutboxJournal } from './native-outbox-journal';
+import { pilotNativeCredentialPort } from './expo-credential-port';
+import { pilotInstallMarker } from './expo-install-marker';
+import { createInstallGuard } from './install-guard.mjs';
+
+// Fixture only; never a real credential. Stored with the real pilot credential port so the
+// install guard is exercised against the actual Keychain/Keystore item it protects.
+const FIXTURE_REFRESH = 'native-acceptance-fixture-refresh-token';
 
 export default function NativeAcceptanceProbe() {
   const [result, setResult] = useState('NATIVE_ACCEPTANCE_RUNNING');
@@ -13,6 +20,16 @@ export default function NativeAcceptanceProbe() {
       const key = 'bridge.nativepilot.acceptance.ack.v1';
       const options = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
       if (!await SecureStore.isAvailableAsync()) throw new Error('SECURE_STORE_REQUIRED');
+      // Fresh-install purge first, exactly as the app does before restoring a session.
+      stage = 'install-guard';
+      const install = await createInstallGuard({ marker: pilotInstallMarker, credentials: pilotNativeCredentialPort,
+        revoke: async () => {}, createId: () => Crypto.randomUUID() }).prepare();
+      // The probe's own fixture state belongs to one installation too.
+      if (install.freshInstall) await SecureStore.deleteItemAsync(key, options);
+      stage = 'install-guard-credential';
+      if (await pilotNativeCredentialPort.readToken() !== (install.freshInstall ? null : FIXTURE_REFRESH)) throw new Error('INSTALL_GUARD_CREDENTIAL_MISMATCH');
+      if (install.freshInstall) await pilotNativeCredentialPort.writeToken(FIXTURE_REFRESH);
+      const installMarkers = `${install.freshInstall ? 'NATIVE_INSTALL_GUARD_FRESH' : 'NATIVE_INSTALL_GUARD_KEPT'} ${install.purged ? 'NATIVE_INSTALL_LEFTOVER_PURGED' : 'NATIVE_INSTALL_LEFTOVER_NONE'}`;
       stage = 'secure-store-read';
       const prior = await SecureStore.getItemAsync(key, options);
       const id = prior ?? Crypto.randomUUID();
@@ -57,7 +74,7 @@ export default function NativeAcceptanceProbe() {
             surviving.find(row => row.id === receiptId(9))?.status !== 'queued' ||
             surviving.find(row => row.id === 'native-after-compaction')?.status !== 'queued') throw new Error('NATIVE_RECEIPT_COMPACTION_PERSISTENCE_FAILED');
         const marker = prior ? 'NATIVE_RECEIPT_COMPACTION_RESTORE_PASS' : 'NATIVE_RECEIPT_COMPACTION_PASS';
-        setResult(prior ? `NATIVE_SECURE_STORE_RESTORE_PASS NATIVE_SQLCIPHER_RECOVERY_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}` : `NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}`);
+        setResult(prior ? `NATIVE_SECURE_STORE_RESTORE_PASS NATIVE_SQLCIPHER_RECOVERY_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker} ${installMarkers}` : `NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker} ${installMarkers}`);
       } finally { await a.close(); await b.close(); await receipts.close(); }
     })().catch((error: unknown) => {
       // This debug-only route uses fixture accounts only. Keep the original

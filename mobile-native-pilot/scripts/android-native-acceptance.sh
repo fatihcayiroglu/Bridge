@@ -52,6 +52,7 @@ stage=first-ui-assertions
 assert_native_marker NATIVE_SQLCIPHER_WRITE_PASS native-evidence/first-ui.xml
 grep -q NATIVE_SECURE_STORE_ROUNDTRIP_PASS native-evidence/first-ui.xml
 grep -q NATIVE_RECEIPT_COMPACTION_PASS native-evidence/first-ui.xml
+grep -q NATIVE_INSTALL_GUARD_FRESH native-evidence/first-ui.xml
 stage=force-stop
 adb shell am force-stop com.bridge.nativepilot
 stage=restart-launch
@@ -61,6 +62,8 @@ assert_native_marker NATIVE_SQLCIPHER_RECOVERY_PASS native-evidence/restart-ui.x
 grep -q NATIVE_SECURE_STORE_RESTORE_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_ACCOUNT_ISOLATION_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_RECEIPT_COMPACTION_RESTORE_PASS native-evidence/restart-ui.xml
+grep -q NATIVE_INSTALL_GUARD_KEPT native-evidence/restart-ui.xml
+grep -q NATIVE_INSTALL_LEFTOVER_NONE native-evidence/restart-ui.xml
 stage=final-screenshot-capture
 adb shell screencap -p /sdcard/native-acceptance.png
 stage=final-screenshot-pull
