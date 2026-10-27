@@ -17,5 +17,5 @@ export async function openNativeOutboxJournal(accountId: string) {
   }
   const db = await SQLite.openDatabaseAsync(`bridge-outbox-${name}.db`, { useNewConnection: true });
   try { return await createEncryptedOutboxJournal({ db, keyHex }); }
-  catch { await db.closeAsync(); throw new Error('ENCRYPTED_OUTBOX_UNAVAILABLE'); }
+  catch (cause) { await db.closeAsync(); throw new Error('ENCRYPTED_OUTBOX_UNAVAILABLE', { cause }); }
 }
