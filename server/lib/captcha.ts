@@ -423,10 +423,12 @@ export async function checkSuspiciousLogin(
   let isNewDevice: boolean;
   try {
     isNewDevice = await cache.setIfAbsentAuthoritative(deviceKey, 1, CFG.knownDeviceTtlSec);
-  } catch (err) {
+  } catch {
     // Suspicious-login email is advisory. Cache uncertainty must not spam the
     // user on every login, so skip the alert and keep authentication unaffected.
-    logger.warn({ err, event: 'captcha.known_device_store_error' }, '[CAPTCHA] Known-device store unavailable');
+    // Exception objects can contain provider URLs, names or client addresses;
+    // log a fixed event code without serializing untrusted diagnostics.
+    logger.warn({ event: 'captcha.known_device_store_error' }, '[CAPTCHA] Known-device store unavailable');
     return;
   }
   if (!isNewDevice) return;
@@ -447,10 +449,10 @@ export async function checkSuspiciousLogin(
           time:      new Date().toLocaleString('tr-TR'),
         });
       }
-    } catch (err) {
+    } catch {
       // Advisory alert failure must not block authentication, but it must be
       // observable: silently dropping a security notification hides outages.
-      logger.warn({ err, userId: user._id, event: 'captcha.suspicious_login_alert_failed' },
+      logger.warn({ event: 'captcha.suspicious_login_alert_failed' },
         '[CAPTCHA] Suspicious-login alert could not be delivered');
     }
   }
