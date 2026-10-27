@@ -121,19 +121,43 @@ export function canonicalOrigin(value: string): string | null {
   } catch { return null; }
 }
 
+function mappingNameKey(name: string): string { return name.trim().toLocaleLowerCase(); }
+
+/** Name collisions need a visible identity; these labels never authorize a mapping. */
+export function mappingRowLabels(structure: PortableStructure): Record<Kind, Map<string, string>> {
+  const labels = { categories: new Map<string, string>(), roles: new Map<string, string>(), channels: new Map<string, string>() };
+  for (const kind of KINDS) {
+    const counts = new Map<string, number>();
+    for (const row of structure[kind]) {
+      const key = mappingNameKey(row.name);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const row of structure[kind]) {
+      labels[kind].set(row.sourceId, (counts.get(mappingNameKey(row.name)) ?? 0) > 1
+        ? `${row.name} · ${row.sourceId}` : row.name);
+    }
+  }
+  return labels;
+}
+
 /**
  * Pre-select a target only where the choice is unambiguous: exactly one
  * destination row of the same kind (and channel type) with the same name.
  * Everything else is left for the owner to choose.
  */
 export function suggestLinks(source: PortableStructure, target: PortableStructure): Links {
-  const links: Links = { categories: {}, roles: {}, channels: {} };
-  const key = (name: string) => name.trim().toLocaleLowerCase();
+  // Source identifiers are opaque. A plain {} silently loses keys such as
+  // '__proto__' and can read inherited names such as 'constructor'.
+  const links: Links = {
+    categories: Object.create(null) as Record<string, string>,
+    roles: Object.create(null) as Record<string, string>,
+    channels: Object.create(null) as Record<string, string>,
+  };
   for (const kind of KINDS) {
     const used = new Set<string>();
     for (const row of source[kind]) {
       const matches = target[kind].filter(t =>
-        key(t.name) === key(row.name) && (kind !== 'channels' || t.type === row.type));
+        mappingNameKey(t.name) === mappingNameKey(row.name) && (kind !== 'channels' || t.type === row.type));
       if (matches.length === 1 && !used.has(matches[0]!.sourceId)) {
         links[kind][row.sourceId] = matches[0]!.sourceId;
         used.add(matches[0]!.sourceId);
@@ -154,7 +178,9 @@ export function mappingProblem(source: PortableStructure, target: PortableStruct
   for (const kind of KINDS) {
     const chosen = new Set<string>();
     for (const row of source[kind]) {
-      const id = links[kind][row.sourceId];
+      // Never treat inherited Object.prototype entries as owner selections.
+      const id = Object.prototype.hasOwnProperty.call(links[kind], row.sourceId)
+        ? links[kind][row.sourceId] : undefined;
       if (!id) return 'unmapped';
       if (chosen.has(id)) return 'duplicate';
       chosen.add(id);
@@ -215,7 +241,9 @@ export function renames(source: PortableStructure, target: PortableStructure, li
   const out: ChangeRow[] = [];
   for (const kind of KINDS) {
     for (const row of source[kind]) {
-      const t = target[kind].find(x => x.sourceId === links[kind][row.sourceId]);
+      const targetId = Object.prototype.hasOwnProperty.call(links[kind], row.sourceId)
+        ? links[kind][row.sourceId] : undefined;
+      const t = target[kind].find(x => x.sourceId === targetId);
       if (t && t.name !== row.name) out.push({ kind, from: t.name, to: row.name });
     }
   }
@@ -233,6 +261,9 @@ export type Outcome =
  */
 export function classify(phase: Phase, status: number, code: unknown): Outcome {
   if (status === 0) return phase === 'apply' ? 'unknown' : 'error';
+  // The server intentionally uses one opaque error for rollback and unknown
+  // COMMIT acknowledgement. This answer cannot prove that nothing was applied.
+  if (phase === 'apply' && status === 422 && code === 'PORTABLE_MAPPED_APPLY_UNAVAILABLE') return 'unknown';
   if (status === 503) return 'disabled';
   if (status === 403) return code === 'STEP_UP_REQUIRED' ? 'proof_needed' : 'not_owner';
   if (status === 400) return 'invalid';

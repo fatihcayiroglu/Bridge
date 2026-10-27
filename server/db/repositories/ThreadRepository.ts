@@ -163,6 +163,12 @@ class ThreadRepository {
     return db.threadMessages.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
+  /** One reply, only when it belongs to that thread. */
+  async findMessageInThread(threadId: string, messageId: string) {
+    if (!threadId || !messageId) return null;
+    return db.threadMessages.findOne({ _id: messageId, threadId });
+  }
+
   async findMessageByClientNonce(threadId: string, userId: string, clientNonce: string) {
     if (!threadId || !userId || !clientNonce) return null;
     return db.threadMessages.findOne({ threadId, userId, clientNonce });

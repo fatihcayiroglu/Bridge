@@ -120,6 +120,12 @@ export async function applyApprovedPortableCommunityMapping(input: {
     if (verified.binding.reviewFingerprint !== input.confirmedReviewFingerprint ||
         verified.importSupported !== false || verified.tokenIssued !== false) refuse();
 
+    // Revalidate after every destination review lock has been acquired.
+    // The entry proof cannot authorize work after an arbitrarily long wait.
+    if ((await requireLockedPortableOwnerStepUp({
+      client, ownerId: input.ownerId, stepUpGrant: input.stepUpGrant, now: input.now,
+    })).stepUpVerified !== true) refuse();
+
     // CAS claim and ALL updates share the identical SERIALIZABLE connection.
     // Any error rolls back consumed_at along with every affected destination row.
     await claimPortableImportApproval(client, input.approvalToken, verified.binding);
@@ -221,6 +227,11 @@ export async function applyApprovedPortableCommunityMapping(input: {
     // Metadata/FK/index/audit writes may themselves wait. Expiry rolls back
     // every mapped update, consumed approval and replay/audit row together.
     await requireLiveTargets(client, targetIds, input.targetServerId);
+    // A write/constraint wait can age the proof too. Rejection rolls back the
+    // claim, snapshot barrier, mapped rows and audit on this same client.
+    if ((await requireLockedPortableOwnerStepUp({
+      client, ownerId: input.ownerId, stepUpGrant: input.stepUpGrant, now: input.now,
+    })).stepUpVerified !== true) refuse();
     commitAttempted = true;
     await client.query('COMMIT');
     committed = true;

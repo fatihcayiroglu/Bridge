@@ -2,6 +2,10 @@
 // Real Capacitor WKWebView + XCUITest lifecycle, with a real PostgreSQL-backed server.
 // No browser substitute, injected lifecycle event, reload, relogin, or journey retry.
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { verifyNativeOpenConfirmation } from './native-open-confirmation.mjs';
+import { startupPageFacts } from './startup-page-evidence.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -179,7 +183,7 @@ try {
   const permanent = id(await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'ios-permanent', type: 'text' }));
 
   facts.stage = 'native-session';
-  const created = await wd('POST', '/session', { capabilities: { alwaysMatch: {
+  const sessionCapabilities = {
     platformName: 'iOS', 'appium:automationName': 'XCUITest',
     'appium:udid': process.env.IOS_SIMULATOR_UDID,
     'appium:platformVersion': process.env.IOS_PLATFORM_VERSION,
@@ -197,7 +201,8 @@ try {
     // Observed in run 39993002937: Web Inspector advertises the unsigned
     // Debug app as process-App, which the default bundle filter excludes.
     'appium:additionalWebviewBundleIds': ['process-App'],
-  } } }, 840_000);
+  };
+  const created = await wd('POST', '/session', { capabilities: { alwaysMatch: sessionCapabilities } }, 840_000);
   session = created.sessionId;
   assert(session, 'Native XCUITest session required');
   await command('POST', '/timeouts', { script: 20_000 });
@@ -366,6 +371,59 @@ try {
   }, null, 2));
   console.log(`D2L01-iOS key provider: native=${JSON.stringify(facts.nativeKeyAfterDraft)} browser=${JSON.stringify(facts.browserKeyAfterDraft)}`);
   console.log('PASS D2L01-iOS: native Keychain key, background/resume, expired history and draft purge, permanent-channel control');
+
+  // D2's report and HOT-resume assertion are already complete. A separate
+  // native session disables automatic alert acceptance for I07. A launch at
+  // this journey's setup is NOT counted as a HOT resume: the link's own native
+  // PID must remain unchanged from immediately before the OS request onward.
+  const linkFacts = { stage: 'native-session' };
+  const linkStarted = Date.now();
+  try {
+    await wd('DELETE', `/session/${session}`);
+    session = null;
+    const linkSession = await wd('POST', '/session', { capabilities: { alwaysMatch: {
+      ...sessionCapabilities,
+      'appium:noReset': true, 'appium:autoAcceptAlerts': false,
+      'appium:forceAppLaunch': true,
+    } } }, 840_000);
+    session = linkSession.sessionId;
+    assert(session, 'I07 native XCUITest session required');
+    await command('POST', '/timeouts', { script: 20_000 });
+    linkFacts.stage = 'restored-webview';
+    await webContext();
+    await until(() => js(() => document.getElementById('app')?.getClientRects().length > 0),
+      'authoritatively restored I07 account', 60_000);
+    await openChannel(permanent);
+    const target = id(await write('POST', `/api/servers/${serverId}/channels`, token,
+      { name: 'ios-native-link-target', type: 'text' }));
+    await until(() => js(cid => !!document.querySelector(`.ch-item[data-id="${cid}"]`), target),
+      'authorized I07 target listed without navigation');
+    linkFacts.stage = 'os-open-confirmation';
+    await verifyNativeOpenConfirmation({
+      command, native, nativeContext, webContext, js, until, channelId: target, facts: linkFacts,
+      openUrl: async url => {
+        try {
+          await promisify(execFile)('xcrun', ['simctl', 'openurl', process.env.IOS_SIMULATOR_UDID, url],
+            { timeout: 20_000, maxBuffer: 16 * 1024 });
+        } catch { throw new Error('I07 simulator OS open request failed'); }
+      },
+    });
+    linkFacts.stage = 'complete';
+    fs.writeFileSync(path.join(OUT, 'open-confirmation-journey.json'), JSON.stringify({
+      id: 'I07-XCUITest', category: 'AUTOMATED / SIMULATOR', status: 'PASS',
+      commit: process.env.GITHUB_SHA || null, ms: Date.now() - linkStarted, facts: linkFacts,
+    }, null, 2));
+    console.log('PASS I07-XCUITest: observed native OS confirmation, explicit Open, HOT process and actual target channel');
+  } catch (error) {
+    fs.writeFileSync(path.join(OUT, 'open-confirmation-journey.json'), JSON.stringify({
+      id: 'I07-XCUITest', category: 'AUTOMATED / SIMULATOR', status: 'FAIL',
+      commit: process.env.GITHUB_SHA || null, ms: Date.now() - linkStarted, facts: linkFacts,
+      error: String(error.message).slice(0, 500),
+    }, null, 2));
+    console.error(`FAIL I07-XCUITest: ${error.message}`);
+    process.exitCode = 1;
+  }
+
 } catch (error) {
   if (session && facts.stage === 'permanent-draft') {
     try {
@@ -402,6 +460,10 @@ try {
     } catch { facts.draftDiagnosticFailed = true; }
   }
   if (session && facts.stage === 'packaged-webview') {
+    if (facts.webviewProbe?.switched && facts.webviewProbe?.nativeProcessMatches && facts.webviewProbe?.packagedOrigin) {
+      try { facts.pageStartup = await js(startupPageFacts); }
+      catch { facts.pageStartupProbeFailed = true; }
+    }
     // The fixture has not logged in yet. Keep only native state/shape facts,
     // never the source tree, account data or WebDriver argument payloads.
     const probe = {};

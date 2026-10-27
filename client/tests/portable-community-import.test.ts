@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   APPLY_CONFIRMATION, APPROVAL_CONFIRMATION, MAX_BUNDLE_BYTES, applyBody, approvalBody, candidates,
-  canonicalOrigin, classify, mappingProblem, parseSignedBundle, renames, reviewBody, structureRows, suggestLinks,
+  canonicalOrigin, classify, mappingProblem, mappingRowLabels, parseSignedBundle, renames, reviewBody, structureRows, suggestLinks,
   type Links,
 } from '../js/core/server-settings/portable-community-import.ts';
 
@@ -119,6 +119,55 @@ describe('owner-entered expectations and mapping', () => {
     expect(candidates('channels', b.rows.channels[1]!, target()).map(r => r.sourceId)).toEqual(['tch2', 'tch3']);
   });
 
+  it('labels colliding names with exact opaque IDs without mutating the signed rows', () => {
+    const rows = structureRows({ ...sourceStructure(), roles: [
+      { sourceId: '__proto__', name: 'Crew', position: 1 },
+      { sourceId: 'other-role', name: ' crew ', position: 2 },
+      { sourceId: 'unique-role', name: 'Readers', position: 3 },
+    ] })!;
+    const original = JSON.stringify(rows);
+    const labels = mappingRowLabels(rows);
+    expect(labels.roles.get('__proto__')).toContain('__proto__');
+    expect(labels.roles.get('other-role')).toContain('other-role');
+    expect(labels.roles.get('unique-role')).toBe('Readers');
+    expect(JSON.stringify(rows)).toBe(original);
+  });
+
+  it('maps opaque source IDs that collide with Object.prototype instead of reading inherited keys', () => {
+    const source = structureRows({
+      ...sourceStructure(),
+      categories: [{ sourceId: 'constructor', name: 'OPS', position: 0 }],
+      roles: [{ sourceId: '__proto__', name: 'Crew', position: 1 }],
+      channels: [{ sourceId: 'toString', name: 'general', type: 'text', order: 1 }],
+    })!;
+    const destination = structureRows({
+      ...target(),
+      categories: [{ sourceId: 'tc1', name: 'OPS' }],
+      roles: [{ sourceId: 'tr1', name: 'Crew' }],
+      channels: [{ sourceId: 'tch1', name: 'general', type: 'text' }],
+    })!;
+    const selected = suggestLinks(source, destination);
+    expect(Object.prototype.hasOwnProperty.call(selected.categories, 'constructor')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(selected.roles, '__proto__')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(selected.channels, 'toString')).toBe(true);
+    expect(selected.categories['constructor']).toBe('tc1');
+    expect(selected.roles['__proto__']).toBe('tr1');
+    expect(selected.channels['toString']).toBe('tch1');
+    expect(mappingProblem(source, destination, selected)).toBeNull();
+    expect(reviewBody({
+      bundle: { ...parseSignedBundle(bundleText())!, rows: source },
+      expectedOrigin: 'https://source.example', expectedServerId: 'src-1',
+      targetServerId: 'dst-1', targetDigest: H('d'), links: selected,
+    }).mapping).toMatchObject({
+      categories: [{ sourceId: 'constructor', targetId: 'tc1' }],
+      roles: [{ sourceId: '__proto__', targetId: 'tr1' }],
+      channels: [{ sourceId: 'toString', targetId: 'tch1' }],
+    });
+    // The default Object.prototype is not a source of implicit selections.
+    const empty: Links = { categories: {}, roles: {}, channels: {} };
+    expect(mappingProblem(source, destination, empty)).toBe('unmapped');
+  });
+
   it('requires every source row mapped once onto a row of the same type', () => {
     const b = parseSignedBundle(bundleText())!;
     const t = target();
@@ -165,6 +214,12 @@ describe('request shapes', () => {
 });
 
 describe('honest outcomes', () => {
+  it('never infers rollback from the opaque apply error used for unknown COMMIT acknowledgement', () => {
+    expect(classify('apply', 422, 'PORTABLE_MAPPED_APPLY_UNAVAILABLE')).toBe('unknown');
+    expect(classify('review', 422, 'PORTABLE_MAPPED_APPLY_UNAVAILABLE')).toBe('unverified');
+    expect(classify('approve', 422, 'PORTABLE_MAPPED_APPLY_UNAVAILABLE')).toBe('refused');
+  });
+
   it('maps statuses without ever reporting an unknown apply as a failure', () => {
     expect(classify('apply', 0, undefined)).toBe('unknown');
     expect(classify('approve', 0, undefined)).toBe('error');

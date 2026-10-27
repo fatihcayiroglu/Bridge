@@ -216,6 +216,28 @@ describe('P7 MessageLoader encrypted offline history', () => {
     expect(errorText).toBe('');
   });
 
+  it("uses the cached history when the service worker answers a failed fetch (its offline 503)", async () => {
+    // Under a service worker the page never sees the rejected fetch: it gets a
+    // synthetic 503 marked X-Bridge-Offline (client/sw.ts). Before the marker
+    // was read, this showed "server error" and discarded the cached window.
+    const userId = 'sw-offline-user';
+    const channelId = 'sw-offline-channel';
+    registerState(userId);
+    await replaceLocalFirstHistory(userId, channelId, [{ _id: 'cached-1', channelId, content: 'cached', createdAt: 1 }]);
+    apiFetchMock.mockResolvedValue({
+      ...(response({ error: 'offline' }, 503) as object),
+      headers: new Headers({ 'X-Bridge-Offline': '1' }),
+    });
+
+    render(MessageLoader);
+    select(channelId);
+
+    await waitFor(() => expect(loading).toBe(false));
+    await waitFor(() => expect(messages.map(row => row._id)).toEqual(['cached-1']));
+    expect(offline).toBe(true);
+    expect(errorText).toBe('');
+  });
+
   it('server-authoritative 403 clears cached history instead of using past authorization', async () => {
     const userId = 'revoked-user';
     const channelId = 'revoked-channel';

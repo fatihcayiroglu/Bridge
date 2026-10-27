@@ -9,6 +9,8 @@ class MessageReportRepository {
   async create(input: {
     serverId: string; channelId: string; messageId: string; reporterId: string;
     reason: MessageReportReason; detail: string;
+    /** P7 B5 (093): set when `messageId` is a reply in thread_messages. */
+    threadId?: string | null;
     /** P7 B5: what was reported, captured from the message at report time. */
     evidence: ReportEvidenceColumns;
   }): Promise<{ row: Record<string, unknown>; created: boolean }> {
@@ -21,7 +23,7 @@ class MessageReportRepository {
     try {
       const { evidence, ...report } = input;
       const row = await db.messageReports.insert({
-        _id: uuidv4(), ...report, ...evidence, status: 'open', createdAt: Date.now(),
+        _id: uuidv4(), ...report, threadId: input.threadId ?? null, ...evidence, status: 'open', createdAt: Date.now(),
         resolvedAt: null, resolvedBy: null, resolution: null,
       });
       return { row: row as Record<string, unknown>, created: true };
@@ -36,7 +38,7 @@ class MessageReportRepository {
 
   private async createProtected(input: {
     serverId: string; channelId: string; messageId: string; reporterId: string;
-    reason: MessageReportReason; detail: string; evidence: ReportEvidenceColumns;
+    reason: MessageReportReason; detail: string; threadId?: string | null; evidence: ReportEvidenceColumns;
   }): Promise<{ row: Record<string, unknown>; created: boolean }> {
     const transaction = db._transaction as <T>(fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }) => Promise<T>) => Promise<T>;
     return transaction(async client => {
@@ -55,10 +57,10 @@ class MessageReportRepository {
         `SELECT * FROM message_reports WHERE "reporterId" = $1 AND "messageId" = $2 AND status = 'open' LIMIT 1`,
         [input.reporterId, input.messageId]);
       if (existing.rows[0]) return { row: existing.rows[0], created: false };
-      const fields = ['_id', 'serverId', 'channelId', 'messageId', 'reporterId', 'reason', 'detail',
+      const fields = ['_id', 'serverId', 'channelId', 'messageId', 'threadId', 'reporterId', 'reason', 'detail',
         'status', 'createdAt', 'resolvedAt', 'resolvedBy', 'resolution', ...Object.keys(evidence)];
       const values: unknown[] = [uuidv4(), input.serverId, input.channelId, input.messageId,
-        input.reporterId, input.reason, input.detail, 'open', Date.now(), null, null, null,
+        input.threadId ?? null, input.reporterId, input.reason, input.detail, 'open', Date.now(), null, null, null,
         ...Object.values(evidence)];
       const inserted = await client.query(
         `INSERT INTO message_reports (${fields.map(field => `"${field}"`).join(', ')}) VALUES (${fields.map((_, i) => `$${i + 1}`).join(', ')}) ON CONFLICT DO NOTHING RETURNING *`, values);

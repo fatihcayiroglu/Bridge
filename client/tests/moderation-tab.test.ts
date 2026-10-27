@@ -23,6 +23,7 @@ import { render, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 const PERM_KICK    = 1 << 4;
 const PERM_BAN     = 1 << 5;
 const PERM_TIMEOUT = 1 << 7;
+const PERM_MANAGE_SERVER = 1 << 3;
 const PERM_ADMIN   = 1 << 30;
 
 let myPerms = 0;
@@ -50,9 +51,9 @@ vi.mock('../js/core/globals.js', () => ({ getAPI: () => '' }));
 vi.mock('../js/core/bridge-registry.js', () => ({
   BridgeRegistry: {
     has:  (k: string) => k in registryMap,
-    call: (k: string) => {
+    call: (k: string, ...args: unknown[]) => {
       const v = registryMap[k];
-      return typeof v === 'function' ? (v as () => unknown)() : v;
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown)(...args) : v;
     },
     register: (k: string, fn: unknown) => { registryMap[k] = fn; },
     unregister: (k: string) => { delete registryMap[k]; },
@@ -99,6 +100,93 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+const raidStatus = (level: 'off' | 'balanced' | 'strict', active = false) => ({
+  level,
+  active,
+  lockdownUntil: active ? Date.now() + 60_000 : null,
+  policy: level === 'off' ? null : {
+    windowMs: 10_000,
+    maxUniqueAccounts: level === 'strict' ? 10 : 30,
+    lockdownMs: level === 'strict' ? 300_000 : 600_000,
+    refuseJoins: level === 'strict',
+    youngAccountMs: 86_400_000,
+  },
+});
+
+describe('raid protection controls', () => {
+  it('shows server policy to a MANAGE_SERVER moderator and persists the selected level', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    let current = raidStatus('balanced');
+    apiMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/raid-protection')) {
+        if (init?.method === 'PATCH') {
+          current = raidStatus(JSON.parse(String(init.body)).level);
+          return ok(current);
+        }
+        return ok(current);
+      }
+      return ok([]);
+    });
+    render(ModerationTab);
+
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"]')?.textContent).toContain('30'));
+    expect(document.querySelector('[aria-labelledby="mod-action-title"]')).toBeNull();
+    expect(document.querySelector('[aria-labelledby="mod-raid-title"]')?.textContent).toContain('10');
+    await fireEvent.click(document.querySelector<HTMLButtonElement>('[aria-labelledby="mod-raid-title"] [aria-pressed="false"]:last-of-type')!);
+
+    await waitFor(() => expect(calls('PATCH')).toHaveLength(1));
+    expect(calls('PATCH')[0]![0]).toBe('/api/servers/s1/raid-protection');
+    expect(JSON.parse(String((calls('PATCH')[0]![1] as RequestInit).body))).toEqual({ level: 'strict' });
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"]')?.textContent).toContain('10'));
+  });
+
+  it('ends an active response with the server reversal endpoint', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    let current = raidStatus('strict', true);
+    apiMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/raid-protection')) {
+        if (init?.method === 'PATCH') {
+          current = raidStatus('strict');
+          return ok(current);
+        }
+        return ok(current);
+      }
+      return ok([]);
+    });
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-labelledby="mod-raid-title"] .mod-btn-warn')).toBeTruthy());
+    await fireEvent.click(document.querySelector<HTMLButtonElement>('[aria-labelledby="mod-raid-title"] .mod-btn-warn')!);
+    await waitFor(() => expect(calls('PATCH')).toHaveLength(1));
+    expect(JSON.parse(String((calls('PATCH')[0]![1] as RequestInit).body))).toEqual({ clearLockdown: true });
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"] .mod-btn-warn')).toBeNull());
+  });
+
+  it('does not offer policy changes when the server denies status or the selected server changes', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    apiMock = vi.fn(async (url: string) => String(url).endsWith('/raid-protection') ? fail(403) : ok([]));
+    const first = render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"]')).toBeTruthy());
+    expect(document.querySelector('[aria-pressed]')).toBeNull();
+    first.unmount();
+
+    apiMock = vi.fn(async (url: string) => String(url).endsWith('/raid-protection') ? ok(raidStatus('balanced')) : ok([]));
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('[aria-pressed="false"]')).toBeTruthy());
+    stillCurrent = false;
+    await fireEvent.click(document.querySelector<HTMLButtonElement>('[aria-pressed="false"]')!);
+    expect(calls('PATCH')).toHaveLength(0);
+  });
+
+  it('does not offer policy changes for a malformed status response', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    apiMock = vi.fn(async (url: string) => String(url).endsWith('/raid-protection')
+      ? ok({ level: 'strict', active: true, lockdownUntil: null, policy: {} }) : ok([]));
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"] [role="alert"]')).toBeTruthy());
+    expect(document.querySelector('[aria-pressed]')).toBeNull();
+  });
+});
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('görünürlük — yetkisiz kullanıcı', () => {
@@ -640,6 +728,48 @@ describe('rapor kuyruğu — raporlanan içerik', () => {
     const [file, cut] = [...document.querySelectorAll('.mod-report-content')].map(n => n.textContent ?? '');
     expect(file).toContain(t('moderation_report_attachment', undefined, { name: 'proof.png' }));
     expect(cut).toContain(t('moderation_report_truncated'));
+  });
+
+  // P7 B5 (093): a thread reply's report carries its thread. The reply is not in
+  // the channel's message list, so the jump opens the channel and then the thread.
+  it('a thread reply is labelled; its jump opens the channel, then the thread', async () => {
+    const navigate = vi.fn(async () => true);
+    const openThread = vi.fn();
+    registryMap.navigateToChannel = navigate;
+    registryMap.openExistingThread = openThread;
+    apiMock = withReports([reportRow({ threadId: 't1', currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('.mod-report-kind')?.textContent).toBe(t('moderation_report_thread_reply')));
+    jump()!.click();
+    await waitFor(() => expect(openThread).toHaveBeenCalledWith('t1'));
+    expect(navigate.mock.calls[0]!.slice(0, 2)).toEqual(['c1', undefined]);
+  });
+
+  it('a channel message report has no thread label and jumps straight to the message', async () => {
+    const navigate = vi.fn(async () => true);
+    const openThread = vi.fn();
+    registryMap.navigateToChannel = navigate;
+    registryMap.openExistingThread = openThread;
+    apiMock = withReports([reportRow({ currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    expect(document.querySelector('.mod-report-kind')).toBeNull();
+    jump()!.click();
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    expect(navigate.mock.calls[0]!.slice(0, 2)).toEqual(['c1', 'm1']);
+    expect(openThread).not.toHaveBeenCalled();
+  });
+
+  it('a thread jump stops, and says so, when the channel cannot be opened', async () => {
+    const openThread = vi.fn();
+    registryMap.navigateToChannel = vi.fn(async () => false);
+    registryMap.openExistingThread = openThread;
+    apiMock = withReports([reportRow({ threadId: 't1', currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(jump()).toBeTruthy());
+    jump()!.click();
+    await waitFor(() => expect(document.body.textContent).toContain(t('ui_raporlanan_mesaj_su_anda_acilamiyor')));
+    expect(openThread).not.toHaveBeenCalled();
   });
 
   it('the snapshot author name wins over the current one; a cleared snapshot says so', async () => {

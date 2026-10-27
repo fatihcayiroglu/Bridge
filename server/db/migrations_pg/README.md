@@ -81,6 +81,8 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 088 | message_report_channel_retention | P7 D2 x B5: message_reports channel FK (CASCADE) dropped; reports and 085 evidence outlive channel expiry/deletion; down refuses while reports point at missing channels |
 | 089 | channel_object_release_outbox | P7 D2: süresi dolan kanalın silinen satırlarındaki yükleme URL'leri aynı ifadede kalıcı kuyruğa yazılır; nesneler COMMIT sonrası kiralanmış, sınırlı, yeniden denemeli olarak bırakılır; down bekleyen iş varken reddeder |
 | 090 | message_report_channel_visibility | P7 D2 x B5: message_reports."channelVisibility" ('open'/'restricted'/NULL) recorded when the channel is claimed or deleted; a gone 'open' channel's reports stay reviewable by server-level moderators, everything else ADMIN only; down drops it (fail-safe: ADMIN only) |
+| 093 | message_report_thread_replies | P7 B5: nullable message_reports."threadId" (NULL: channel message; set: "messageId" is a reply in thread_messages) so thread replies are reportable with the same evidence, retention and moderators; catalog-only change; down refuses while thread-reply reports exist |
+| 094 | account_erasure_author_indexes | Author indexes for account erasure on messages and thread_messages; 6M-row erasure 2.0-2.7 s to 0.16-0.20 s (measured) |
 
 > 085 is taken by B5 #345 (`085_message_report_evidence`); D2 was renumbered to
 > 086/087 so the two branches merge in either order. Every number must be unique

@@ -129,7 +129,8 @@ function splitBrain(cluster, channelId) {
       if (a.node !== b.node && a.from < b.to && b.from < a.to) bad.push(`${a.node}∩${b.node}`);
     }
   }
-  return { intervals: iv.map((x) => `${x.node}[${x.to === Infinity ? 'open' : `${x.to - x.from}ms`}]`).join(' '), overlaps: bad };
+  // No observed router at all proves nothing about overlap: the callers fail then.
+  return { observed: iv.length, intervals: iv.map((x) => `${x.node}[${x.to === Infinity ? 'open' : `${x.to - x.from}ms`}]`).join(' ') || 'none-observed', overlaps: bad };
 }
 
 export async function run({ cluster, lb, record, measure }) {
@@ -212,7 +213,7 @@ export async function run({ cluster, lb, record, measure }) {
     if (joined) measure('sfu.owner_death_room_recovery_ms', Date.now() - killedAt, 'ms', 'SIGKILL room owner → a survivor completes sfu:join');
     const sb = splitBrain(cluster, room);
     record('SFU-06', 'owner death and takeover: no two nodes ever held live routers for the room at the same time',
-      sb.overlaps.length === 0 ? 'PASS' : 'FAIL', `intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)}`);
+      sb.observed > 0 && sb.overlaps.length === 0 ? 'PASS' : 'FAIL', `intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)}`);
     entry.close();
     joined?.sock?.close();
 
@@ -298,7 +299,7 @@ export async function run({ cluster, lb, record, measure }) {
     }
     const sb = splitBrain(cluster, ch);
     record('SFU-08', 'registry restarted empty while a room is live: no second concurrent router for the channel; a new peer can still join',
-      p1.ok && p2?.ok && sb.overlaps.length === 0 ? 'PASS' : 'FAIL',
+      p1.ok && p2?.ok && sb.observed > 0 && sb.overlaps.length === 0 ? 'PASS' : 'FAIL',
       `owner before=${owner1} after=${cluster.redisCli('GET', `bridge:sfu:room:${ch}`)} joinedAfter=${Date.now() - t0}ms refusedWhileSettling=${refusals} intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)}`);
     record('SFU-08i', 'did the new peer land in the ORIGINAL router?', 'INFO',
       p2?.ok ? (p2.peers.includes(owner.id) ? 'yes — joined the existing room' : 'no — the original peer had already been disconnected (WS lease loss) and its room closed; a fresh room was opened afterwards (no overlap)') : 'n/a');

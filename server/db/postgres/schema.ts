@@ -256,6 +256,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_channel_cursor
   ON messages("channelId", "createdAt" DESC, _id DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_file_url_authz ON messages("fileUrl") WHERE "fileUrl" IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_user_ack ON messages("userId", "ackId") WHERE "ackId" IS NOT NULL;
+-- Account erasure's author lookups (migration 094).
+CREATE INDEX IF NOT EXISTS idx_messages_author ON messages("userId");
+CREATE INDEX IF NOT EXISTS idx_messages_reply_quote_ref
+  ON messages(("replyTo"->>'_id')) WHERE "replyTo" ? 'displayName';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_scheduled_id
   ON messages("scheduledId") WHERE "scheduledId" IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automod_alert_flagged_msg
@@ -554,6 +558,7 @@ CREATE TABLE IF NOT EXISTS thread_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_tmsg_thread  ON thread_messages("threadId");
 CREATE INDEX IF NOT EXISTS idx_tmsg_created ON thread_messages("createdAt");
+CREATE INDEX IF NOT EXISTS idx_thread_messages_author ON thread_messages("userId"); -- 094
 CREATE UNIQUE INDEX IF NOT EXISTS uq_thread_messages_delivery_nonce ON thread_messages("threadId", "userId", "clientNonce") WHERE "clientNonce" IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS bots (
@@ -1063,6 +1068,9 @@ CREATE TABLE IF NOT EXISTS message_reports (
   -- no override in channel_permissions or channel_overrides denied VIEW_CHANNELS
   -- or MANAGE_MESSAGES, else 'restricted'); NULL means ADMIN only.
   "channelVisibility" TEXT,
+  -- Migration 093 (P7 B5): NULL for a channel message; the thread's id when
+  -- "messageId" is a reply in thread_messages.
+  "threadId" TEXT,
   CHECK (reason IN ('spam','harassment','hate','sexual','violence','other')),
   CHECK (status IN ('open','resolved','dismissed')),
   CHECK (resolution IS NULL OR resolution IN ('resolved','dismissed')),

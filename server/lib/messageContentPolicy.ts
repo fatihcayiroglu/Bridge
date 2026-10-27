@@ -29,7 +29,10 @@
 // (`bridge:<id>`) and an announcement crosspost (`crosspost:<source channel
 // id>`). They get the RECEIVING server's AutoMod rules and not the P7
 // per-account limits. Bridge's own system and audit messages (AutoMod alerts,
-// join notices) are written directly and are not moderated.
+// join notices) are written directly and are not moderated. The onboarding
+// welcome is one of them, but it interpolates the member's name: that name is
+// checked against the server's AutoMod content rules on its own and withheld
+// when refused (routes/onboarding.ts, moderatedWelcomeName).
 
 import { Automod, Members } from '../db/repositories';
 import { ABUSE_POLICY, checkContentAbuse, mentionsWithinLimit } from './abusePolicy';
