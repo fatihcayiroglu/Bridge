@@ -223,6 +223,13 @@ test('#209 renderer overlap separates busy-page stalls from idle-page stalls', (
   assert.equal(summary.rendererBusyMs, 800);
   assert.equal(summary.longFrameMs, null);
   assert.deepEqual(summary.longTasks, { count: 2, totalMs: 1500, maxMs: 1000 });
+  assert.deepEqual([summary.bootEffectsDeferred, summary.bootEffectsRestored], [0, 0]);
+  // The Android shell's first-frame effect deferral is reported per cold start.
+  const deferred = summarizeRendererOverlap([
+    { rendererOverlap: overlap, pageTiming: compactPageTiming({ ...pageTiming, bootEffects: { deferred: true, restored: true } }) },
+    { rendererOverlap: overlap, pageTiming: compactPageTiming({ ...pageTiming, bootEffects: { deferred: true, restored: false } }) },
+  ]);
+  assert.deepEqual([deferred.bootEffectsDeferred, deferred.bootEffectsRestored], [2, 1]);
 });
 
 test('#209 CS01 reads page timing without asserting on it; SF02 reports it', () => {
