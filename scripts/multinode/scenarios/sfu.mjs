@@ -2,10 +2,8 @@
 // Every node runs real mediasoup workers; ownership of a voice room is decided
 // by the Redis registry (`bridge:sfu:room:<channelId>` = INSTANCE_ID).
 //
-// Split-brain evidence comes from each node's own log: a node logs
-// "Room oluşturuldu — channel: <id>, node: <INSTANCE_ID>" when it opens a
-// router for a channel. Two nodes opening routers for one channel while both
-// are alive is split-brain.
+// Test-only router-open/close evidence travels over the child process's IPC
+// pipe, not channel-bearing routine application logs.
 
 import { register, makeServer, connectSocket, mutate, rnd, io } from '../lib/client.mjs';
 
@@ -83,54 +81,12 @@ async function clientJoin(lb, user, entry, channelId, serverId) {
 }
 
 function routerCreators(cluster, channelId) {
-  return ['A', 'B', 'C'].filter((n) => cluster.nodeLog(n).includes(`Room oluşturuldu — channel: ${channelId}, node: mn-${n}`));
-}
-
-/**
- * Time intervals during which each node held a live mediasoup router for the
- * channel, reconstructed from the node's own structured log (created → emptied,
- * invalidated or worker closed) and the process exit history (a killed node's
- * routers die with it).
- */
-function routerIntervals(cluster, channelId) {
-  const out = [];
-  for (const n of ['A', 'B', 'C']) {
-    const exits = cluster.exitHistory.filter((e) => e.name === n).map((e) => e.at).sort((a, b) => a - b);
-    const closeAt = (from) => exits.find((t) => t >= from) ?? Infinity;
-    let open = null;
-    for (const line of cluster.nodeLog(n).split('\n')) {
-      if (!line.startsWith('{')) continue;
-      let j; try { j = JSON.parse(line); } catch { continue; }
-      const t = Date.parse(j.time);
-      const msg = String(j.msg || '');
-      if (open !== null && closeAt(open) < t) { out.push({ node: n, from: open, to: closeAt(open) }); open = null; }
-      if (msg.includes(`Room oluşturuldu — channel: ${channelId},`)) {
-        if (open !== null) out.push({ node: n, from: open, to: t });
-        open = t;
-      } else if (open !== null && (msg.includes(`Boş room temizlendi — channel: ${channelId}`)
-        || msg.includes(`room temizleniyor — channel: ${channelId}`)
-        || (j.event === 'sfu.room.ownership_invalidated' && j.channelId === channelId))) {
-        out.push({ node: n, from: open, to: t });
-        open = null;
-      }
-    }
-    if (open !== null) out.push({ node: n, from: open, to: closeAt(open) });
-  }
-  return out;
+  return cluster.sfuEvidence.creators(channelId);
 }
 
 /** Pairs of different nodes whose live-router intervals overlap: split-brain. */
 function splitBrain(cluster, channelId) {
-  const iv = routerIntervals(cluster, channelId);
-  const bad = [];
-  for (let i = 0; i < iv.length; i++) {
-    for (let k = i + 1; k < iv.length; k++) {
-      const a = iv[i]; const b = iv[k];
-      if (a.node !== b.node && a.from < b.to && b.from < a.to) bad.push(`${a.node}∩${b.node}`);
-    }
-  }
-  // No observed router at all proves nothing about overlap: the callers fail then.
-  return { observed: iv.length, intervals: iv.map((x) => `${x.node}[${x.to === Infinity ? 'open' : `${x.to - x.from}ms`}]`).join(' ') || 'none-observed', overlaps: bad };
+  return cluster.sfuEvidence.splitBrain(channelId, cluster.exitHistory);
 }
 
 export async function run({ cluster, lb, record, measure }) {
@@ -153,6 +109,7 @@ export async function run({ cluster, lb, record, measure }) {
     const regOwner = cluster.redisCli('GET', `bridge:sfu:room:${ch}`);
     const winners = res.filter((r) => r.kind === 'caps').length;
     const redirectsAgree = res.filter((r) => r.kind === 'redirect').every((r) => r.owner === regOwner);
+    await cluster.flushSfuEvidence();
     const creators = routerCreators(cluster, ch);
     races += 1;
     if (winners === 1 && redirectsAgree && creators.length === 1 && `mn-${creators[0]}` === regOwner) clean += 1;
@@ -167,6 +124,7 @@ export async function run({ cluster, lb, record, measure }) {
   const regOwner = cluster.redisCli('GET', `bridge:sfu:room:${room}`);
   const second = await clientJoin(lb, u2, socks.B, room, serverId);
   const third = await clientJoin(lb, u3, socks.C, room, serverId);
+  await cluster.flushSfuEvidence();
   record('SFU-02', 'peers entering via B and C are redirected to the owner node and land in the SAME room',
     first.ok && second.ok && third.ok && second.peers.includes(owner.id) && third.peers.includes(owner.id) && third.peers.includes(u2.id)
       && routerCreators(cluster, room).length === 1 ? 'PASS' : 'FAIL',
@@ -211,9 +169,11 @@ export async function run({ cluster, lb, record, measure }) {
         ? `rejoined after ${Date.now() - killedAt}ms on ${nowOwner} (${attempts} attempts)`
         : `stranded: registry still names dead owner ${nowOwner} (TTL ${staleTtl}s of ${ttlBefore}s); last attempt ${JSON.stringify(lastErr)}`);
     if (joined) measure('sfu.owner_death_room_recovery_ms', Date.now() - killedAt, 'ms', 'SIGKILL room owner → a survivor completes sfu:join');
+    await cluster.flushSfuEvidence();
     const sb = splitBrain(cluster, room);
     record('SFU-06', 'owner death and takeover: no two nodes ever held live routers for the room at the same time',
-      sb.observed > 0 && sb.overlaps.length === 0 ? 'PASS' : 'FAIL', `intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)}`);
+      sb.observed >= 2 && sb.overlaps.length === 0 && sb.anomalies.length === 0 ? 'PASS' : 'FAIL',
+      `intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)} anomalies=${sb.anomalies.length}`);
     entry.close();
     joined?.sock?.close();
 
@@ -237,6 +197,7 @@ export async function run({ cluster, lb, record, measure }) {
     await sleep(1_500);
     const res = await Promise.all(['A', 'B', 'C'].map((n) => capabilities(socks[n], ch, 8_000)));
     for (const n of ['A', 'B', 'C']) socks[n].offAny(taps[n]);
+    await cluster.flushSfuEvidence();
     const creators = routerCreators(cluster, ch);
     record('SFU-04', 'registry unavailable: fresh room is refused on every node (no local router opened on a guess)',
       res.every((r) => r.kind !== 'caps') && creators.length === 0 ? 'PASS' : 'FAIL',
@@ -297,10 +258,11 @@ export async function run({ cluster, lb, record, measure }) {
       }
       await sleep(1_000);
     }
+    await cluster.flushSfuEvidence();
     const sb = splitBrain(cluster, ch);
     record('SFU-08', 'registry restarted empty while a room is live: no second concurrent router for the channel; a new peer can still join',
-      p1.ok && p2?.ok && sb.observed > 0 && sb.overlaps.length === 0 ? 'PASS' : 'FAIL',
-      `owner before=${owner1} after=${cluster.redisCli('GET', `bridge:sfu:room:${ch}`)} joinedAfter=${Date.now() - t0}ms refusedWhileSettling=${refusals} intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)}`);
+      p1.ok && p2?.ok && sb.observed > 0 && sb.overlaps.length === 0 && sb.anomalies.length === 0 ? 'PASS' : 'FAIL',
+      `owner before=${owner1} after=${cluster.redisCli('GET', `bridge:sfu:room:${ch}`)} joinedAfter=${Date.now() - t0}ms refusedWhileSettling=${refusals} intervals=${sb.intervals} overlaps=${JSON.stringify(sb.overlaps)} anomalies=${sb.anomalies.length}`);
     record('SFU-08i', 'did the new peer land in the ORIGINAL router?', 'INFO',
       p2?.ok ? (p2.peers.includes(owner.id) ? 'yes — joined the existing room' : 'no — the original peer had already been disconnected (WS lease loss) and its room closed; a fresh room was opened afterwards (no overlap)') : 'n/a');
     for (const x of [e1, p1.sock, p2?.sock]) x?.close?.();

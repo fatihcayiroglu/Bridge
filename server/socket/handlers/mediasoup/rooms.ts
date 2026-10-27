@@ -14,6 +14,27 @@ const _roomCreating    = new Map<string, Promise<SfuRoom>>();
 const _pendingRoomCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _roomLeaseWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 
+// The disposable multi-node harness needs exact router lifetimes to prove
+// there was no split brain. Production logs deliberately omit channel IDs.
+// This private parent-process channel is enabled only by the harness; it is
+// never an HTTP/socket endpoint or an ordinary application log.
+const SFU_EVIDENCE_TAG = 'bridge:sfu:evidence:v1';
+const sfuEvidenceEnabled = process.env.BRIDGE_SFU_EVIDENCE_IPC === '1' && typeof process.send === 'function';
+function recordRouterEvidence(event: 'opened' | 'closed', channelId: string): void {
+  if (sfuEvidenceEnabled) process.send?.({ tag: SFU_EVIDENCE_TAG, event, channelId, at: Date.now() });
+}
+if (sfuEvidenceEnabled) {
+  process.on('message', (message: unknown) => {
+    if (message && typeof message === 'object' &&
+        (message as { tag?: unknown }).tag === SFU_EVIDENCE_TAG &&
+        (message as { event?: unknown }).event === 'flush' &&
+        typeof (message as { nonce?: unknown }).nonce === 'string') {
+      // Ordered on the same IPC pipe after all preceding lifecycle sends.
+      process.send?.({ tag: SFU_EVIDENCE_TAG, event: 'flushed', nonce: (message as { nonce: string }).nonce });
+    }
+  });
+}
+
 function _clearRoomLeaseWatchdog(channelId: string): void {
   const timer = _roomLeaseWatchdogs.get(channelId);
   if (timer !== undefined) clearTimeout(timer);
@@ -37,6 +58,7 @@ function _invalidateRoomOwnership(channelId: string, expectedRoom: SfuRoom, reas
   sfuRooms.delete(channelId);
   if (expectedRoom._workerIndex !== undefined) decrementWorkerLoad(expectedRoom._workerIndex);
   try { expectedRoom.router.close(); } catch { /* already closed */ }
+  recordRouterEvidence('closed', channelId);
   logger.error({ channelId, reason, event: 'sfu.room.ownership_invalidated' },
     '[SFU] Room ownership can no longer be proven; local media state closed fail-closed.');
 }
@@ -129,6 +151,7 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
 
       const room: SfuRoom = { router, peers: new Map(), createdAt: Date.now(), channelId, _workerIndex: workerIdx };
       sfuRooms.set(channelId, room);
+      recordRouterEvidence('opened', channelId);
       _armRoomLeaseWatchdog(channelId, room);
       // RTP-capability discovery creates the router before a peer joins. If the
       // client disappears between those steps, reclaim the otherwise-empty
@@ -173,7 +196,10 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
           room.peers.clear();
 
           if (room._workerIndex !== undefined) decrementWorkerLoad(room._workerIndex);
-          if (sfuRooms.get(channelId) === room) sfuRooms.delete(channelId);
+          if (sfuRooms.get(channelId) === room) {
+            sfuRooms.delete(channelId);
+            recordRouterEvidence('closed', channelId);
+          }
           sfuRegistry.releaseRoom(channelId).catch((err: Error) => {
             logger.warn({ err: err.message, channelId, event: 'sfu.registry.release_failed' }, '[SFU] Registry room release failed after worker close.');
           });
@@ -211,6 +237,7 @@ export function cleanupRoom(channelId: string): void {
     if (room._workerIndex !== undefined) decrementWorkerLoad(room._workerIndex);
     room.router.close();
     sfuRooms.delete(channelId);
+    recordRouterEvidence('closed', channelId);
     sfuRegistry.releaseRoom(channelId).catch((err: Error) => {
       logger.warn({ err: err.message, channelId, event: 'sfu.registry.release_failed' }, '[SFU] Registry room release failed during cleanup.');
     });
