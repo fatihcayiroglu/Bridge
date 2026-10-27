@@ -35,29 +35,53 @@ export function summarizeResync(page, responses) {
   return { stage, events, historyRequests: responses.length, historyStatuses: statuses };
 }
 
-/** Starts counting on `page`. Call `read()` once, after the check. */
+/**
+ * Starts counting on `page`. Call `read()` once, after the check.
+ *
+ * Counted inside the page, around window.fetch: the packaged app routes REST
+ * through CapacitorHttp (mobile/capacitor.config.ts), so those requests never
+ * reach the WebView network stack and Playwright's network events miss them
+ * (#505's first run reported no history request although the message arrived).
+ */
 export async function startResyncRecorder(page) {
-  const responses = [];
-  const onResponse = (res) => { if (isHistoryRequest(res.url())) responses.push(res.status()); };
-  const onFailed = (req) => { if (isHistoryRequest(req.url())) responses.push('failed'); };
-  page.on('response', onResponse);
-  page.on('requestfailed', onFailed);
-  await page.evaluate(() => {
+  await page.evaluate((source) => {
+    const historyPath = new RegExp(source);
+    const base = location.href;
+    const isHistory = (input) => {
+      try {
+        const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+        return historyPath.test(new URL(url, base).pathname);
+      } catch {
+        return false;
+      }
+    };
     const names = ['bridge:socket-reconnected', 'bridge:socket-ready', 'bridge:auth-success', 'bridge:auth-logout'];
-    const counts = Object.fromEntries(names.map((n) => [n, 0]));
-    for (const n of names) document.addEventListener(n, () => { counts[n] += 1; });
-    window.__bridgeResyncEvidence = { counts, online: [] };
-    window.addEventListener('online', () => window.__bridgeResyncEvidence.online.push('online'));
-  });
+    const evidence = { counts: Object.fromEntries(names.map((n) => [n, 0])), online: 0, history: [] };
+    for (const n of names) document.addEventListener(n, () => { evidence.counts[n] += 1; });
+    window.addEventListener('online', () => { evidence.online += 1; });
+    const original = window.fetch;
+    window.fetch = async function (...args) {
+      const counted = isHistory(args[0]);
+      try {
+        const res = await original.apply(this, args);
+        if (counted) evidence.history.push(res.status);
+        return res;
+      } catch (err) {
+        if (counted) evidence.history.push('failed');
+        throw err;
+      }
+    };
+    window.__bridgeResyncEvidence = { evidence, restore: () => { window.fetch = original; } };
+  }, HISTORY_PATH.source);
   return {
     async read() {
-      page.off('response', onResponse);
-      page.off('requestfailed', onFailed);
       const inPage = await page.evaluate(() => {
-        const e = window.__bridgeResyncEvidence;
-        return e ? { events: { ...e.counts, online: e.online.length } } : null;
+        const r = window.__bridgeResyncEvidence;
+        if (!r) return null;
+        r.restore();
+        return { events: { ...r.evidence.counts, online: r.evidence.online }, history: [...r.evidence.history] };
       }).catch(() => null);
-      return summarizeResync(inPage, responses);
+      return summarizeResync(inPage, inPage?.history ?? []);
     },
   };
 }

@@ -27,21 +27,34 @@ test('the summary carries counts and statuses only', () => {
   assert.equal(s.historyRequests, 3);
 });
 
-test('the recorder records history outcomes and in-page counts, without URLs', async () => {
-  const handlers = {};
-  const fakePage = {
-    on: (name, fn) => { handlers[name] = fn; },
-    off: (name) => { delete handlers[name]; },
-    evaluate: async (fn) => (fn.toString().includes('__bridgeResyncEvidence = {')
-      ? undefined : { events: { ...events(1), online: 1 } }),
+test('the recorder counts history requests inside the page (CapacitorHttp bypasses the network stack), without URLs', async () => {
+  // A minimal page: evaluate() runs the function against fake window/document globals.
+  const listeners = {};
+  const fakeWindow = {
+    fetch: async (input) => {
+      if (String(input).includes('fail')) throw new TypeError('Failed to fetch');
+      return { status: String(input).includes('/messages') ? 200 : 204 };
+    },
+    addEventListener: () => {},
   };
-  const rec = await startResyncRecorder(fakePage);
-  handlers.response({ url: () => 'https://localhost/api/channels/secret-id/messages?limit=50', status: () => 200 });
-  handlers.response({ url: () => 'https://localhost/api/servers', status: () => 200 });
-  handlers.requestfailed({ url: () => 'https://localhost/api/channels/secret-id/messages?limit=50' });
+  const fakeDocument = { addEventListener: (n, fn) => { (listeners[n] ||= []).push(fn); } };
+  const page = {
+    evaluate: async (fn, arg) => {
+      const saved = { window: globalThis.window, document: globalThis.document, location: globalThis.location };
+      Object.assign(globalThis, { window: fakeWindow, document: fakeDocument, location: { href: 'https://localhost/' } });
+      try { return await fn(arg); } finally { Object.assign(globalThis, saved); }
+    },
+  };
+  const original = fakeWindow.fetch;
+  const rec = await startResyncRecorder(page);
+  await fakeWindow.fetch('https://localhost/api/channels/secret-id/messages?limit=50');
+  await fakeWindow.fetch('https://localhost/api/servers');
+  await assert.rejects(fakeWindow.fetch('https://localhost/api/channels/fail/messages?limit=50'));
+  for (const fn of listeners['bridge:socket-reconnected']) fn();
   const s = await rec.read();
   assert.equal(s.stage, 'history-loaded-not-rendered');
   assert.deepEqual(s.historyStatuses, { 200: 1, failed: 1 });
-  assert.equal(handlers.response, undefined, 'listeners are removed after read');
+  assert.equal(s.events['bridge:socket-reconnected'], 1);
+  assert.equal(fakeWindow.fetch, original, 'the page fetch is restored after read');
   assert(!JSON.stringify(s).includes('secret-id'));
 });
