@@ -3143,12 +3143,15 @@ async function main() {
   // in two rounds of opposite order, with the same fixed window and evidence
   // as SF05. A start counts only when the control logged the requested
   // variant and its page finished. Runs last; bounded; measurement only.
+  // Run 40463258659 (648d8b3c): only no-effects clearly lowered the stall
+  // (about 1.0 s against 1.8 s, two starts each); its text-clip and animation
+  // parts now also run on their own.
   await measure('SF06', 'cold-start stalls of Bridge content with first-screen CSS effects disabled (debug control; measurement)', async () => {
     if (MODE !== 'android') throw new Skip('actual Android cold starts and stall probe required');
     const step = boundedStage('SF06');
     const OBSERVE_MS = 8_000;
     const CONTENT = 'com.bridge.app.WebViewBridgeContentBaselineActivity';
-    const VARIANTS = ['none', 'no-filters', 'no-shadows', 'no-effects'];
+    const VARIANTS = ['none', 'no-filters', 'no-shadows', 'no-text-clip', 'no-animations', 'no-effects'];
     const plan = [...VARIANTS, ...[...VARIANTS].reverse()].map((variant, index) => ({ round: index < VARIANTS.length ? 1 : 2, variant }));
     const samples = [];
     for (const { round, variant } of plan) {
