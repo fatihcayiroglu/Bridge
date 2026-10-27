@@ -62,20 +62,31 @@ export function createNativeCredentialPort({ secureStore }) {
     }
   }
 
+  // Native Keychain/Keystore calls are async. Preserve invocation order so a
+  // later clear cannot be overtaken by an earlier in-flight write.
+  let tail = Promise.resolve();
+  function serialize(task) {
+    const result = tail.then(task);
+    tail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   return Object.freeze({
-    async readToken() {
-      const stored = await perform('getItemAsync');
-      if (stored === null) return null;
-      if (!validToken(stored)) throw new NativeCredentialError('INVALID_STORED_TOKEN');
-      return stored;
+    readToken() {
+      return serialize(async () => {
+        const stored = await perform('getItemAsync');
+        if (stored === null) return null;
+        if (!validToken(stored)) throw new NativeCredentialError('INVALID_STORED_TOKEN');
+        return stored;
+      });
     },
-    async writeToken(token) {
-      if (!validToken(token)) throw new NativeCredentialError('INVALID_TOKEN');
-      await perform('setItemAsync', token);
+    writeToken(token) {
+      if (!validToken(token)) return Promise.reject(new NativeCredentialError('INVALID_TOKEN'));
+      return serialize(async () => { await perform('setItemAsync', token); });
     },
-    async clearToken() {
+    clearToken() {
       // No "clear succeeded" result is returned before the native deletion resolves.
-      await perform('deleteItemAsync');
+      return serialize(async () => { await perform('deleteItemAsync'); });
     },
   });
 }
