@@ -214,7 +214,9 @@ export async function collectPageTiming() {
   return {
     available: Number.isFinite(origin),
     bootEffects: boot && typeof boot === 'object'
-      ? { deferred: boot.deferred === true, restored: Number.isFinite(boot.restoredEpochMs) } : null,
+      ? { deferred: boot.deferred === true, restored: Number.isFinite(boot.restoredEpochMs),
+        trigger: ['focus', 'focused-at-load', 'input', 'fallback'].includes(boot.trigger) ? boot.trigger : null,
+        restoredEpochMs: Number.isFinite(boot.restoredEpochMs) ? Math.round(boot.restoredEpochMs) : null } : null,
     supported: { longtask: longTasks !== null, longAnimationFrame: frames !== null },
     timeOriginEpochMs: Math.round(origin),
     navigation: nav ? { responseEndEpochMs: epoch(nav.responseEnd), domContentLoadedEpochMs: epoch(nav.domContentLoadedEventEnd),
@@ -290,6 +292,9 @@ export function summarizeRendererOverlap(samples) {
     pageTimingRead: timing.length,
     bootEffectsDeferred: timing.filter(t => t.bootEffects?.deferred).length,
     bootEffectsRestored: timing.filter(t => t.bootEffects?.restored).length,
+    bootEffectsTriggers: timing.reduce((m, t) => {
+      const k = t.bootEffects?.trigger; if (k) m[k] = (m[k] ?? 0) + 1; return m;
+    }, {}),
     longTaskSupported: timing.filter(t => t.supported.longtask).length,
     longAnimationFrameSupported: timing.filter(t => t.supported.longAnimationFrame).length,
     longTasks: { count: sumTiming('longTasks', 'count'), totalMs: sumTiming('longTasks', 'totalMs'),
