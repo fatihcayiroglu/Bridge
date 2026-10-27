@@ -94,6 +94,10 @@ jobs:
           npx expo prebuild --platform ios --no-install
           cd ios
           pod install 2>&1 | tee ../native-evidence/pods.log
+          # A disposable ad-hoc simulator app has no Developer Team prefix.
+          # Give that simulator target its own bundle-ID Keychain group. These
+          # generated files are not device provisioning or distribution signing.
+          python3 -c 'import glob,plistlib; paths=glob.glob("*/*.entitlements"); assert len(paths)==1, paths; p=paths[0]; d=plistlib.load(open(p,"rb")); d["application-identifier"]="com.bridge.nativepilot"; d["keychain-access-groups"]=["com.bridge.nativepilot"]; plistlib.dump(d,open(p,"wb"))'
       - name: Build actual iOS simulator application
         run: |
           set -o pipefail
