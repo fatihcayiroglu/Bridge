@@ -42,3 +42,26 @@ test('runner prints the excerpt only inside the pre-input gate, and before Appiu
   assert.match(js, /driverDeadlineMs = 240000/);
   assert.match(js, /\}, 240000\);/, 'the session deadline is unchanged');
 });
+
+// ---- end-of-log evidence summary ----
+import { prefetchSummary, journeySummary, podCacheLines } from '../scripts/ios-evidence-summary.mjs';
+test('the summary prints allow-listed facts only (no fixture names, ids, tokens or driver traffic)', () => {
+  const j = journeySummary({ status: 'FAIL', stage: 'native-xcuitest-session', runtimeVersion: '26.2', cases: [], notExecuted: ['a', 'b', 'c'],
+    userA: 'mob_A_deadbeef', token: 'x'.repeat(64), fixtureId: 'u-123' });
+  assert.deepEqual(j, { status: 'FAIL', stage: 'native-xcuitest-session', runtimeVersion: '26.2', passed: 0, failed: 0, notExecuted: 3 });
+  assert.ok(!JSON.stringify(j).match(/mob_A|deadbeef|u-123|xxxx/));
+  const p = prefetchSummary({ status: 'PASS', artifacts: [{ name: 'core-debug', source: 'download', expectedSha512: 'abc', attempts: [{ n: 1, exit: 0, seconds: 97.2, bytes: 94100000, result: 'VERIFIED', stderr: 'secret?' }] }] });
+  assert.deepEqual(p.artifacts[0].attempts[0], { n: 1, exit: 0, seconds: 97.2, bytes: 94100000, result: 'VERIFIED' });
+  assert.deepEqual(prefetchSummary(null), { status: null, failed: null, reason: null, artifacts: [] });
+});
+test('only React Native cache/download lines are taken from pods.log, bounded', () => {
+  const lines = podCacheLines(['noise', '[ReactNativeCore] Cache miss: downloading x', '[Cache] SHA1 verified for y', 'more noise', ...Array(80).fill('[ReactNativeDependencies] z')].join('\n'));
+  assert.equal(lines.length, 30); assert.ok(lines.every((l) => /\[(ReactNativeCore|ReactNativeDependencies|Cache)\]/.test(l)));
+});
+test('the workflow prints the summary as an always() step and never fails the job itself', () => {
+  const wf = readFileSync(new URL('../../.github/workflows/native-pilot-ios-browser-auth.yml', import.meta.url), 'utf8');
+  const at = wf.indexOf('ios-evidence-summary.mjs');
+  assert.ok(at > 0);
+  const block = wf.slice(wf.lastIndexOf('- name:', at), wf.indexOf('actions/upload-artifact', at));
+  assert.match(block, /if: always\(\)/); assert.match(block, /\|\| true/);
+});
