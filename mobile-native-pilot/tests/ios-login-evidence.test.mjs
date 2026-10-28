@@ -43,11 +43,28 @@ test('no value, username or password text ever appears in the evidence', () => {
 
 test('the iOS driver records the evidence on failure from the page source, not from argument values', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, assertUsernameIntact \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /facts\.failureUi\.login = loginEvidence\(s, activeUsername\)/);
 });
 
 test('the evidence is printed to the job log (artifacts are not downloadable) from the closed shape only', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login \}\)\}`\)/);
+});
+
+import { assertUsernameIntact } from '../scripts/ios-login-evidence.mjs';
+test('the username field must hold exactly the username after typing; the failure is a closed code', () => {
+  const ev = (userValue, extra = []) => loginEvidence(page(userValue, '••••', extra.join('')), USER);
+  assert.equal(assertUsernameIntact(ev(USER)), true);
+  assert.throws(() => assertUsernameIntact(ev(USER + PASS)), /^Error: LOGIN_PASSWORD_TYPED_INTO_USERNAME_FIELD$/);
+  assert.throws(() => assertUsernameIntact(ev('')), /LOGIN_USERNAME_FIELD_NOT_SET/);
+  assert.throws(() => assertUsernameIntact({ textFields: [] }), /LOGIN_USERNAME_FIELD_NOT_UNIQUE/);
+  assert.throws(() => assertUsernameIntact({ textFields: [{ visible: true, valueIsUsername: true }, { visible: true, valueIsUsername: true }] }), /LOGIN_USERNAME_FIELD_NOT_UNIQUE/);
+  assert.equal(assertUsernameIntact({ textFields: [{ visible: true, valueIsUsername: true }, { visible: false, valueIsUsername: false }] }), true, 'a hidden second field does not count');
+  for (const code of ['LOGIN_PASSWORD_TYPED_INTO_USERNAME_FIELD', 'LOGIN_USERNAME_FIELD_NOT_SET', 'LOGIN_USERNAME_FIELD_NOT_UNIQUE']) assert.match(code, /^[A-Z_]+(?::[a-z-]+)?$/);
+});
+
+test('the iOS driver focuses the password field by click before typing, then checks the username field', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);\s*\/\/[^\n]*\n\s*await command\('POST', `\/element\/\$\{key\(secrets\[0\]\)\}\/click`, \{\}\);\s*await command\('POST', `\/element\/\$\{key\(secrets\[0\]\)\}\/value`, \{ text: password \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
 });

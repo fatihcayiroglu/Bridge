@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { loginEvidence } from './ios-login-evidence.mjs';
+import { loginEvidence, assertUsernameIntact } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -121,7 +121,10 @@ async function signIn(user, expectedPid) {
   const secrets = await elements('class name', 'XCUIElementTypeSecureTextField');
   assert.ok(fields.length === 1 && secrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
   await command('POST', `/element/${key(fields[0])}/value`, { text: user.username });
+  // Focus the password field itself before typing: without it the text went into the username field (run 40700229648).
+  await command('POST', `/element/${key(secrets[0])}/click`, {});
   await command('POST', `/element/${key(secrets[0])}/value`, { text: password });
+  assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
   await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
   await screenshot(`consent-${activeCase}`);

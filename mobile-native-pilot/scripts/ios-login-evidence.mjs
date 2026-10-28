@@ -21,3 +21,12 @@ export function loginEvidence(source, username) {
     secureFields: secure.slice(0, 4).map((n) => ({ visible: n.visible === 'true', y: num(n.y), valueLength: (n.value ?? '').length })),
   };
 }
+
+// After typing, the one visible username field must hold exactly the username. Run 40700229648 showed the password
+// appended to it (value length 63, the secure field empty), so the form could never submit. Closed error codes only.
+export function assertUsernameIntact(evidence) {
+  const visible = (evidence?.textFields ?? []).filter((field) => field.visible);
+  if (visible.length !== 1) throw new Error('LOGIN_USERNAME_FIELD_NOT_UNIQUE');
+  if (!visible[0].valueIsUsername) throw new Error(visible[0].valueContainsUsername ? 'LOGIN_PASSWORD_TYPED_INTO_USERNAME_FIELD' : 'LOGIN_USERNAME_FIELD_NOT_SET');
+  return true;
+}
