@@ -1,0 +1,53 @@
+name: Desktop UI A/B microbenchmark (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - 'bench-ui/**'
+      - '.github/workflows/desktop-ui-ab-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-electron-microbench:
+    name: Real Electron / Linux synthetic UI measurement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install isolated dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          npm ci --prefix electron --no-audit --no-fund
+          npm ci --prefix bench-ui --no-audit --no-fund
+      - name: Install X virtual framebuffer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth
+      - name: Validate report contract and build equal UI fixtures
+        run: |
+          node --test bench-ui/verify-report.test.cjs
+          node bench-ui/build-assets.mjs
+      - name: Run real Electron UI benchmark (not product acceptance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          xvfb-run -a electron/node_modules/electron/dist/electron --no-sandbox bench-ui/electron-benchmark.cjs 2>&1 | tee bench-ui-run.log
+          node bench-ui/verify-report.cjs
+      - name: Preserve exact-head measurements and first-failure log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ui-ab-linux-${{ github.sha }}
+          path: |
+            bench-ui/generated/report.json
+            bench-ui/generated/bundle-meta.json
+            bench-ui-run.log
+          if-no-files-found: warn
+          retention-days: 14
