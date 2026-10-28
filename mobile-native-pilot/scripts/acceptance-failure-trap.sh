@@ -18,6 +18,11 @@ acceptance_detail=''
 # caller), so such functions set `acceptance_detail` before returning to say why.
 trap 'acceptance_failed_command=$BASH_COMMAND; acceptance_failed_line=$LINENO; acceptance_failed_function=${FUNCNAME[0]:-main}' ERR
 
+# Compatible with macOS's built-in Bash 3.2; uppercase expansion needs Bash 4.
+acceptance_upper_label() {
+  printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
+}
+
 # $1 = exit status, $2 = evidence directory, $3 = label (android|ios)
 acceptance_record_failure() {
   local status="$1" dir="$2" label="$3"
@@ -25,7 +30,7 @@ acceptance_record_failure() {
   local cmd="${acceptance_failed_command//$'\n'/ }"
   cmd="${cmd:0:300}"
   printf 'NATIVE_%s_ACCEPTANCE_FAILED stage=%s exit=%s function=%s line=%s command=%s detail=%s\n' \
-    "${label^^}" "${stage:-unknown}" "$status" "${acceptance_failed_function:-unknown}" \
+    "$(acceptance_upper_label "$label")" "${stage:-unknown}" "$status" "${acceptance_failed_function:-unknown}" \
     "${acceptance_failed_line:-unknown}" "${cmd:-unknown}" "${acceptance_detail:-none}" >&2
   printf 'stage=%s\nexit=%s\nfunction=%s\nline=%s\ncommand=%s\ndetail=%s\n' \
     "${stage:-unknown}" "$status" "${acceptance_failed_function:-unknown}" \
@@ -45,11 +50,11 @@ acceptance_redact() {
 # $1 = uiautomator XML dump, $2 = label (android). Prints at most 40 visible strings.
 acceptance_print_ui_text() {
   local xml="$1" label="$2"
-  [[ -f "$xml" ]] || { printf 'NATIVE_%s_UI_TEXT: (no dump at %s)\n' "${label^^}" "$xml" >&2; return 0; }
+  [[ -f "$xml" ]] || { printf 'NATIVE_%s_UI_TEXT: (no dump at %s)\n' "$(acceptance_upper_label "$label")" "$xml" >&2; return 0; }
   { grep -oE '(text|content-desc)="[^"]+"' "$xml" || true; } \
     | sed -E 's/^(text|content-desc)="//; s/"$//; s/&quot;/"/g; s/&apos;/'"'"'/g; s/&lt;/</g; s/&gt;/>/g; s/&#10;/ /g; s/&amp;/\&/g' \
     | acceptance_redact | cut -c1-240 | awk 'NF && !seen[$0]++' | head -n 40 \
-    | sed "s/^/NATIVE_${label^^}_UI_TEXT: /" >&2 || true
+    | sed "s/^/NATIVE_$(acceptance_upper_label "$label")_UI_TEXT: /" >&2 || true
 }
 
 # Reads an `adb logcat -d` capture on stdin; prints the last 60 error lines from the JS
@@ -60,7 +65,7 @@ acceptance_print_runtime_errors() {
   # app fell back to the asset loader, "Unable to load script"); it carries the IOException.
   { grep -E ' E (ReactNativeJS|ReactNative|AndroidRuntime|unknown:ReactNative)| W (ReactNative|unknown:ReactNative): .*[Pp]ackager' || true; } \
     | acceptance_redact | cut -c1-300 | tail -n 60 \
-    | sed "s/^/NATIVE_${label^^}_RUNTIME_ERROR: /" >&2 || true
+    | sed "s/^/NATIVE_$(acceptance_upper_label "$label")_RUNTIME_ERROR: /" >&2 || true
 }
 
 # Classifies a uiautomator dump for an Android "<app> isn't responding" dialog.
@@ -90,9 +95,9 @@ acceptance_classify_anr_dialog() {
 # redbox that appears before the bundle loads. $1 = file, $2 = label, $3 = tag, $4 = lines.
 acceptance_print_tail() {
   local file="$1" label="$2" tag="$3" lines="${4:-40}"
-  if [[ ! -f "$file" ]]; then printf 'NATIVE_%s_%s: (missing %s)\n' "${label^^}" "$tag" "$file" >&2; return 0; fi
+  if [[ ! -f "$file" ]]; then printf 'NATIVE_%s_%s: (missing %s)\n' "$(acceptance_upper_label "$label")" "$tag" "$file" >&2; return 0; fi
   { tail -n "$lines" "$file" || true; } | acceptance_redact | cut -c1-300 \
-    | sed "s/^/NATIVE_${label^^}_${tag}: /" >&2 || true
+    | sed "s/^/NATIVE_$(acceptance_upper_label "$label")_${tag}: /" >&2 || true
 }
 
 # ActivityManager logs "ANR in <process> (...)" for EVERY ANR, whether or not a dialog was
@@ -109,5 +114,5 @@ acceptance_print_anr_reports() {
   local label="$1"
   { grep -E ' ActivityManager: (ANR in |PID: |Reason: |Parent: |ErrorId: |Load: |Frozen: |CPU usage from |[0-9.]+% TOTAL)' || true; } \
     | acceptance_redact | cut -c1-300 | head -n 40 \
-    | sed "s/^/NATIVE_${label^^}_ANR_REPORT: /" >&2 || true
+    | sed "s/^/NATIVE_$(acceptance_upper_label "$label")_ANR_REPORT: /" >&2 || true
 }
