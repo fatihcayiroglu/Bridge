@@ -94,6 +94,7 @@ async function browserReady() {
   const source = await command('GET', '/source');
   assert.ok(source.includes('XCUIElementTypeWebView'), 'SYSTEM_BROWSER_WEBVIEW_REQUIRED');
   const active = await native('activeAppInfo');
+  facts.browserBundle = active.bundleId;
   assert.ok([bundle, 'com.apple.SafariViewService', 'com.apple.AuthenticationServicesUI'].includes(active.bundleId), 'UNEXPECTED_AUTHENTICATION_APPLICATION');
   facts.systemBrowserObserved = true;
 }
@@ -156,6 +157,8 @@ try {
     'appium:printPageSourceOnFindFailure': false, 'appium:newCommandTimeout': 180,
   } } }, 240000);
   session = created.sessionId; assert.ok(session, 'NATIVE_XCTEST_SESSION_REQUIRED');
+  const runtime = created.capabilities?.platformVersion;
+  if (typeof runtime === 'string' && /^\d+(\.\d+){0,2}$/.test(runtime)) facts.runtimeVersion = runtime;
   await until(async () => (await byName('Sign in with your browser')).length > 0, 'native-sign-in-screen');
   const initial = await native('activeAppInfo');
   assert.ok(initial.bundleId === bundle && Number(initial.pid) > 0, 'NATIVE_APPLICATION_REQUIRED');
@@ -195,6 +198,7 @@ try {
   // Driver/server messages can contain credentials or callback URLs. Preserve
   // the closed stage, AX counts and screenshots, never raw source/arguments.
   if (session) {
+    try { const active = await native('activeAppInfo'); facts.failureApplication = { bundleId: active.bundleId, pid: active.pid }; } catch {}
     try { const s = await command('GET', '/source'); facts.failureUi = { webViews: (s.match(/XCUIElementTypeWebView\b/g) || []).length,
       textFields: (s.match(/XCUIElementTypeTextField\b/g) || []).length, secureFields: (s.match(/XCUIElementTypeSecureTextField\b/g) || []).length,
       alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length }; await screenshot('first-failure'); } catch {}
