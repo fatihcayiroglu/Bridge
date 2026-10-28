@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { enterFocusedPassword } from './ios-password-focus.mjs';
+import { enterFocusedPassword, dismissUsernameKeyboard } from './ios-password-focus.mjs';
 import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -123,6 +123,11 @@ async function signIn(user, expectedPid) {
   assert.ok(fields.length === 1 && secrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
   const secretBefore = fieldGeometry(await command('GET', `/element/${key(secrets[0])}/rect`));
   await command('POST', `/element/${key(fields[0])}/value`, { text: user.username });
+  // Run40730915313 proved the active element remained different from the secure
+  // field after the coordinate/click sequence. Remove the username keyboard and
+  // prove that transition before obtaining a new password-element reference.
+  await dismissUsernameKeyboard({ elements, native, until,
+    record: proof => { facts.usernameKeyboard = proof; } });
   // The page moves once the username keyboard is up, so the first element reference can point at a stale position
   // (runs 40700229648 and 40706730676: the password still landed in the username field). Look the field up again,
   // record where it is now, touch that spot like a finger, and only then type.
@@ -136,10 +141,11 @@ async function signIn(user, expectedPid) {
   // (run 40717519808: the password still landed in the username field after the touch action above).
   await native('tap', centerOf(secretRect));
   facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
-  // Element-addressed typing reached the username field in runs 40700229648, 40706730676, 40717519808 and 40725593481,
-  // so preserve #553's keyboard typing, but require positive keyboard ownership first.
+  // Element-addressed typing previously ran without a positive keyboard-focus
+  // proof. Keep that proof mandatory; type only through its verified element,
+  // using the native value API rather than unqualified hardware-key simulation.
   await enterFocusedPassword({ targetId: key(freshSecrets[0]), command, until,
-    typePassword: (_id, value) => native('keys', { keys: [value] }),
+    typePassword: (id, value) => command('POST', `/element/${id}/value`, { text: value }),
     record: proof => { facts.passwordKeyboardFocus = proof; } }, password);
   assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
   await clickSignInSubmit(secrets[0]);
@@ -236,6 +242,7 @@ try {
 } catch (error) {
   facts.failure = /^[A-Z_]+(?::[a-z-]+)?$/.test(error?.message ?? '') ? error.message : 'DRIVER_OR_SERVICE_FAILED';
   console.log(`IOS_PASSWORD_FOCUS ${JSON.stringify(facts.passwordKeyboardFocus ?? null)}`);
+  console.log(`IOS_USERNAME_KEYBOARD ${JSON.stringify(facts.usernameKeyboard ?? null)}`);
   if (error?.message?.startsWith('WebDriver ')) facts.driverFailure = error.message;
   // Driver/server messages can contain credentials or callback URLs. Preserve
   // the closed stage, AX counts and screenshots, never raw source/arguments.

@@ -1,6 +1,22 @@
 // WDA's iOS /element/active resolves hasKeyboardFocus, unlike the optional
 // page-source focused attribute (absent in run40725593481). Never type a secret
 // on the strength of a click succeeding or of a matching rectangle alone.
+export async function dismissUsernameKeyboard({ elements, native, until, record }) {
+  let wasVisible = false, requested = false, absent = 0;
+  await until(async () => {
+    const visible = (await elements('class name', 'XCUIElementTypeKeyboard')).length > 0;
+    wasVisible ||= visible;
+    record({ wasVisible, dismissed: false });
+    if (visible) {
+      absent = 0;
+      if (!requested) { requested = true; await native('hideKeyboard'); }
+      return false;
+    }
+    return ++absent >= 2;
+  }, 'username-keyboard-dismissed');
+  record({ wasVisible, dismissed: true });
+}
+
 export async function enterFocusedPassword({ targetId, command, until, record, typePassword }, password) {
   if (typeof targetId !== 'string' || !targetId) throw Error('LOGIN_PASSWORD_TARGET_REQUIRED');
   await until(async () => {

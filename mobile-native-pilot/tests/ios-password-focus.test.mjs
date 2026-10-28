@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { enterFocusedPassword } from '../scripts/ios-password-focus.mjs';
+import { enterFocusedPassword, dismissUsernameKeyboard } from '../scripts/ios-password-focus.mjs';
 
 function driver(states, type = 'XCUIElementTypeSecureTextField') {
   const writes = [], records = [], calls = []; let index = 0;
@@ -61,4 +61,41 @@ test('closed evidence never includes element ids, password, field values or driv
   const d = driver([active('secure-target')]); await enterFocusedPassword(d.ports, 'fixture-secret');
   assert.deepEqual(Object.keys(d.records[0]).sort(), ['activeFound', 'secureType', 'targetMatches']);
   assert.ok(Object.values(d.records[0]).every(x => typeof x === 'boolean'));
+});
+
+function keyboard(states, failure) {
+  let i = 0; const calls = [], proofs = [];
+  return { calls, proofs, ports: {
+    elements: async (using, type) => { assert.equal(using, 'class name'); assert.equal(type, 'XCUIElementTypeKeyboard');
+      calls.push('observe-keyboard'); return Array(states[Math.min(i++, states.length - 1)]).fill({}); },
+    native: async method => { calls.push(method); if (failure) throw failure; },
+    record: p => proofs.push(p),
+    until: async (probe, label) => { for (let n = 0; n < 4; n++) if (await probe()) return;
+      throw Error('MOBILE_AUTH_DEADLINE:' + label); },
+  } };
+}
+test('dismisses the actual username keyboard and observes its absence before returning', async () => {
+  const k = keyboard([1, 1, 0, 0]); await dismissUsernameKeyboard(k.ports);
+  assert.deepEqual(k.calls, ['observe-keyboard', 'hideKeyboard', 'observe-keyboard', 'observe-keyboard', 'observe-keyboard']);
+  assert.equal(k.proofs.slice(0, -1).every(p => p.wasVisible && !p.dismissed), true);
+  assert.deepEqual(k.proofs.at(-1), { wasVisible: true, dismissed: true });
+});
+test('an already absent keyboard needs no native dismissal command', async () => {
+  const k = keyboard([0]); await dismissUsernameKeyboard(k.ports);
+  assert.deepEqual(k.calls, ['observe-keyboard', 'observe-keyboard']); assert.equal(k.proofs.at(-1).dismissed, true);
+});
+test('a native dismissal call succeeding without hiding the keyboard remains a failure', async () => {
+  const k = keyboard([1]); await assert.rejects(dismissUsernameKeyboard(k.ports), /MOBILE_AUTH_DEADLINE:username-keyboard-dismissed/);
+  assert.equal(k.proofs.every(p => p.wasVisible && !p.dismissed), true);
+  assert.equal(k.calls.filter(x => x === 'hideKeyboard').length, 1);
+});
+test('unsupported or failed native dismissal is propagated, never treated as success', async () => {
+  const k = keyboard([1], Error('WebDriver sync failed (500; unsupported operation)'));
+  await assert.rejects(dismissUsernameKeyboard(k.ports), /unsupported operation/);
+  assert.equal(k.proofs.at(-1).dismissed, false);
+});
+test('a keyboard that appears after an initially absent frame must still be dismissed', async () => {
+  const k = keyboard([0, 1, 0, 0]); await dismissUsernameKeyboard(k.ports);
+  assert.equal(k.calls.filter(x => x === 'hideKeyboard').length, 1);
+  assert.deepEqual(k.proofs.at(-1), { wasVisible: true, dismissed: true });
 });

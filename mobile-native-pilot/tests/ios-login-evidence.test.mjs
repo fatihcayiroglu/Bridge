@@ -104,6 +104,7 @@ test('the page-source focus flag is read as true, false or unknown, never as fre
 test('the driver taps natively, then records the focus snapshot before typing the password', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*(?:\/\/[^\n]*\s*)*await enterFocusedPassword\(\{ targetId: key\(freshSecrets\[0\]\), command, until,/);
-  assert.match(s, /typePassword: \(_id, value\) => native\('keys', \{ keys: \[value\] \}\)/);
+  assert.match(s, /typePassword: \(id, value\) => command\('POST', `\/element\/\$\{id\}\/value`, \{ text: value \}\)/);
+  assert.match(s, /await dismissUsernameKeyboard\([\s\S]*?\);[\s\S]*?const freshSecrets = await elements\('class name', 'XCUIElementTypeSecureTextField'\)/);
   assert.ok(!s.includes('}/value`, { text: password }'), 'the harness cannot write the password outside the proven-focus gate');
 });
