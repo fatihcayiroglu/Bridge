@@ -65,3 +65,5 @@ e2e/test-results/
 electron/release/
 /android/
 /ios/
+# Local generated assets from the isolated desktop UI benchmark.
+bench-ui/generated/
