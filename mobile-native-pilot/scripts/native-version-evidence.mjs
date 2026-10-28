@@ -23,6 +23,36 @@ export function storageEvidence({ platform, requested, observed, minimum, head, 
     features: { 'protected-storage-and-encrypted-recovery': status,
       ...Object.fromEntries(outstanding.map(name => [name, 'NOT EXECUTED'])) } };
 }
+// ---- Android SDK availability (a gate that cannot run is NOT EXECUTED, never PASS or FAIL) ----
+// Run 40676731505 (#546): `sdkmanager --install 'platforms;android-37'` -> "Failed to find
+// package", no emulator ever started, and the cell showed only the raw emulator-action error.
+// The packages the emulator action installs are checked first, against the STABLE channel
+// the action uses; the all-channels inventory only explains where a package is offered.
+export function sdkPackages(inventory) {
+  const ids = new Set();
+  for (const line of String(inventory ?? '').split(/\r?\n/)) {
+    const m = /^\s{2}(\S[^|]*?)\s*\|/.exec(line);
+    if (m && m[1] !== 'Path' && !/^-+$/.test(m[1])) ids.add(m[1]);
+  }
+  return ids;
+}
+export function androidSdkAvailability(api, stableInventory, allChannelsInventory = '') {
+  assert.match(String(api), /^\d+$/, 'ANDROID_API_REQUIRED');
+  const required = [`platforms;android-${api}`, `system-images;android-${api};google_apis;x86_64`];
+  const stable = sdkPackages(stableInventory), everywhere = sdkPackages(allChannelsInventory);
+  const missing = required.filter(id => !stable.has(id));
+  const near = id => id.includes(`android-${api}`) || id.includes(`android-${api}.`);
+  const nearby = [...new Set([...stable, ...everywhere])].filter(near).sort().slice(0, 12);
+  if (!missing.length) return { available: true, required, missing, nearby, reason: null };
+  const reason = missing.every(id => everywhere.has(id)) ? 'SDK_PACKAGE_ONLY_OUTSIDE_STABLE_CHANNEL' : 'SDK_PACKAGE_UNAVAILABLE';
+  return { available: false, required, missing, nearby, reason };
+}
+export function androidNotExecuted({ head, requested, reason, missing = [], nearby = [] }) {
+  assert.match(head, /^[a-f0-9]{40}$/);
+  return { head, platform: 'android', requested: Number(requested), status: 'NOT EXECUTED', productCompatibility: 'NOT EXECUTED',
+    reason, missing, nearby, physicalDevice: false,
+    features: Object.fromEntries(['protected-storage-and-encrypted-recovery', ...outstanding].map(name => [name, 'NOT EXECUTED'])) };
+}
 const versionParts = version => String(version).split('.').map(Number);
 const compare = (a, b) => { const x = versionParts(a), y = versionParts(b); for (let i=0;i<3;i++) { const d=(x[i]??0)-(y[i]??0);if(d)return d; } return 0; };
 export function iosRuntimePlan(runtimes) {
@@ -49,9 +79,13 @@ function sha(file) { return crypto.createHash('sha256').update(fs.readFileSync(f
 function optional(file) { return fs.existsSync(file) ? fs.readFileSync(file,'utf8') : ''; }
 function main([action, requested, code, directory]) {
   if(action==='init-android') {
-    write('native-evidence/compatibility.json',{head:head(),platform:'android',requested:Number(requested),status:'NOT EXECUTED',
-      productCompatibility:'NOT EXECUTED',reason:'native runtime journey has not completed',physicalDevice:false,
-      features:Object.fromEntries(['protected-storage-and-encrypted-recovery',...outstanding].map(name=>[name,'NOT EXECUTED']))});
+    write('native-evidence/compatibility.json',androidNotExecuted({head:head(),requested,reason:'native runtime journey has not completed'}));
+  } else if(action==='sdk-check') {
+    const result=androidSdkAvailability(requested,optional('native-evidence/sdk-inventory-stable.txt'),optional('native-evidence/sdk-inventory.txt'));
+    if(!result.available) write('native-evidence/compatibility.json',androidNotExecuted({head:head(),requested,reason:result.reason,missing:result.missing,nearby:result.nearby}));
+    console.log(result.available ? `NATIVE_ANDROID_API${requested}_SDK_AVAILABLE`
+      : `NATIVE_ANDROID_API${requested}_NOT_EXECUTED reason=${result.reason} missing=${result.missing.join(',')} nearby=${result.nearby.join(',')||'none'}`);
+    if(process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT,`available=${result.available}\n`);
   } else if(action==='record-android') {
     const minimum=/^sdkVersion:'(\d+)'/m.exec(fs.readFileSync('native-evidence/apk-badging.txt','utf8'))?.[1];
     assert.equal(minimum,'24','BUILT_ANDROID_MINIMUM_CHANGED');

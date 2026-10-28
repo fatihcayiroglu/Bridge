@@ -53,3 +53,68 @@ test('observed iOS version must belong to the actually booted simulator, not the
   assert.throws(()=>observedIosRuntime(inventory,'a'),/REQUESTED_SIMULATOR_NOT_BOOTED/);
   assert.throws(()=>observedIosRuntime(inventory,'missing'),/REQUESTED_SIMULATOR_NOT_BOOTED/);
 });
+
+// ---- Android SDK availability: NOT EXECUTED, never PASS or FAIL ----
+import { sdkPackages, androidSdkAvailability, androidNotExecuted } from '../scripts/native-version-evidence.mjs';
+const listing = rows => ['Installed packages:', '  Path | Version | Description | Location', '  ------- | ------- | ------- | -------',
+  '  platform-tools | 36.0.0 | Android SDK Platform-Tools | platform-tools', '', 'Available Packages:', '  Path | Version | Description', '  ------- | ------- | -------',
+  ...rows.map(id => `  ${id} | 1 | description of ${id}`)].join('\n');
+const STABLE_ALL = ['platforms;android-24', 'platforms;android-35', 'platforms;android-36', 'system-images;android-24;google_apis;x86_64',
+  'system-images;android-35;google_apis;x86_64', 'system-images;android-36;google_apis;x86_64', 'platforms;android-37.0'];
+
+test('sdkmanager inventories parse to package ids, ignoring headers, rules and blank lines', () => {
+  const ids = sdkPackages(listing(['platforms;android-36']));
+  assert.deepEqual([...ids].sort(), ['platform-tools', 'platforms;android-36']);
+  assert.equal(sdkPackages('').size, 0);
+  assert.equal(sdkPackages(undefined).size, 0);
+});
+test('every package the emulator action installs must be offered by the STABLE channel to be available', () => {
+  for (const api of [24, 35, 36]) assert.equal(androidSdkAvailability(api, listing(STABLE_ALL)).available, true, String(api));
+  const missingImage = androidSdkAvailability(35, listing(STABLE_ALL.filter(id => id !== 'system-images;android-35;google_apis;x86_64')));
+  assert.equal(missingImage.available, false);
+  assert.deepEqual(missingImage.missing, ['system-images;android-35;google_apis;x86_64']);
+});
+test('API 37 absent from the SDK: NOT available, names what is missing and the near-miss package', () => {
+  const r = androidSdkAvailability(37, listing(STABLE_ALL));
+  assert.equal(r.available, false);
+  assert.deepEqual(r.missing, ['platforms;android-37', 'system-images;android-37;google_apis;x86_64']);
+  assert.equal(r.reason, 'SDK_PACKAGE_UNAVAILABLE');
+  assert.deepEqual(r.nearby, ['platforms;android-37.0'], 'a differently named package is surfaced, never silently substituted');
+});
+test('a package offered only outside the stable channel is reported as such, not as available', () => {
+  const preview = listing([...STABLE_ALL, 'platforms;android-37', 'system-images;android-37;google_apis;x86_64']);
+  const r = androidSdkAvailability(37, listing(STABLE_ALL), preview);
+  assert.equal(r.available, false);
+  assert.equal(r.reason, 'SDK_PACKAGE_ONLY_OUTSIDE_STABLE_CHANNEL');
+  assert.deepEqual(r.missing, ['platforms;android-37', 'system-images;android-37;google_apis;x86_64']);
+});
+test('an empty or unreadable inventory is never "available"', () => {
+  assert.equal(androidSdkAvailability(35, '').available, false);
+  assert.equal(androidSdkAvailability(35, undefined).available, false);
+  assert.throws(() => androidSdkAvailability('x', ''), /ANDROID_API_REQUIRED/);
+});
+test('an unavailable SDK yields NOT EXECUTED evidence for every feature, with the reason and no pass anywhere', () => {
+  const head = 'a'.repeat(40);
+  const r = androidSdkAvailability(37, listing(STABLE_ALL));
+  const report = androidNotExecuted({ head, requested: 37, reason: r.reason, missing: r.missing, nearby: r.nearby });
+  assert.equal(report.status, 'NOT EXECUTED');
+  assert.equal(report.productCompatibility, 'NOT EXECUTED');
+  assert.equal(report.reason, 'SDK_PACKAGE_UNAVAILABLE');
+  assert.equal(report.physicalDevice, false);
+  assert.ok(Object.values(report.features).every(v => v === 'NOT EXECUTED'));
+  assert.ok(!JSON.stringify(report).includes('PASS'));
+  assert.throws(() => androidNotExecuted({ head: 'short', requested: 37, reason: 'x' }));
+});
+test('the workflow gates the emulator on SDK availability and keeps an unavailable cell red and named', async () => {
+  const fs = await import('node:fs');
+  const wf = fs.readFileSync(new URL('../../.github/workflows/native-pilot-native-runtime.yml', import.meta.url), 'utf8');
+  assert.match(wf, /id: sdk\n\s+run: node scripts\/native-version-evidence\.mjs sdk-check '\$\{\{ matrix\.api \}\}'/);
+  assert.match(wf, /sdkmanager" --list > native-evidence\/sdk-inventory-stable\.txt/);
+  const boot = wf.slice(wf.indexOf('Boot real app, native secure storage'), wf.indexOf('android-emulator-runner@v2'));
+  assert.match(boot, /if: steps\.sdk\.outputs\.available == 'true'/);
+  const gate = wf.slice(wf.indexOf('Gate not satisfied'), wf.indexOf('actions/upload-artifact@v4'));
+  assert.match(gate, /if: steps\.sdk\.outputs\.available == 'false'/);
+  assert.match(gate, /NOT EXECUTED/);
+  assert.match(gate, /exit 1/, 'an unexecuted gate must never be green');
+  assert.match(wf, /api: \[24, 35, 36, 37\]/, 'API 37 stays in the matrix');
+});
