@@ -26,6 +26,7 @@ jobs:
       BRIDGE_IT_ORIGIN: https://127.0.0.1:8443
       NATIVE_AUTH_REDIRECT_URIS: com.bridge.nativepilot:/oauth
       BRIDGE_IT_REDIRECT: com.bridge.nativepilot:/oauth
+      BRIDGE_IT_PROXY_EVIDENCE: ${{ github.workspace }}/integration-evidence/proxy.log
       DATABASE_URL: postgresql://bridge_it:disposable_ci_only@127.0.0.1:5432/bridge_native_it
       REDIS_URL: redis://127.0.0.1:6379/0
       # Only test-volume quotas change; PKCE, cookie, CSRF, JWT, 2FA and reuse

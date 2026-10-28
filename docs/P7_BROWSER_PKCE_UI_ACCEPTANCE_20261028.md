@@ -46,6 +46,16 @@ no-referrer. CORS still refuses null/foreign origins; no origin exception or
 fabricated header is added. Unit pipeline controls and real browser assertions
 must qualify this change; the failed run and screenshots remain preserved.
 
+Run 40665974689 at 8e042b95 passed 18 unit pipeline/cookie contracts and
+18 backend cases. Approved consent now returns 303 with the expected Origin,
+but Playwright's reported fetch metadata did not match the assertion; cancel
+and untrusted TLS still pass. The CI-only TLS proxy now records closed Origin
+and Sec-Fetch-Site classifications on the actual wire. The browser case requires
+exactly one new consent record, expected Origin and same-origin fetch metadata
+there; it does not relax that assertion or send an injected header. No cookie,
+body, code, state or URL is logged. This separates browser instrumentation from
+the actual HTTP security boundary. The failed observation remains preserved.
+
 Three mandatory cases, zero retries/skips:
 
 1. UI password login and explicit consent produce the real 303 callback. The

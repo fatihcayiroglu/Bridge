@@ -45,6 +45,12 @@ function app() {
   return { authApi, newCoordinator, stored: () => stored };
 }
 
+function consentWireRecords() {
+  const prefix = 'NATIVE_CONSENT_BOUNDARY ';
+  return readFileSync(process.env.BRIDGE_IT_PROXY_EVIDENCE, 'utf8').split('\n')
+    .filter(line => line.startsWith(prefix)).map(line => JSON.parse(line.slice(prefix.length)));
+}
+
 async function loginAndConsent(page, profile, url) {
   const response = await page.goto(url);
   assert.ok(response?.status() === 200, 'NATIVE_AUTH_DOCUMENT_FAILED');
@@ -69,18 +75,22 @@ test('approved UI consent exchanges PKCE and restores with a rotated token', asy
   const browser = createBrowserSignIn({ origin, redirectUri: redirect,
     createPkce: () => createPkceAttempt(pkceCrypto),
     openAuthSession: async url => {
+      const before = consentWireRecords().length;
       const dialog = await loginAndConsent(page, profile, url);
       const authorized = page.waitForResponse(response => new URL(response.url()).pathname === '/api/refresh/native-authorize');
       await dialog.locator('[data-product-dialog-action="confirm"]').click();
       const response = await authorized;
       const headers = await response.request().allHeaders();
+      await expect.poll(() => consentWireRecords().length).toBe(before + 1);
+      const [wire] = consentWireRecords().slice(before);
       await test.info().attach('authorize-boundary.json', { contentType: 'application/json', body: JSON.stringify({
         status: response.status(), origin: headers.origin === origin ? 'expected' : headers.origin === 'null' ? 'null' : headers.origin ? 'other' : 'absent',
-        sameOriginFetch: headers['sec-fetch-site'] === 'same-origin',
+        reportedFetchSite: ['same-origin', 'same-site', 'cross-site', 'none'].includes(headers['sec-fetch-site']) ? headers['sec-fetch-site'] : headers['sec-fetch-site'] ? 'other' : 'absent',
+        wire,
       }) });
       assert.ok(response.status() === 303, 'CONSENT_DID_NOT_ISSUE_REDIRECT');
       assert.ok(response.request().method() === 'POST', 'CONSENT_WAS_NOT_A_FORM_POST');
-      assert.ok(headers.origin === origin && headers['sec-fetch-site'] === 'same-origin', 'BROWSER_ORIGIN_BOUNDARY_FAILED');
+      assert.ok(headers.origin === origin && wire.origin === 'expected' && wire.fetchSite === 'same-origin', 'BROWSER_ORIGIN_BOUNDARY_FAILED');
       return { type: 'success', url: response.headers().location };
     },
   });
