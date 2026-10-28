@@ -3,6 +3,11 @@
 **State: OPEN.** Replaces the status columns of `P7_FINAL_CLOSURE_LEDGER_20261016.md` for the rows below; the contract text stays in `P7_TRUST_SOCIAL_FOUNDATION.md`.
 Main at audit time: `c061d72f`. Rows cite only runs and commits that were read on 2026-10-28; anything not re-read says so. **Nothing unexecuted is PASS.**
 
+**2026-10-29 update:** the original rows below retain historical evidence where
+not explicitly updated. The exact-head reconciliation in §7 supersedes stale
+head/CI status. This independent branch preserves #575 and merges #574's history;
+it does not merge or deploy either to production main.
+
 **Evidence quality:** `A` exact-head CI job read for the cited SHA · `B` scheduled run on `main` for the cited SHA · `C` local test only (no CI on that head yet) · `D` documented only / not re-verified today · `—` none.
 
 ## 1. Gates on `main` (`c061d72f`)
@@ -23,12 +28,12 @@ Main at audit time: `c061d72f`. Rows cite only runs and commits that were read o
 | B2 risk-adaptive security | — | Ledger: evidence reconciliation not done | OPEN | D | Enumerate sub-items and link runnable tests. |
 | B3 metadata minimization | #312 | Ledger: merged `4371521d`, Quality Gate [38948013072](https://github.com/fatihcayiroglu/Bridge/actions/runs/38948013072) success (client-error path only) | PARTIAL | D | Other logging/telemetry, access/export/deletion not audited. |
 | B4 E2EE | #309/#310/#313 | Ledger: no E2EE protocol claimed (truthful capability only) | OPEN | D | Cryptosystem missing; separate project. |
-| **B5 evidence-safe reports (#336)** | [#572](https://github.com/fatihcayiroglu/Bridge/pull/572) `347044a5` | Local: report-evidence 11 tests (real routes, in-memory DB), real PostgreSQL 16 migration test 5/5, rollback gate `--ordered` green, client 5576 tests; flag **off by default** | **IMPLEMENTED, NOT VERIFIED IN CI** | C | **Owner decisions:** retention after resolve, erasure precedence for open reports, legal hold, hard-delete cascade, enabling the flag (see `P7_B5_REPORT_EVIDENCE.md`). |
+| **B5 evidence-safe reports (#336)** | [#572](https://github.com/fatihcayiroglu/Bridge/pull/572) `c6f3aac7` | Exact-head Quality Gate 40780602926 and all six other workflows PASS; see §7. Flag **off by default** | **IMPLEMENTED SUBSET, CI PASS** | A | Owner decisions remain: retention after resolve, erasure precedence, legal hold, hard-delete cascade and enablement. Feature-enabled browser E2E and production-size performance remain unqualified. |
 | C1 identity export | #181 | Ledger: bounded profile subset PASS | PASS (subset) | D | — |
 | C2–C3 community export/import | #205, #233–#243 | Issue #205: merged existing-row metadata-only apply; P7-RT-01..22 and P7-ROT-01..05 in a two-installation HTTPS lab | PASS for the **supported subset only** | D | Users, memberships, history, files, E2EE keys and new grants stay **unsupported**; scope decision (#205). |
 | C4 cross-installation restore | #205 | Lab only | OPEN | D | Production DNS/operator authenticity, scope decision. |
 | D1 partition decision | #319 | Ledger: read-only collector; no live measurements | OPEN | D | Measure on representative data; a documented no-partition decision is acceptable. |
-| D2 ephemeral channels (#321) | #325 | Merged `d093ac7e`: schema 084 + tombstone table, **inert**, no expiry activation | FOUNDATION ONLY | D | Authorization/read-write denial, worker lease, cleanup graph, offline/federation: not built. |
+| D2 ephemeral channels (#321) | #325, [#576](https://github.com/fatihcayiroglu/Bridge/pull/576), [#578](https://github.com/fatihcayiroglu/Bridge/pull/578) | Schema 084 inert foundation; #576 `104b6044` socket preflight, exact-head QG 40780241603 PASS; #578 `a6323aa1` adds schedule/dispatch checks and dedicated PG16/Redis verification | **PARTIAL, OPEN** | A/C | No expiry activation API; other write paths and atomic write fence OPEN. Cleanup graph, real reconnect/process restart and federation not qualified. See `P7_D2_SCHEDULED_WRITE_AUDIT_20261029.md` on #578. |
 | D3 migration safety | — | Today: rollback gate `verify-migration-rollback.js --ordered` on a disposable PostgreSQL 16 is green after a classification update for 085 (local) | PARTIAL | C | Per-migration lock/runtime evidence and backup-restore not collected. |
 
 ## 3. Native authentication (P7 mobile)
@@ -36,8 +41,8 @@ Main at audit time: `c061d72f`. Rows cite only runs and commits that were read o
 |---|---|---|---|---|---|
 | Android Custom Tabs: cancel, authenticate/restart/rotate, switch/isolate/revoke/restart | [#548](https://github.com/fatihcayiroglu/Bridge/pull/548) `23818207` | [Run 40766292930](https://github.com/fatihcayiroglu/Bridge/actions/runs/40766292930) job 123091219612: `passed 3, failed 0, notExecuted 0, skipped 0`, first attempt, emulator API 35 | **PASS 3/3** | A | Emulator-only; API 24/36/37 and physical devices not covered. Switch relies on the new web "Use a different account" button. |
 | Real PostgreSQL 16 + Redis integration of native auth | #548 / #553 heads | `real-backend` success on `23818207` (job 123091220444) and on `2b73f200` (job 123101961352) | PASS | A | — |
-| iOS system browser: cancel | [#553](https://github.com/fatihcayiroglu/Bridge/pull/553) `39a18bea` | [Run 40774768212](https://github.com/fatihcayiroglu/Bridge/actions/runs/40774768212) job 123121050022: case 1 PASS (first attempt) | PASS (1 run) | A | One run; earlier heads failed before reaching it. |
-| iOS: authenticate/restart/rotate | #553 | Same run: **FAIL** `MOBILE_AUTH_DEADLINE:system-authentication-browser` (3 visible web views, "Cancel" present, no login label). Earlier: password typed into the username field (run 40725593481); WDA start 227.9 s (run 40769336956) | **FAIL** | A | Cause not established; `mobile: keys` typing still untested; head `7e4a0da2` adds label diagnostics. |
+| iOS system browser: cancel | [#553](https://github.com/fatihcayiroglu/Bridge/pull/553) `aa4ae68f` | [Run 40785140974](https://github.com/fatihcayiroglu/Bridge/actions/runs/40785140974) job 123156324910: case 1 PASS; artifact inspected and SHA-256 verified | PASS (this case/run) | A | Simulator iOS 18.5; not physical/minimum-version coverage. Prior 40774768212 and failures retained. |
+| iOS: authenticate/restart/rotate | #553 `aa4ae68f` | Same run: case 2 FAIL. Captured failing command is **`mobile: keys`, POST `/execute/sync`, HTTP 500 unknown error**; cleanup `mobile: activeAppInfo` is not the failing command. | **FAIL** | A | Native command attribution established, underlying driver/input cause still OPEN. No credentials or native input values reproduced. |
 | iOS: switch/isolate/revoke/restart | #553 | Not reached in any run | **NOT EXECUTED** | — | Depends on case 2; Safari cookie sharing with ASWebAuthenticationSession unverified. |
 | Android API 37 | #549, #552 | SDK package unavailable; cell red by owner decision | **NOT EXECUTED** | — | Never substituted; blocked on SDK availability. |
 | Physical Android / iOS devices | — | None | **NOT EXECUTED** | — | Needs hardware. |
@@ -46,10 +51,10 @@ Main at audit time: `c061d72f`. Rows cite only runs and commits that were read o
 ## 4. Platform and performance acceptance
 | Requirement | Owner | Evidence | Result | Q | Remaining blocker |
 |---|---|---|---|---|---|
-| Linux packaged app, native Wayland | [#416](https://github.com/fatihcayiroglu/Bridge/issues/416), [#573](https://github.com/fatihcayiroglu/Bridge/pull/573) | First failures: 40110110689, 40076533049 (no `xdg_toplevel` in 60 s). #573 adds read-only diagnostics, assertions unchanged (local contract test 5/5) | **OPEN** | C | Cause unverified; needs the next failing run's `WAYLAND_DIAG` output. |
+| Linux packaged app, native Wayland | [#416](https://github.com/fatihcayiroglu/Bridge/issues/416), [#573](https://github.com/fatihcayiroglu/Bridge/pull/573) `71abbd71` | First failures 40110110689, 40076533049 retained. Diagnostic PR exact-head Desktop 40782115427 and QG 40782115422 PASS. | **OPEN** | A | Diagnostic success is not a causal fix; require evidence from an actual failing native-Wayland run. No X11 substitution/sandbox relaxation. |
 | Windows / macOS packaging and runtime, Linux X11 | #415 | Per issue #416: passed on `6dab3452`; not re-read today | PASS per issue | D | Re-verify on final main. |
 | Android ANR / process death (#209) | #209 | Original failures preserved in the issue; later greens are non-reproduction | **OPEN** | D | Targeted ActivityManager evidence, physical device. |
-| Real-product desktop performance (#570): idle, 2/5/10 voice, gaming + voice + screen share, 10k messages, 1080p60, 1440p/4K, soak, degradation | [#570](https://github.com/fatihcayiroglu/Bridge/issues/570) | Only synthetic A/B [#569](https://github.com/fatihcayiroglu/Bridge/pull/569), explicitly not product evidence | **NOT EXECUTED** | — | Needs Windows/macOS/Linux hardware with a game, GPU counters, independent clients and a real SFU path. |
+| Real-product desktop performance (#570): idle, 2/5/10 voice, gaming + voice + screen share, 10k messages, 1080p60, 1440p/4K, soak, degradation | [#577](https://github.com/fatihcayiroglu/Bridge/pull/577) `38e6f198` | Contract/harness exact-head QG 40783278478 and other five workflows PASS. **Every real scenario remains NOT EXECUTED.** | **NOT EXECUTED** | — | Implement packaged idle and genuine 10k-history executors first. Gaming/capture/SFU require actual hardware and participants; synthetic #569 is not acceptance. |
 | Voice/video/screen-share acceptance | #570 | Media Evidence scheduled success [40485237274](https://github.com/fatihcayiroglu/Bridge/actions/runs/40485237274) (what it covers was not re-read today) | PARTIAL | B | Real devices, real capture. |
 
 ## 5. Owner decisions, in one place
@@ -59,7 +64,40 @@ Main at audit time: `c061d72f`. Rows cite only runs and commits that were read o
 4. **#530** findings 2 (unused scheme), 3 (step-up for native authorization), 4 (device-bound refresh).
 5. **#536** vendored `deepmerge` (low severity; the gate does not fail on it).
 6. **#205** is the supported metadata-only portability subset enough for P7?
-7. **Android case 3 / web change** (this session): approve the "Use a different account" consent button on `/native-auth` (#548).
+7. **Native account switch:** owner already approved the isolated native flow (#559/#560), preserving the browser's existing account. #548's separately verified "Use a different account" flow changes browser identity and must not silently replace that approved architecture. Its API35 emulator result is implementation-specific evidence, not approval of a different session policy.
 
 ## 6. What would make P7 closable
 Green exact-head Quality Gate on `main` (needs #574 merged); iOS cases 2 and 3 genuinely passing; API 37 executed or the owner accepting NOT EXECUTED; physical-device evidence or an explicit decision that it is a release gate rather than a P7 gate; D2 built beyond the inert foundation; B5 decisions plus CI; real-product desktop performance on actual hardware; #416 root-caused.
+
+## 7. Exact-head reconciliation (read 2026-10-29)
+
+| PR | Exact head | Verified workflow evidence | Result and limit |
+| --- | --- | --- | --- |
+| #572 | `c6f3aac7b5ad11d57824f8e427957c204565d11c` | QG 40780602926; Desktop 40780602776; Federation 40780602850; Self-host 40780602805; iOS 40780602793; Android 40780602770; Step-up 40780602832 | All seven workflows PASS. Feature-off/report subset only; owner gates above stay OPEN. |
+| #573 | `71abbd717b310c95c8f79d07edc3887ccf09e7f3` | QG 40782115422; Desktop 40782115427; Self-host 40782115426; Federation 40782115455; iOS 40782115437; Android 40782115425 | All six PASS; #416 not fixed by non-reproduction. |
+| #574 | `9f9705ed4b01cbf8670ba469cb9bd5d57f6dead2` | QG 40779617350; Desktop 40779617502; Android 40779617444; iOS 40779617509; Federation 40779617448; Self-host 40779617557 | All six PASS. QG eight jobs PASS; nightly-only conditional job 123143497187 not scheduled. Do not count a conditional job as a skipped product test. |
+| #575 original | `449e0c7718a1816c8bfb93bf2fcd4dd3e8052ef5` | QG 40779781072, audit job 123138210819 FAIL: 13 findings (7 low, 3 moderate, 3 high), including vulnerable undici | Did not inherit #574. Other eight jobs not executed/conditional. Original failure retained; this child branch merges #574 without rewriting #575. Child exact-head CI pending. |
+| #576 | `104b60447b7ac69392994f5cc04c0c3153408538` | QG 40780241603; Federation 40780241604; Abuse 40780241583; iOS 40780241592; Self-host 40780241556; Android 40780241626; Desktop 40780241562 | All seven workflows PASS. Eight QG jobs PASS, nightly-only 123147618031 conditional. Inherits #574. Socket preflight subset, not whole D2. |
+| #577 | `38e6f198e7757d2f1f909e3f293b3b541855da5d` | QG 40783278478; Desktop 40783278423; Android 40783278480; iOS 40783278472; Self-host 40783278449; Federation 40783278657 | All six PASS. Inherits #574; no real performance scenario executed. |
+| #553 | `aa4ae68fa4c66802c92c6d3db33bc3de4b848df0` | Browser 40785140974 FAIL (job 123156324910); native binary 40785140723 PASS; pilot checks 40785140783 PASS; backend PG16/Redis 40785140699 PASS | Browser 1 PASS / 1 FAIL / 1 NOT EXECUTED. Binary/Node/backend success cannot substitute for browser acceptance. |
+| #578 | `a6323aa1fdf27e950ddb590b4a31b5c4966c434c` | Dedicated PG16/Redis run 40788727299, job 123168323163 PASS, first attempt; PostgreSQL 160015 / Redis PONG; **7/7 tests, zero skipped** | Local 97/97 PASS, strict types/build PASS. Stacked on #576; retains #574 history. Worker-level real-service subset only; D2 acceptance remains OPEN. |
+
+The #553 original artifact is preserved locally as
+`bridge-p7-ios-40785140974.zip`, SHA-256
+`6e082b6b0e76b2caea77e216f0715fa879cb6010182328923bd39ac3dc0f82a3`.
+Only closed diagnostic fields were inspected for attribution; no authentication
+values are included here. No failed acceptance run was rerun for a green result.
+
+Main remains `c061d72fee43a23a068a86c6d8f9726c44ad6f41` at recovery time.
+Successful draft-branch evidence does not fix production main until an explicitly
+authorized, independently qualified integration. No merge or deploy authorized.
+
+This child also fixes the observed Windows-only no-skips CLI self-test failure:
+native `path.relative` emitted backslashes while the documented/tested diagnostic
+uses slash separators. Canonicalize only the displayed path; exit codes and
+zero-skips/zero-collected assertions are unchanged. Original local run: 5 PASS /
+1 FAIL / 0 skipped; retain that failure. Cross-platform CI is added alongside
+four independent locked-graph audits (root/server/Electron/E2E). Local audits all
+exit 0 at the existing high threshold: zero moderate/high/critical, with low
+findings still 7/6/6/0 respectively. This is not a zero-vulnerability claim, nor
+does lockfile audit by itself prove installation/runtime compatibility.
