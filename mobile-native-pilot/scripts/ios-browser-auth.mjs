@@ -205,7 +205,8 @@ try {
     'appium:isHeadless': true, 'appium:noReset': true, 'appium:autoAcceptAlerts': false,
     'appium:showXcodeLog': true,
     // Use the WebDriverAgent compiled in the previous step; never rebuild it inside the journey's deadline.
-    ...(process.env.WDA_DERIVED_DATA ? {
+    // Preferred: attach to the agent started and timed by the previous step (appium:webDriverAgentUrl).
+    ...(process.env.WDA_URL ? { 'appium:webDriverAgentUrl': process.env.WDA_URL } : process.env.WDA_DERIVED_DATA ? {
       'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA,
       // Run 40729971780: two 60 s attempts both ended with nothing listening on 8100. Run 40769336956 (200 s allowed):
       // the prebuilt agent started after 227.9 s and the session was created at 21:24:38.9, one second after the

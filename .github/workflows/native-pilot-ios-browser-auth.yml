@@ -149,12 +149,15 @@ jobs:
       - name: Prebuild WebDriverAgent (own bounded step; compile time is not test time)
         timeout-minutes: 25
         run: bash mobile-native-pilot/scripts/prebuild-wda.sh
+      - name: Start WebDriverAgent (own bounded step; agent start time is not test time)
+        timeout-minutes: 20
+        run: bash mobile-native-pilot/scripts/start-wda.sh
       - name: Actual system-browser sign-in, OS callback, protected restore and revocation
         run: bash mobile-native-pilot/scripts/run-ios-browser-auth.sh
       - name: Stop only owned test services
         if: always()
         run: |
-          for file in "$RUNNER_TEMP/mobile-server.pid" "$RUNNER_TEMP/mobile-proxy.pid" "$RUNNER_TEMP/mobile-metro.pid" "$RUNNER_TEMP/bridge-mobile-redis.pid"; do
+          for file in "$RUNNER_TEMP/mobile-server.pid" "$RUNNER_TEMP/mobile-proxy.pid" "$RUNNER_TEMP/mobile-metro.pid" "$RUNNER_TEMP/bridge-mobile-redis.pid" "$RUNNER_TEMP/bridge-wda.pid"; do
             if test -f "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
           done
           if test -n "${MOBILE_PG_DIR:-}" && test -f "$MOBILE_PG_DIR/postmaster.pid"; then
