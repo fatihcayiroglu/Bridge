@@ -116,6 +116,32 @@ attestation-bound refresh), per-device session listing with names, and
 reuse-revocation of the native family when the *browser* cookie used for
 consent is later found stolen.
 
+## 4a. Verified callback links (T2 / security review finding 1)
+
+A private-use scheme (`com.bridge.nativepilot:/oauth`) can be registered by any app, so
+T2 remains open while it is the redirect. The server side of the fix is in
+`lib/nativeAppLinks.ts` + `routes/nativeAppLinks.ts`, **off by default**:
+
+- Configure an https entry in `NATIVE_AUTH_REDIRECT_URIS` on a **dedicated host** (the
+  validator already refuses the web origin), plus `NATIVE_APP_LINKS_ANDROID_PACKAGE` +
+  `NATIVE_APP_LINKS_ANDROID_CERT_SHA256` and/or `NATIVE_APP_LINKS_IOS_APP_IDS`.
+- On that host only, the server serves `/.well-known/assetlinks.json` (Digital Asset
+  Links for the package/certificates) and `apple-app-site-association` (Universal Links
+  limited to the callback path, plus `webcredentials` for an https
+  ASWebAuthenticationSession callback). Any other host, including the web origin, falls
+  through unchanged, so the web origin never claims a path for an app.
+- The callback path on that host renders an inert page for when the OS did not hand the
+  link to the app: no script or external resources, never echoes the URL (the code),
+  `no-store`, `no-referrer`, `default-src 'none'`, `noindex`.
+- Any malformed value disables the whole feature (fail closed).
+
+**Not done, owner/deployment decisions:** choosing the callback domain, its DNS/TLS,
+the release signing certificate fingerprint and Apple Team ID; the app side (Android
+`intentFilters` with `autoVerify`, iOS `associatedDomains`, and an https redirect in the
+sign-in call, which on iOS needs ASWebAuthenticationSession https callbacks, iOS 17.4+).
+Server tests (`tests/native-app-links.test.ts`) are contract evidence only, not proof
+that Android/iOS verify the association on a device.
+
 ## 5. Client obligations (React Native)
 
 - Fresh verifier and state per attempt, kept in memory; discard on completion,

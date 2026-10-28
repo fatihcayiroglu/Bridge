@@ -1558,6 +1558,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/NodeInfoIndex'
       operationId: get_well_known_nodeinfo
+  /.well-known/assetlinks.json:
+    get:
+      summary: Android App Links association for the native sign-in callback host
+      description: 'Served only on a configured https callback host from
+        NATIVE_AUTH_REDIRECT_URIS (never the web origin), and only when
+        NATIVE_APP_LINKS_ANDROID_PACKAGE and NATIVE_APP_LINKS_ANDROID_CERT_SHA256 are set
+        and valid. Otherwise the request falls through. See docs/NATIVE_AUTH.md section 4a.'
+      tags:
+      - Auth
+      security: []
+      responses:
+        '200':
+          description: Digital Asset Links statement list for the configured app
+          content:
+            application/json:
+              schema: { type: array, items: { type: object } }
+        '404':
+          description: Not a configured callback host, or not configured
+      operationId: get_well_known_assetlinks
+  /.well-known/apple-app-site-association:
+    get:
+      summary: iOS Universal Links association for the native sign-in callback host
+      description: 'Universal Links limited to the callback path(s) of the requesting host,
+        plus webcredentials for an https ASWebAuthenticationSession callback. Served only on
+        a configured https callback host when NATIVE_APP_LINKS_IOS_APP_IDS is set and valid.'
+      tags:
+      - Auth
+      security: []
+      responses:
+        '200':
+          description: apple-app-site-association document
+          content:
+            application/json:
+              schema: { type: object }
+        '404':
+          description: Not a configured callback host, or not configured
+      operationId: get_well_known_apple_app_site_association
+  /apple-app-site-association:
+    get:
+      summary: iOS Universal Links association (legacy root location)
+      description: Same document and conditions as /.well-known/apple-app-site-association.
+      tags:
+      - Auth
+      security: []
+      responses:
+        '200':
+          description: apple-app-site-association document
+          content:
+            application/json:
+              schema: { type: object }
+        '404':
+          description: Not a configured callback host, or not configured
+      operationId: get_apple_app_site_association
   /nodeinfo/2.1:
     get:
       summary: NodeInfo 2.1 — sunucu meta verisi
