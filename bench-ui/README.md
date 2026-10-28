@@ -19,8 +19,10 @@ xvfb-run -a electron/node_modules/electron/dist/electron --no-sandbox bench-ui/e
 
 The runner fails on missing controls, wrong message counts, timeouts or
 incomplete samples. It prints `BENCHMARK_RESULT` and creates a JSON artifact.
-Five warmups are followed by 30 measured rounds, alternating the order of
-Svelte and React to reduce drift. Each duration ends at the `MutationObserver`
+The scenarios are 1,000 messages (5 warmups + 30 measured rounds) and 10,000
+messages (3 warmups + 12 rounds). Each compares list construction, one append,
+100-message burst append, filter and composer draft update. Framework order
+alternates each round to reduce drift. Each duration ends at the `MutationObserver`
 notification when the expected number of DOM elements has committed. The
 two animation frames are awaited for correctness, **not included in timing**.
 Compare p50 and p95 only within the same runner and the same Electron version.

@@ -36,8 +36,8 @@ jobs:
           sudo apt-get install -y -qq xvfb xauth
       - name: Validate report contract and build equal UI fixtures
         run: |
-          node --test bench-ui/*.test.cjs
           node bench-ui/build-assets.mjs
+          node --test bench-ui/*.test.cjs
       - name: Run real Electron UI benchmark (not product acceptance)
         shell: bash
         run: |
