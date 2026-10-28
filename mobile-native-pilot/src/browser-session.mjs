@@ -5,7 +5,7 @@ import { SessionError } from './session-coordinator.mjs';
 
 export function createBrowserSessionSignIn({ browser, authApi, coordinator }) {
   let generation = 0;
-  return async function signInWithBrowser() {
+  return async function signInWithBrowser(options) {
     // Reserve the request before the browser's first asynchronous operation.
     const mine = ++generation;
     const admitted = coordinator.getState();
@@ -14,7 +14,7 @@ export function createBrowserSessionSignIn({ browser, authApi, coordinator }) {
       // Rejection/storage-failure can end trust within an existing epoch too.
       return generation === mine && now.epoch === admitted.epoch && now.phase === admitted.phase;
     };
-    const callback = await browser.start();
+    const callback = await browser.start(options);
     if (!current()) throw new SessionError('SUPERSEDED');
     const issued = await authApi.exchangeCode(callback);
     if (!current()) {

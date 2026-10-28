@@ -1,7 +1,8 @@
-# Native account switching: owner decision required
+# Native account switching: approved owner decision
 
-Status: proposed design only. No authentication implementation or acceptance
-assertion is changed by this document. P7 remains OPEN.
+Owner decision, 2026-10-28: **approved isolated native flow**. This document remains
+the design record; the implementation is reviewed separately and does not alter
+the existing case3 assertions. P7 remains OPEN.
 
 ## Verified blocker
 

@@ -91,7 +91,7 @@ jobs:
       - name: Refresh-cookie security regression contracts
         working-directory: server
         run: |
-          npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts tests/app-integration.test.ts --json --outputFile ../integration-evidence/server-cookie-contracts.json
+          npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts tests/app-integration.test.ts tests/native-browser-switch.test.ts tests/native-switch-store.test.ts tests/native-auth.test.ts tests/twoFactor.test.ts tests/twofactor-check-races.test.ts tests/twofactor-rate-limit.test.ts tests/twofactor-challenge-fail-closed.test.ts --json --outputFile ../integration-evidence/server-cookie-contracts.json
           node -e 'const r=require("../integration-evidence/server-cookie-contracts.json");if(!r.success || !r.numTotalTests || r.numPassedTests!==r.numTotalTests || r.numFailedTests || r.numPendingTests || r.numTodoTests)throw Error("SERVER_CONTRACTS_INCOMPLETE");console.log(JSON.stringify({tests:r.numTotalTests,pass:r.numPassedTests,failed:r.numFailedTests,skipped:r.numPendingTests,todo:r.numTodoTests}))'
       - name: Install real Chromium and certificate management tools
         run: |
@@ -165,7 +165,7 @@ jobs:
             import {readFileSync} from "node:fs";
             import {classifyNodeRun} from "./mobile-native-pilot/scripts/mutation-result.mjs";
             const result=classifyNodeRun({stdout:readFileSync("integration-evidence/native-backend.tap","utf8"),status:0});
-            if(result.outcome!=="SURVIVED" || result.counts.tests!==18) throw Error(JSON.stringify(result));
+            if(result.outcome!=="SURVIVED" || result.counts.tests!==19) throw Error(JSON.stringify(result));
             console.log(JSON.stringify(result.counts));'
       - name: Independent database persisted-row and scoped-uniqueness proof
         run: |

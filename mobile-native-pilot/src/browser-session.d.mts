@@ -7,4 +7,4 @@ export declare function createBrowserSessionSignIn(config: {
   browser: Pick<BrowserSignIn, 'start'>;
   authApi: Pick<NativeAuthApi, 'exchangeCode' | 'revoke'>;
   coordinator: Pick<SessionCoordinator, 'getState' | 'signIn'>;
-}): () => Promise<SessionState>;
+}): (options?: { freshAuthentication?: boolean }) => Promise<SessionState>;

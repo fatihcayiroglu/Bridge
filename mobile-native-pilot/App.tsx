@@ -55,7 +55,7 @@ function ConnectedPilot({ origin }: { origin: string }) {
       <Action label="Sign in with your browser" disabled={busy} onPress={() => void perform(() => runtime.session.signInWithBrowser())} /></View> : <>
       <View style={styles.actions}>
         <Action label="Sign out" disabled={busy} onPress={() => void perform(async () => { const result = await runtime.session.coordinator.signOut(); if (alive.current && result.serverSignOut === 'unconfirmed') setNotice('Signed out locally. Server revocation was not confirmed.'); })} />
-        <Action label="Switch account" disabled={busy} onPress={() => void perform(async () => { await runtime.session.coordinator.signOut(); await runtime.session.signInWithBrowser(); })} />
+        <Action label="Switch account" disabled={busy} onPress={() => void perform(async () => { await runtime.session.coordinator.signOut(); await runtime.session.signInWithBrowser({ freshAuthentication: true }); })} />
       </View>
       {!state.channelId ? <View style={styles.selection}>
         <Text style={styles.text}>Choose a community</Text>

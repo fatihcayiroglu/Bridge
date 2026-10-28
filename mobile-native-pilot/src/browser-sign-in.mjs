@@ -61,7 +61,9 @@ export function createBrowserSignIn({ origin, redirectUri, openAuthSession, crea
 
   return Object.freeze({
     /** Resolves to {code, verifier, redirectUri}; the caller exchanges it at once. */
-    async start() {
+    async start(options = {}) {
+      if (!options || typeof options !== 'object' || (options.freshAuthentication !== undefined && typeof options.freshAuthentication !== 'boolean')) throw new BrowserSignInError('INVALID_ADAPTER');
+      const freshAuthentication = options.freshAuthentication === true;
       // Invocation order owns the attempt, not completion order of native RNG.
       const request = {};
       pending = request;
@@ -81,7 +83,8 @@ export function createBrowserSignIn({ origin, redirectUri, openAuthSession, crea
       ].map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 
       let result;
-      try { result = await openAuthSession(`${root}/native-auth?${query}`, redirectUri); }
+      const entry = freshAuthentication ? '/native-auth/switch' : '/native-auth';
+      try { result = await openAuthSession(`${root}${entry}?${query}`, redirectUri); }
       catch { if (pending === request) pending = null; throw new BrowserSignInError('BROWSER_FAILED'); }
       if (pending !== request) throw new BrowserSignInError('SUPERSEDED');
       pending = null;

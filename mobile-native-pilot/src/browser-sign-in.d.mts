@@ -12,7 +12,7 @@ export declare class BrowserSignInError extends Error {
 export type AuthSessionResult = { type: string; url?: string };
 
 export interface BrowserSignIn {
-  start(): Promise<{ code: string; verifier: string; redirectUri: string }>;
+  start(options?: { freshAuthentication?: boolean }): Promise<{ code: string; verifier: string; redirectUri: string }>;
   hasPendingAttempt(): boolean;
 }
 
