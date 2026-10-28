@@ -93,6 +93,17 @@ successor is returned in the body, and cookies are neither read nor set.
 `{ refreshToken, push?: { nativeToken } }` → `200 {ok:true}` whether or not the
 token was known. Revokes that refresh row and the installation's push target.
 
+### Switching accounts
+
+The browser keeps its own web session, so a person who is signed in there as A and
+taps **Switch account** in the app is shown the consent step for A. That step has a
+third choice, **Use a different account**. It runs the existing web sign-out
+(`POST /api/refresh/logout`, which ends only the browser session's family), keeps
+the pending request in `sessionStorage` (same 10-minute limit, same single use) and
+shows the normal sign-in. The next person signs in with every existing check, then
+gets the same consent naming them. Nothing is sent to the app, no code is issued for A, and A's
+native session is ended only by the app's own sign-out. No server change.
+
 ## 4. Threat model
 
 | # | Threat | Control | Residual |

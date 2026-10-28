@@ -2453,6 +2453,7 @@ const translations: Record<string, string> = {
   "native_auth_consent_title": "登录 Bridge 应用？",
   "native_auth_consent_message": "仅当你在此设备上的 Bridge 应用中发起登录时才继续。应用将以 {name} 身份登录。",
   "native_auth_consent_continue": "在应用中继续",
+  "native_auth_consent_switch": "使用其他账号",
 };
 
 export default translations;

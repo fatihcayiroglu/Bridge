@@ -2424,5 +2424,6 @@ const translations: Record<string, string> = {
   "native_auth_consent_title": "Bridge uygulamasında oturum açılsın mı?",
   "native_auth_consent_message": "Yalnızca bu cihazdaki Bridge uygulamasından oturum açmayı siz başlattıysanız devam edin. Uygulamada {name} olarak oturum açılacak.",
   "native_auth_consent_continue": "Uygulamada devam et",
+  "native_auth_consent_switch": "Farklı bir hesap kullan",
 };
 export default translations;

@@ -68,7 +68,16 @@ async function browserReady(){await until(async()=>{const a=activity();if(!a.sta
   const n=await ui();assert.ok(!n.some(x=>/Your connection is not private|NET::ERR_CERT/.test(x.text)),'TRUSTED_BROWSER_TLS_REQUIRED');
   return n.filter(x=>x.package===chrome && x.class==='android.widget.EditText').length>=2;},'custom-tabs-login');
   assert.match(activity(),/CustomTabActivity/,'REAL_CHROME_CUSTOM_TAB_REQUIRED');facts.customTabsObserved=true;}
-async function signIn(u,previousPid){await browserReady();
+// Switching from a browser that still holds the previous account's web session: the consent step offers that account,
+// and "Use a different account" ends only the browser session so the next person signs in normally. No authorization
+// code may be issued for the previous account on the way (checked by the caller via the wire log).
+async function chooseAnotherAccount(){
+  await until(async()=>{const a=activity();if(!a.startsWith(chrome+'/'))return false;const n=await ui();
+    assert.ok(!n.some(x=>/Your connection is not private|NET::ERR_CERT/.test(x.text)),'TRUSTED_BROWSER_TLS_REQUIRED');
+    return namedNode(n,'Use a different account',[chrome]);},'previous-account-consent');
+  assert.match(activity(),/CustomTabActivity/,'REAL_CHROME_CUSTOM_TAB_REQUIRED');facts.previousAccountConsentObserved=true;
+  await click('Use a different account',[chrome]);}
+async function signIn(u,previousPid,{fromPrevious=false}={}){if(fromPrevious)await chooseAnotherAccount();await browserReady();
   // Every field is re-read after the previous input and must report focus before it receives text; a tap on stale
   // bounds once sent the password into the username field (run 40695774846).
   // A field hidden behind the soft keyboard has inverted bounds and cannot be tapped (run 40710505946: EMPTY_NATIVE_CONTROL);
@@ -151,7 +160,7 @@ try {await setupTrustAndChrome();database=new Client({connectionString:process.e
     await until(()=>nativeScreen('Sign in with your browser'),'cancelled-native-return');assert.equal(pid(),initial);assert.equal(wire('native-code').length,count);});
   let first;
   await runCase(ids[1],async()=>{await click('Sign in with your browser');first=await signIn(a,initial);assert.equal(namedNode(await ui(),b.serverName,[bundle]),null);first=await restart(a,first);});
-  await runCase(ids[2],async()=>{await click('Switch account');const second=await signIn(b,first.pid);assert.equal(namedNode(await ui(),a.serverName,[bundle]),null);
+  await runCase(ids[2],async()=>{await click('Switch account');const second=await signIn(b,first.pid,{fromPrevious:true});assert.equal(namedNode(await ui(),a.serverName,[bundle]),null);
     assert.equal((await tokens(a,first.family)).filter(r=>!r.used).length,0);const restored=await restart(b,second);await click('Sign out');
     await until(()=>nativeScreen('Sign in with your browser'),'signed-out-native-return');assert.equal((await tokens(b,restored.family)).filter(r=>!r.used).length,0);
     const r=await fetch(origin+'/api/native-auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:restored.token}),signal:AbortSignal.timeout(20000)});assert.equal(r.status,401);

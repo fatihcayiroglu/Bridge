@@ -102,3 +102,37 @@ describe('consent', () => {
     expect(String(confirmProductAction.mock.calls[0][0].message)).toContain('ada');
   });
 });
+
+describe('switching accounts', () => {
+  it('offers no switch when no sign-out is installed', async () => {
+    window.history.replaceState(null, '', '/native-auth' + query());
+    captureNativeAuthRequest();
+    confirmProductAction.mockResolvedValue(false);
+    await offerNativeAuthConsent('Ada');
+    expect(confirmProductAction.mock.calls[0][0].onAlternate).toBeUndefined();
+  });
+
+  it('"Use a different account" signs the browser out, submits nothing and keeps the request for the next sign-in', async () => {
+    const signOut = vi.fn();
+    window.history.replaceState(null, '', '/native-auth' + query());
+    confirmProductAction.mockImplementation(async (o) => { (o.onAlternate as () => void)(); return false; });
+    installNativeAuthConsent(signOut);
+    document.dispatchEvent(new CustomEvent('bridge:auth-success', { detail: { displayName: 'Ada' } }));
+    await vi.waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
+    expect(submitted).toHaveLength(0);
+    expect(typeof confirmProductAction.mock.calls[0][0].alternateLabel).toBe('string');
+    // Bob signs in next: the same request is offered again, now naming Bob, and confirming submits it.
+    confirmProductAction.mockReset();
+    confirmProductAction.mockResolvedValue(true);
+    document.dispatchEvent(new CustomEvent('bridge:auth-success', { detail: { displayName: 'Bob' } }));
+    await vi.waitFor(() => expect(submitted).toHaveLength(1));
+    expect(String(confirmProductAction.mock.calls[0][0].message)).toContain('Bob');
+    expect(Object.fromEntries(new FormData(submitted[0]).entries()).state).toBe(STATE);
+  });
+
+  it('the kept request still expires after ten minutes without a sign-in', () => {
+    window.history.replaceState(null, '', '/native-auth' + query());
+    captureNativeAuthRequest();
+    expect(takeNativeAuthRequest(Date.now() + 10 * 60_000 + 1)).toBeNull();
+  });
+});

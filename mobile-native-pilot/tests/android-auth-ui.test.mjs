@@ -190,3 +190,10 @@ test('a field hidden behind the keyboard gets at most two Tab presses and must s
   const {failureReport}=await import('../scripts/android-auth-failure.mjs');
   assert.equal(failureReport({facts:{loginTabPresses:2}}).loginTabPresses,2);
 });
+test('case 3 switches through the product control and never drives Chrome data or the web session directly',async()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/await click\('Switch account'\);const second=await signIn\(b,first\.pid,\{fromPrevious:true\}\);/);
+  assert.match(s,/async function chooseAnotherAccount\(\)\{[\s\S]*?namedNode\(n,'Use a different account',\[chrome\]\)[\s\S]*?await click\('Use a different account',\[chrome\]\);\}/);
+  assert.match(s,/async function signIn\(u,previousPid,\{fromPrevious=false\}=\{\}\)\{if\(fromPrevious\)await chooseAnotherAccount\(\);await browserReady\(\);/);
+  assert.ok(!/pm['"],\s*['"]clear|clear-data|clearBrowserData/i.test(s),'the harness must not clear Chrome data');
+});
