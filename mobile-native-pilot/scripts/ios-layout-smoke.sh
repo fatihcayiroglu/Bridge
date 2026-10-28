@@ -56,7 +56,8 @@ stage=built-app
 app=$(find "$RUNNER_TEMP/bridge-layout-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
 [[ -n "$app" ]] && test -d "$app"
 
-while IFS=$'\t' read -r id device_id device_label; do
+# simctl may read stdin too; never allow it to eat the profile list.
+while IFS=$'\t' read -r -u 3 id device_id device_label; do
   active_profile="$id"
   stage="${id}-device-inventory"
   out="native-evidence/layout-ios/$id"
@@ -106,7 +107,7 @@ while IFS=$'\t' read -r id device_id device_label; do
   active_profile=''
   stage="${id}-shutdown"
   xcrun simctl shutdown "$udid"
-done < native-evidence/layout-ios/profiles.tsv
+done 3< native-evidence/layout-ios/profiles.tsv
 stage=complete-gate
 node scripts/layout-profiles.mjs assert-complete "$report"
 echo 'NATIVE_IOS_SIGNED_OUT_LAYOUT_MATRIX=PASS'
