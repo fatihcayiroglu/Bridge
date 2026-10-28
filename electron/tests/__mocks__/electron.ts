@@ -157,6 +157,11 @@ Object.assign(app, {
   isReady                  : jest.fn().mockReturnValue(true),
 });
 
+// ── operating system display (DIP dimensions already include DPI scaling) ───
+const screen = {
+  getPrimaryDisplay: jest.fn().mockReturnValue({ workAreaSize: { width: 1920, height: 1040 }, scaleFactor: 1 }),
+};
+
 // ── shell / dialog / net ──────────────────────────────────────────────────────
 const shell = {
   openExternal : jest.fn().mockResolvedValue(undefined),
@@ -215,6 +220,7 @@ module.exports = {
   dialog,
   net,
   session,
+  screen,
   _ipcMainListeners,
   _ipcMainHandlers,
   _ipcRendererListeners,
