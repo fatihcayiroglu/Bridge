@@ -1,0 +1,111 @@
+name: Desktop real Bridge product baseline (not framework parity)
+
+on:
+  pull_request:
+    paths:
+      - 'e2e/tests/desktop-responsive-viewport.spec.ts'
+      - 'e2e/tests/desktop-cdp-runtime.spec.ts'
+      - 'e2e/tests/desktop-bounded-soak.spec.ts'
+      - 'scripts/verify-desktop-product-probe.test.cjs'
+      - '.github/workflows/desktop-product-baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-product-baseline:
+    name: Real Bridge / ${{ matrix.suite }} (Svelte product only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [startup-interactions, responsive-a11y, authenticated-upload, real-webrtc, bounded-soak]
+    env:
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+      PERF_ITERATIONS: '11'
+      PERF_LABEL: product-svelte-baseline
+      CI: 'true'
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.20.0'
+          cache: npm
+      - name: Verify probe cannot silently omit required product journeys
+        run: node --test scripts/verify-desktop-product-probe.test.cjs
+      - name: Install actual product and browser test dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Build real Bridge server and Svelte client
+        run: |
+          npm run build
+          cd server && npm run build
+      - name: Execute exact-head product suite without retries or skips
+        shell: bash
+        env:
+          BRIDGE_PRODUCT_SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          cd e2e
+          case "$BRIDGE_PRODUCT_SUITE" in
+            startup-interactions)
+              npx playwright test tests/perf-benchmark.spec.ts --project=perf --retries=0 --workers=1 --reporter=list
+              npx playwright test tests/desktop-cdp-runtime.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list
+              ;;
+            responsive-a11y)
+              npx playwright test tests/desktop-responsive-viewport.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list
+              npx playwright test tests/a11y.smoke.spec.ts --project=a11y --project=a11y-mobile --retries=0 --workers=1 --reporter=list
+              ;;
+            authenticated-upload)
+              npx playwright test tests/upload.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list
+              ;;
+            real-webrtc)
+              npx playwright test tests/voice-media.spec.ts tests/media-automation.spec.ts --project=voice-media --retries=0 --workers=1 --reporter=list
+              ;;
+            bounded-soak)
+              npx playwright test tests/desktop-bounded-soak.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list
+              ;;
+            *) echo 'UNKNOWN_BRIDGE_PRODUCT_SUITE' >&2; exit 1 ;;
+          esac
+      - name: Preserve first-failure traces, screenshots and reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bridge-real-product-${{ matrix.suite }}-${{ github.sha }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            e2e/playwright-results.xml
+          if-no-files-found: warn
+          retention-days: 14
