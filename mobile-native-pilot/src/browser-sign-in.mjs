@@ -62,8 +62,17 @@ export function createBrowserSignIn({ origin, redirectUri, openAuthSession, crea
   return Object.freeze({
     /** Resolves to {code, verifier, redirectUri}; the caller exchanges it at once. */
     async start() {
-      const attempt = await createPkce();
-      pending = attempt; // a new attempt replaces any older one
+      // Invocation order owns the attempt, not completion order of native RNG.
+      const request = {};
+      pending = request;
+      let attempt;
+      try { attempt = await createPkce(); }
+      catch {
+        if (pending !== request) throw new BrowserSignInError('SUPERSEDED');
+        pending = null;
+        throw new BrowserSignInError('PKCE_FAILED');
+      }
+      if (pending !== request) throw new BrowserSignInError('SUPERSEDED');
       const query = [
         ['redirect_uri', redirectUri],
         ['code_challenge', attempt.challenge],
@@ -73,8 +82,8 @@ export function createBrowserSignIn({ origin, redirectUri, openAuthSession, crea
 
       let result;
       try { result = await openAuthSession(`${root}/native-auth?${query}`, redirectUri); }
-      catch { if (pending === attempt) pending = null; throw new BrowserSignInError('BROWSER_FAILED'); }
-      if (pending !== attempt) throw new BrowserSignInError('SUPERSEDED');
+      catch { if (pending === request) pending = null; throw new BrowserSignInError('BROWSER_FAILED'); }
+      if (pending !== request) throw new BrowserSignInError('SUPERSEDED');
       pending = null;
 
       if (!result || result.type !== 'success' || typeof result.url !== 'string') throw new BrowserSignInError('CANCELLED');
