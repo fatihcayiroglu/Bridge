@@ -23,6 +23,40 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Bounded, redacted diagnostics for issue #416 (intermittent missing xdg_toplevel). They only PRINT facts; no check below
+# is relaxed, the 60 s limit, the native-Wayland flags and the sandbox stay exactly as they were.
+print_compositor_facts() {
+  echo "WAYLAND_DIAG weston=$(weston --version 2>&1 | head -1 | tr -cd '[:print:]' | cut -c1-60)"
+  if command -v wayland-info >/dev/null 2>&1; then
+    # Captured once: `grep -q` on a pipe would SIGPIPE wayland-info and, under pipefail, report a present seat as absent.
+    local info
+    info="$(wayland-info 2>/dev/null || true)"
+    # Global interface names and versions only (no client data exists yet).
+    echo "WAYLAND_DIAG globals=$(grep -oE "interface: '[a-z_0-9]+', version: [0-9]+" <<<"${info}" | sed -E "s/interface: '([a-z_0-9]+)', version: ([0-9]+)/\1@\2/" | sort -u | tr '\n' ' ' | cut -c1-600)"
+    if grep -q "interface: 'wl_seat'" <<<"${info}"; then echo "WAYLAND_DIAG wl_seat=present"; else echo "WAYLAND_DIAG wl_seat=ABSENT"; fi
+  else
+    echo "WAYLAND_DIAG wayland-info=not-installed"
+  fi
+}
+print_failure_facts() {
+  local app_alive=no comp_alive=no
+  kill -0 "${APP_PID}" 2>/dev/null && app_alive=yes
+  kill -0 "${COMPOSITOR_PID}" 2>/dev/null && comp_alive=yes
+  echo "WAYLAND_DIAG failure app_alive=${app_alive} compositor_alive=${comp_alive}"
+  if [[ -f "${ROOT}/app.log" ]]; then
+    echo "WAYLAND_DIAG app_log gdk_seat_assertions=$(grep -c 'GDK_IS_SEAT' "${ROOT}/app.log" || true)" \
+      "bind_wl_seat=$(grep -Ec 'wl_registry#[0-9]+\.bind\([0-9]+, "wl_seat"' "${ROOT}/app.log" || true)" \
+      "get_xdg_surface=$(grep -Ec 'xdg_wm_base#[0-9]+\.get_xdg_surface' "${ROOT}/app.log" || true)" \
+      "get_toplevel=$(grep -Ec 'xdg_surface#[0-9]+\.get_toplevel' "${ROOT}/app.log" || true)" \
+      "ack_configure=$(grep -Ec 'xdg_surface#[0-9]+\.ack_configure' "${ROOT}/app.log" || true)" \
+      "set_min_max_size=$(grep -Ec 'xdg_toplevel#[0-9]+\.set_(min|max)_size' "${ROOT}/app.log" || true)"
+  fi
+  if [[ -f "${ROOT}/weston.log" ]]; then
+    echo "WAYLAND_DIAG weston.log tail (compositor start-up and client events, no user data):"
+    tail -30 "${ROOT}/weston.log" | cut -c1-240 || true
+  fi
+}
+
 export XDG_RUNTIME_DIR="${ROOT}/runtime"
 export XDG_CONFIG_HOME="${ROOT}/config"
 export XDG_CACHE_HOME="${ROOT}/cache"
@@ -44,6 +78,7 @@ for i in {1..40}; do
   sleep 0.25
 done
 [[ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]] || { echo "Weston Wayland socket missing" >&2; exit 1; }
+WAYLAND_DEBUG= print_compositor_facts
 
 # All state is isolated. The DEB post-install supplies Chromium sandbox setup.
 # Do not relax the sandbox, impersonate root or allow a fallback to X11.
@@ -52,6 +87,7 @@ APP_PID=$!
 for i in {1..60}; do
   if ! kill -0 "${APP_PID}" 2>/dev/null; then
     echo "Packaged Bridge exited before creating a Wayland toplevel" >&2
+    print_failure_facts >&2
     tail -40 "${ROOT}/app.log" >&2 || true
     exit 1
   fi
@@ -66,5 +102,6 @@ for i in {1..60}; do
   sleep 1
 done
 echo "FAIL: packaged Bridge did not create a Wayland xdg-toplevel surface in 60s" >&2
+print_failure_facts >&2
 tail -60 "${ROOT}/app.log" >&2 || true
 exit 1
