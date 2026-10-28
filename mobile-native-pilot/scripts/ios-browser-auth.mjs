@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
+import { loginEvidence, uiSurvey, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -248,7 +248,8 @@ try {
       alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length };
       // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
       facts.failureUi.login = loginEvidence(s, activeUsername);
-      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
+      facts.failureUi.survey = uiSurvey(s);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
       await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;

@@ -55,3 +55,19 @@ export function focusSnapshot(evidence) {
   const flags = (fields) => (fields ?? []).slice(0, 4).map((field) => (typeof field.focused === 'boolean' ? field.focused : null));
   return { text: flags(evidence?.textFields), secure: flags(evidence?.secureFields) };
 }
+
+// What is on screen when the system browser never shows a login form (run 40772071912: 9 web views, 0 fields, no known
+// label). Counts by element type plus a fixed allow-list of control names - never text, values or URLs.
+const SURVEY_NAMES = ['Sign in with your browser', 'Continue', 'Cancel', 'Open', 'Allow', 'Done', 'Sign Out', 'Switch account'];
+export function uiSurvey(source) {
+  const all = nodes(source);
+  const byType = {};
+  for (const n of all) { const t = n.type.replace('XCUIElementType', ''); byType[t] = (byType[t] ?? 0) + 1; }
+  const named = (label) => all.some((n) => [n.name, n.label].some((v) => typeof v === 'string' && decode(v) === label));
+  return {
+    nodes: all.length,
+    byType: Object.fromEntries(Object.entries(byType).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12)),
+    namesPresent: SURVEY_NAMES.filter(named),
+    visibleWebViews: all.filter((n) => n.type === 'XCUIElementTypeWebView' && n.visible === 'true').length,
+  };
+}
