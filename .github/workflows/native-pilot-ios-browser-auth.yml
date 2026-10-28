@@ -111,6 +111,9 @@ jobs:
           echo $! > "$RUNNER_TEMP/mobile-proxy.pid"
           for i in $(seq 1 60); do curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > mobile-auth-evidence/health.json && break; sleep 1; done
           curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > mobile-auth-evidence/health.json
+      - name: Integrity-pinned React Native prebuilt artifacts (SHA-512, bounded, fail-closed)
+        working-directory: mobile-native-pilot
+        run: node scripts/prefetch-ios-prebuilt.mjs
       - name: Build the real normal-screen iOS app
         working-directory: mobile-native-pilot
         run: |
@@ -143,6 +146,9 @@ jobs:
           echo $! > "$RUNNER_TEMP/mobile-metro.pid"
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8081/status && break; sleep 1; done
           curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
+      - name: Prebuild WebDriverAgent (own bounded step; compile time is not test time)
+        timeout-minutes: 25
+        run: bash mobile-native-pilot/scripts/prebuild-wda.sh
       - name: Actual system-browser sign-in, OS callback, protected restore and revocation
         run: bash mobile-native-pilot/scripts/run-ios-browser-auth.sh
       - name: Stop only owned test services
@@ -154,6 +160,9 @@ jobs:
           if test -n "${MOBILE_PG_DIR:-}" && test -f "$MOBILE_PG_DIR/postmaster.pid"; then
             "$(brew --prefix postgresql@16)/bin/pg_ctl" -D "$MOBILE_PG_DIR" -w stop
           fi
+      - name: Key evidence in the job log (readable from the end of the log)
+        if: always()
+        run: node mobile-native-pilot/scripts/ios-evidence-summary.mjs mobile-auth-evidence || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

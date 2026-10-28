@@ -1,3 +1,69 @@
+/**
+ * @openapi
+ * /native-auth/switch:
+ *   servers:
+ *     - url: /
+ *   get:
+ *     tags:
+ *       - Auth
+ *     operationId: nativeSwitchBegin
+ *     summary: Begin isolated native account switching without restoring the existing browser account
+ *     description: >-
+ *       HTTPS-only top-level browser entry. Creates a five-minute server-owned transaction and a
+ *       unique path-bound HttpOnly/Secure/SameSite=Strict cookie. Existing browser sessions cannot
+ *       satisfy freshness and are unchanged. Password plus required TOTP/backup authentication is
+ *       supported; isolated WebAuthn/SSO continuation is not yet implemented.
+ *     security: []
+ *     parameters:
+ *       - name: redirect_uri
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Exact registered native redirect URI.
+ *       - name: code_challenge
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: ^[A-Za-z0-9_-]{43}$
+ *       - name: code_challenge_method
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum:
+ *             - S256
+ *       - name: state
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: ^[A-Za-z0-9_-]{16,128}$
+ *     responses:
+ *       '200':
+ *         description: >-
+ *           No-store HTML document for the bound transaction; no ordinary browser token or refresh
+ *           cookie is issued.
+ *         content:
+ *           text/html:
+ *             schema:
+ *               type: string
+ *         headers:
+ *           Set-Cookie:
+ *             description: >-
+ *               Only __Secure-bridge_native_switch, scoped to /native-auth/switch/{id}; not a web
+ *               login cookie.
+ *             schema:
+ *               type: string
+ *       default:
+ *         description: >-
+ *           Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+ *           or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+ *           transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+ *           origin or authoritative-store uncertainty. No authorization code or ordinary web session
+ *           is returned.
+ */
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';

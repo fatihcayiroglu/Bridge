@@ -1,5 +1,8 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
+import { chooseSubmitIndex } from './ios-signin-select.mjs';
+import { enterFocusedPassword, dismissUsernameKeyboard } from './ios-password-focus.mjs';
+import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +45,19 @@ async function nativeScreen(name) {
 async function clickName(name) {
   const found = await until(async () => (await byName(name))[0], 'native-control');
   await command('POST', `/element/${key(found)}/click`, {});
+}
+// Two controls are named "Sign In" (the tab and the submit button); click the one below the password field.
+async function clickSignInSubmit(passwordElement) {
+  const passwordRect = await command('GET', `/element/${key(passwordElement)}/rect`);
+  const chosen = await until(async () => {
+    const all = await byName('Sign In');
+    facts.signInMatches = all.length;
+    const rects = [];
+    for (const element of all) rects.push(await command('GET', `/element/${key(element)}/rect`));
+    const index = chooseSubmitIndex(rects, passwordRect);
+    return index < 0 ? null : all[index];
+  }, 'sign-in-submit');
+  await command('POST', `/element/${key(chosen)}/click`, {});
 }
 async function screenshot(label) {
   const bytes = await command('GET', '/screenshot');
@@ -98,14 +114,41 @@ async function browserReady() {
   assert.ok([bundle, 'com.apple.SafariViewService', 'com.apple.AuthenticationServicesUI'].includes(active.bundleId), 'UNEXPECTED_AUTHENTICATION_APPLICATION');
   facts.systemBrowserObserved = true;
 }
+let activeUsername;
 async function signIn(user, expectedPid) {
+  activeUsername = user.username;
   await browserReady();
   const fields = await elements('class name', 'XCUIElementTypeTextField');
   const secrets = await elements('class name', 'XCUIElementTypeSecureTextField');
   assert.ok(fields.length === 1 && secrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
+  const secretBefore = fieldGeometry(await command('GET', `/element/${key(secrets[0])}/rect`));
   await command('POST', `/element/${key(fields[0])}/value`, { text: user.username });
-  await command('POST', `/element/${key(secrets[0])}/value`, { text: password });
-  await clickName('Sign In');
+  // Run40730915313 proved the active element remained different from the secure
+  // field after the coordinate/click sequence. Remove the username keyboard and
+  // prove that transition before obtaining a new password-element reference.
+  await dismissUsernameKeyboard({ elements, native, until,
+    record: proof => { facts.usernameKeyboard = proof; } });
+  // The page moves once the username keyboard is up, so the first element reference can point at a stale position
+  // (runs 40700229648 and 40706730676: the password still landed in the username field). Look the field up again,
+  // record where it is now, touch that spot like a finger, and only then type.
+  const freshSecrets = await elements('class name', 'XCUIElementTypeSecureTextField');
+  assert.ok(freshSecrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
+  const secretRect = await command('GET', `/element/${key(freshSecrets[0])}/rect`);
+  facts.secretGeometry = { beforeUsername: secretBefore, afterUsername: fieldGeometry(secretRect) };
+  await command('POST', '/actions', tapActions(centerOf(secretRect)));
+  await command('POST', `/element/${key(freshSecrets[0])}/click`, {});
+  // A native coordinate tap as well, then record which field the page source says holds focus before typing
+  // (run 40717519808: the password still landed in the username field after the touch action above).
+  await native('tap', centerOf(secretRect));
+  facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
+  // Element-addressed typing previously ran without a positive keyboard-focus
+  // proof. Keep that proof mandatory; type only through its verified element,
+  // using the native value API rather than unqualified hardware-key simulation.
+  await enterFocusedPassword({ targetId: key(freshSecrets[0]), command, until,
+    typePassword: (id, value) => command('POST', `/element/${id}/value`, { text: value }),
+    record: proof => { facts.passwordKeyboardFocus = proof; } }, password);
+  assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
+  await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
   await screenshot(`consent-${activeCase}`);
   const before = await families(user);
@@ -150,10 +193,14 @@ try {
   assert.ok(String((await database.query('SHOW server_version_num')).rows[0].server_version_num).startsWith('16'), 'REAL_POSTGRES16_REQUIRED');
   const a = await fixture('A'), b = await fixture('B');
   facts.stage = 'native-xcuitest-session';
+  facts.driverDeadlineMs = 240000;
   const created = await wd('POST', '/session', { capabilities: { alwaysMatch: {
     platformName: 'iOS', 'appium:automationName': 'XCUITest', 'appium:udid': process.env.IOS_SIMULATOR_UDID,
     'appium:app': path.resolve(process.env.IOS_APP_PATH), 'appium:bundleId': bundle,
     'appium:isHeadless': true, 'appium:noReset': true, 'appium:autoAcceptAlerts': false,
+    'appium:showXcodeLog': true,
+    // Use the WebDriverAgent compiled in the previous step; never rebuild it inside the journey's deadline.
+    ...(process.env.WDA_DERIVED_DATA ? { 'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA } : {}),
     'appium:printPageSourceOnFindFailure': false, 'appium:newCommandTimeout': 180,
   } } }, 240000);
   session = created.sessionId; assert.ok(session, 'NATIVE_XCTEST_SESSION_REQUIRED');
@@ -194,6 +241,8 @@ try {
   facts.status = 'PASS'; facts.stage = 'complete';
 } catch (error) {
   facts.failure = /^[A-Z_]+(?::[a-z-]+)?$/.test(error?.message ?? '') ? error.message : 'DRIVER_OR_SERVICE_FAILED';
+  console.log(`IOS_PASSWORD_FOCUS ${JSON.stringify(facts.passwordKeyboardFocus ?? null)}`);
+  console.log(`IOS_USERNAME_KEYBOARD ${JSON.stringify(facts.usernameKeyboard ?? null)}`);
   if (error?.message?.startsWith('WebDriver ')) facts.driverFailure = error.message;
   // Driver/server messages can contain credentials or callback URLs. Preserve
   // the closed stage, AX counts and screenshots, never raw source/arguments.
@@ -201,7 +250,11 @@ try {
     try { const active = await native('activeAppInfo'); facts.failureApplication = { bundleId: active.bundleId, pid: active.pid }; } catch {}
     try { const s = await command('GET', '/source'); facts.failureUi = { webViews: (s.match(/XCUIElementTypeWebView\b/g) || []).length,
       textFields: (s.match(/XCUIElementTypeTextField\b/g) || []).length, secureFields: (s.match(/XCUIElementTypeSecureTextField\b/g) || []).length,
-      alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length }; await screenshot('first-failure'); } catch {}
+      alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length };
+      // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
+      facts.failureUi.login = loginEvidence(s, activeUsername);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
+      await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;
 } finally {
