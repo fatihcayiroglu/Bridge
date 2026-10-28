@@ -28,7 +28,7 @@ export function validatePins(pins, rnVersion, hermesVersion) {
   for (const [name, a] of entries) {
     if (!SHA512.test(a?.sha512 ?? '')) throw new Error(`PIN_INVALID ${name}`);
     if (!/^[a-z0-9.-]+\.tar\.gz$/.test(name) || !(name.includes(rnVersion) || name.includes(pins.hermesVersion))) throw new Error(`PIN_NAME_INVALID ${name}`);
-    if (!/^[\w./-]+\.tar\.gz$/.test(a.path ?? '') || a.path.includes('..') || !String(a.defaultBase).startsWith('https://')) throw new Error(`PIN_SOURCE_INVALID ${name}`);
+    if (!/^[\w-][\w./-]*\.tar\.gz$/.test(a.path ?? '') || a.path.includes('..') || !String(a.defaultBase).startsWith('https://')) throw new Error(`PIN_SOURCE_INVALID ${name}`);
   }
   return entries;
 }
