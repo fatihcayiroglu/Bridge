@@ -46,7 +46,9 @@ stage=apk-install
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 adb reverse tcp:8081 tcp:8081
 
-while IFS=$'\t' read -r id width height dpi; do
+# Keep profile input on fd 3: adb may read fd 0 and would silently consume
+# the remaining lines, leaving a 1/4 result that rightly fails the gate.
+while IFS=$'\t' read -r -u 3 id width height dpi; do
   active_profile="$id"
   mkdir -p "native-evidence/layout-android/$id"
   output="native-evidence/layout-android/$id"
@@ -91,7 +93,7 @@ while IFS=$'\t' read -r id width height dpi; do
   node scripts/layout-profiles.mjs set "$report" "$id" PASS
   echo "NATIVE_ANDROID_LAYOUT $id PASS viewport=${width}x${height}@${dpi}dpi"
   active_profile=''
-done < native-evidence/layout-android/profiles.tsv
+done 3< native-evidence/layout-android/profiles.tsv
 stage=complete-gate
 node scripts/layout-profiles.mjs assert-complete "$report"
 echo 'NATIVE_ANDROID_SIGNED_OUT_LAYOUT_MATRIX=PASS'
