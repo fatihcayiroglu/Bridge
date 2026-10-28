@@ -53,10 +53,34 @@ assert_fail '[900] wl_registry#2.global(4, "wl_seat", 7)
 assert_fail '[900] wl_registry#2.global(4, "wl_seat", 7)
 [901] -> xdg_surface#14.get_popup(new id xdg_popup#15, nil, nil)
 [902] -> xdg_surface#14.ack_configure(26)' 'popup is not a toplevel'
+assert_fail '[900] wl_registry#2.global(4, "wl_seat", 7)
+[901] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[902] -> xdg_surface#99.ack_configure(26)' 'configure acknowledgement belongs to another surface'
+assert_fail '[900] wl_registry#2.global(4, "wl_seat", 7)
+[901] -> xdg_surface#14.ack_configure(26)
+[902] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)' 'acknowledgement precedes role creation'
+assert_fail '[900] wl_registry#2.global(4, "wl_seat", 7)
+[901] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[902] -> xdg_surface#14.destroy()
+[903] -> xdg_surface#14.ack_configure(26)' 'destroyed surface cannot acknowledge its old role'
+assert_fail '[900] wl_registry#2.global(4, "wl_seat", 7)
+[901] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[902] -> xdg_surface#14.destroy()
+[903] -> xdg_surface#14.get_popup(new id xdg_popup#16, nil, nil)
+[904] -> xdg_surface#14.ack_configure(26)' 'reused surface id has only a popup role'
+assert_pass '[900] wl_registry#2.global(4, "wl_seat", 7)
+[901] -> xdg_surface#99.ack_configure(25)
+[902] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[903] -> xdg_surface#14.ack_configure(26)' 'unrelated earlier acknowledgement does not hide a valid role'
+assert_pass '[900] wl_registry#2.global(4, "wl_seat", 7)
+[901] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[902] -> xdg_surface#14.destroy()
+[903] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#16)
+[904] -> xdg_surface#14.ack_configure(26)' 'reused surface id needs a new toplevel role'
 printf '%s\n' "${positive_at}" '🌉 private-account' \
   'private-title /home/private-runner/file.txt https://private-server/ Bearer secret-token' > "${fixture}"
 summary=$(wayland_protocol_summary "${fixture}")
 [[ "${summary}" == *'wayland-get-toplevel=1'* ]]
 [[ "${summary}" == *'wayland-configure-acks=1'* ]]
 [[ "${summary}" != *'private'* && "${summary}" != *'secret'* && "${summary}" != *'https://'* && "${summary}" != *'/home/'* ]]
-echo 'PASS: native Wayland acceptance controls (3 valid / 7 invalid / 1 privacy / 0 skipped)'
+echo 'PASS: native Wayland acceptance controls (5 valid / 11 invalid / 1 privacy / 0 skipped)'
