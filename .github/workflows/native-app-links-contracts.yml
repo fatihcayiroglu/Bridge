@@ -1,0 +1,38 @@
+name: Native callback association security contracts
+on:
+  pull_request:
+    paths: ['server/lib/nativeAppLinks.ts', 'server/routes/nativeAppLinks.ts', 'server/lib/nativeAuth.ts', 'server/tests/native-app-links.test.ts', '.github/workflows/native-app-links-contracts.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Exact dependencies and evidence identity
+        run: |
+          mkdir -p association-evidence
+          git rev-parse HEAD > association-evidence/head.txt
+          npm ci --no-fund
+          npm ci --prefix server --no-fund
+      - name: Real server build and association / PKCE contracts
+        run: |
+          npm run build --prefix server
+          cd server
+          node node_modules/jest/bin/jest.js --runInBand --ci --runTestsByPath tests/native-app-links.test.ts tests/native-auth.test.ts --json --outputFile ../association-evidence/contracts.json
+          node -e 'const r=require("../association-evidence/contracts.json");if(!r.success || !r.numTotalTests || r.numPassedTests!==r.numTotalTests || r.numFailedTests || r.numPendingTests || r.numTodoTests)throw Error("ASSOCIATION_CONTRACTS_INCOMPLETE");console.log(JSON.stringify({tests:r.numTotalTests,pass:r.numPassedTests,failed:r.numFailedTests,skipped:r.numPendingTests,todo:r.numTodoTests}))'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-association-${{ github.run_id }}-${{ github.run_attempt }}
+          path: association-evidence/
+          if-no-files-found: error
+          retention-days: 7

@@ -44,6 +44,12 @@ describe('config: off by default, fail closed', () => {
     ['too many certificates', { NATIVE_APP_LINKS_ANDROID_CERT_SHA256: Array(5).fill(CERT).join(',') }],
     ['invalid redirect list', { NATIVE_AUTH_REDIRECT_URIS: 'http://auth.bridge-callback.example/native/callback' }],
     ['redirect on the web origin', { NATIVE_AUTH_REDIRECT_URIS: 'https://bridge.example/native/callback' }],
+    ['wildcard callback path', { NATIVE_AUTH_REDIRECT_URIS: 'https://auth.bridge-callback.example/native/*' }],
+    ['wildcard inside a path segment', { NATIVE_AUTH_REDIRECT_URIS: 'https://auth.bridge-callback.example/native/call*back' }],
+    ['encoded wildcard callback path', { NATIVE_AUTH_REDIRECT_URIS: 'https://auth.bridge-callback.example/native/%2A' }],
+    ['encoded single-character wildcard', { NATIVE_AUTH_REDIRECT_URIS: 'https://auth.bridge-callback.example/native/%3F' }],
+    ['encoded path separator', { NATIVE_AUTH_REDIRECT_URIS: 'https://auth.bridge-callback.example/native%2Fcallback' }],
+    ['iOS callback on a nonstandard port', { NATIVE_AUTH_REDIRECT_URIS: 'https://auth.bridge-callback.example:8443/native/callback' }],
   ])('%s → invalid_configuration, nothing served', async (_name, override) => {
     const env = { ...BASE, ...override };
     expect(loadNativeAppLinksConfig(env)).toEqual({ enabled: false, reason: 'invalid_configuration' });
@@ -84,6 +90,25 @@ describe('association files: only on the callback host', () => {
         const res = await request(app(BASE)).get(path).set('Host', host);
         expect(res.text).toBe('fallthrough');
       }
+    }
+  });
+
+  test('forwarded callback host cannot make an unconfigured host publish associations', async () => {
+    for (const route of ['/.well-known/assetlinks.json', '/.well-known/apple-app-site-association', '/native/callback']) {
+      const response = await request(app(BASE)).get(route).set('Host', 'bridge.example')
+        .set('X-Forwarded-Host', CB).set('Forwarded', `host=${CB};proto=https`);
+      expect(response.status).toBe(404);
+      expect(response.text).toBe('fallthrough');
+    }
+  });
+
+  test('each callback host receives only its own exact iOS paths', async () => {
+    const env = { ...BASE, NATIVE_AUTH_REDIRECT_URIS: `https://${CB}/native/callback,https://second-callback.example/other/callback` };
+    for (const [host, own, other] of [[CB, '/native/callback', '/other/callback'], ['second-callback.example', '/other/callback', '/native/callback']]) {
+      const response = await request(app(env)).get('/.well-known/apple-app-site-association').set('Host', host);
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.text).applinks.details[0].components).toEqual([{ '/': own, comment: 'Bridge native sign-in callback' }]);
+      expect((await request(app(env)).get(other).set('Host', host)).status).toBe(404);
     }
   });
 
