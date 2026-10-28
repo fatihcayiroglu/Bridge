@@ -72,6 +72,24 @@ or prove a fix for the failing runner/network route. This is a transport
 mitigation pending a new exact-head native run, not closure of an intermittent
 network failure and not a blind rerun of the original head.
 
+Run **40675269285**, head `9afc5b2a8014e169753894ec15782d241d3ad183`,
+completed the real app build, simulator boot and OS CA installation. The
+WebDriver session request then reached its unchanged 240000ms deadline with
+`ABORT_ERR` before a session ID or test case existed: **0 passed / 0 failed
+native cases / 3 NOT EXECUTED**; the infrastructure job failed. Its artifact is
+retained as `ios-system-browser-40675269285-1` and locally SHA256-verified.
+The original bootstrap log was not archived, so the underlying WDA/Xcode cause
+is unproven. No timeout increase or native acceptance claim follows from this.
+
+Subsequent runs retain verbose Appium/Xcode bootstrap diagnostics only if the
+closed result proves `stage=native-xcuitest-session` and zero cases: no UI input
+or browser login has happened. Raw later command traffic remains excluded.
+The Appium/Xcode child environment also omits backend/database/password secrets
+and the TLS private-key path before it starts, so bootstrap diagnostics cannot
+inherit those values. The separate test driver retains its fixture environment.
+This repairs an evidence gap; it does not classify a future successful rerun as
+proof that an intermittent startup failure was fixed.
+
 ## Remaining acceptance and owner-controlled prerequisites
 
 - This is a debug simulator journey, not physical-device, release-signing,
