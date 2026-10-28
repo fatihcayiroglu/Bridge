@@ -197,3 +197,47 @@ test('on failure the Android script prints the ActivityManager ANR reports', () 
   const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
   assert.match(s, /\(\( status == 0 \)\) \|\| acceptance_print_anr_reports android < native-evidence\/android-logcat\.txt/);
 });
+
+// Runs the REAL pre-launch probe block with a fake adb. It must record and never gate.
+function runPrelaunch(adbScript) {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const block = s.slice(s.indexOf('stage=pre-launch-metro-probe'), s.indexOf('stage=first-launch'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acc-'));
+  fs.mkdirSync(path.join(dir, 'bin')); fs.mkdirSync(path.join(dir, 'native-evidence'));
+  fs.writeFileSync(path.join(dir, 'bin', 'adb'), `#!/usr/bin/env bash\n${adbScript}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'case.sh'), `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\n${block}\necho continued\n`);
+  const r = spawnSync('bash', ['case.sh'], { encoding: 'utf8', cwd: dir, env: { ...process.env, PATH: `${dir}/bin:${process.env.PATH}` } });
+  const file = path.join(dir, 'native-evidence', 'pre-launch-metro.txt');
+  return { ...r, record: fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null };
+}
+
+test('pre-launch Metro probe: records tunnel and device-side /status, prints them', () => {
+  const r = runPrelaunch('case "$1" in reverse) echo "emulator-5554 tcp:8081 tcp:8081";; shell) printf "HTTP/1.1 200 OK\\r\\n\\r\\npackager-status:running";; esac');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'continued');
+  assert.match(r.record, /^reverse_list: emulator-5554 tcp:8081 tcp:8081 $/m);
+  assert.match(r.record, /^device_status_ms=\d+$/m);
+  assert.match(r.record, /^device_status_body: packager-status:running$/m);
+  assert.match(r.stderr, /NATIVE_ANDROID_PRELAUNCH: device_status_body: packager-status:running/);
+});
+
+test('pre-launch Metro probe never gates: a failing adb is recorded and the run continues', () => {
+  const r = runPrelaunch('echo "error: closed" >&2; exit 1');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'continued');
+  assert.match(r.record, /^reverse_list: error: closed $/m);
+  assert.match(r.record, /^device_status_body: error: closed$/m);
+});
+
+test('runtime errors include RN\'s packager-status WARNING (it names the IOException)', () => {
+  const log = [
+    '10-28 00:35:08.100  2246  2300 W unknown:ReactNative: The packager does not seem to be running as we got an IOException requesting its status: failed to connect to localhost/127.0.0.1 (port 8081) after 5000ms',
+    '10-28 00:35:08.200  2246  2300 W unknown:ReactNative: some other warning',
+    '10-28 00:35:12.515  2246  2246 E unknown:ReactNative: java.lang.RuntimeException: Unable to load script.',
+  ].join('\n');
+  const r = runInDir('acceptance_print_runtime_errors android < log.txt', { 'log.txt': log });
+  const lines = r.stderr.trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /IOException requesting its status: failed to connect .* after 5000ms/);
+  assert.match(lines[1], /Unable to load script/);
+});

@@ -57,6 +57,19 @@ function assert_native_marker() {
   acceptance_print_ui_text "$output" android
   return 1
 }
+# Recorded, NOT asserted: is Metro reachable from INSIDE the device through the reverse
+# tunnel right before launch? The app's own startup check (RN PackagerStatusCheck, 5 s
+# connect timeout) failing makes it load from assets -> "Unable to load script" redbox
+# (run 40608904348). This shows whether the tunnel or the device was the problem.
+stage=pre-launch-metro-probe
+{
+  echo "reverse_list: $(adb reverse --list 2>&1 | tr '\n' ' ' || true)"
+  probe_start=$(date +%s%3N)
+  probe_out=$(adb shell 'printf "GET /status HTTP/1.0\r\n\r\n" | toybox nc -w 5 127.0.0.1 8081' 2>&1 || true)
+  echo "device_status_ms=$(( $(date +%s%3N) - probe_start ))"
+  echo "device_status_body: $(printf '%s' "$probe_out" | tail -n 1)"
+} > native-evidence/pre-launch-metro.txt 2>&1 || true
+acceptance_print_tail native-evidence/pre-launch-metro.txt android PRELAUNCH 5
 stage=first-launch
 adb shell am start -W -n com.bridge.nativepilot/.MainActivity > native-evidence/first-launch.txt
 stage=first-ui-assertions
