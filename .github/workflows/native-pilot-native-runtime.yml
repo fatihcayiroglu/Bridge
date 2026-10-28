@@ -11,6 +11,7 @@ env:
   # Expo --localhost binds the address returned for localhost. The native
   # reverse tunnel and readiness probe use IPv4; keep resolution deterministic.
   NODE_OPTIONS: --dns-result-order=ipv4first
+  ENTERPRISE_REPOSITORY: https://repo.maven.apache.org/maven2
 jobs:
   android:
     name: Android API ${{ matrix.api }} native storage and recovery
@@ -56,6 +57,8 @@ jobs:
           "$task_aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > ../native-evidence/apk-badging.txt
       - name: Enable runner KVM
         run: sudo chmod 666 /dev/kvm
+      - name: Preserve available SDK package inventory
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list --channel=3 > native-evidence/sdk-inventory.txt'
       - name: Boot real app, native secure storage and encrypted crash recovery
         uses: reactivecircus/android-emulator-runner@v2
         with:

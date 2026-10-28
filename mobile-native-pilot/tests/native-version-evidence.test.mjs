@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { storageEvidence, iosRuntimePlan, observedIosRuntime } from '../scripts/native-version-evidence.mjs';
 
-const sample = { platform:'android',requested:'35',observed:'35',minimum:'24',head:'a'.repeat(40),exit:0,
+const sample = { platform:'android',requested:'35',observed:'35',minimum:'24',head:'a'.repeat(40),exit:0,executed:true,
   verdict:'NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS foreign_anr_dialogs_answered=0',binarySha256:'b'.repeat(64) };
 test('native storage evidence cannot imply authentication, full OS compatibility or physical hardware acceptance',()=>{
   const r=storageEvidence(sample);
@@ -10,6 +10,9 @@ test('native storage evidence cannot imply authentication, full OS compatibility
   for(const [feature,status] of Object.entries(r.features)) if(feature!=='protected-storage-and-encrypted-recovery')assert.equal(status,'NOT EXECUTED');
 });
 test('success marker cannot conceal a failing journey process',()=>assert.equal(storageEvidence({...sample,exit:1}).status,'FAIL'));
+test('a prerequisite failure or copied marker cannot claim the native journey executed',()=>{
+  for(const exit of [0,1])assert.equal(storageEvidence({...sample,executed:false,exit}).status,'NOT EXECUTED');
+});
 test('successful process without an actual complete native verdict cannot pass',()=>{
   for(const verdict of ['', 'PASS', 'NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS_FAKE', 'prefix '+sample.verdict])
     assert.equal(storageEvidence({...sample,verdict}).status,'FAIL');

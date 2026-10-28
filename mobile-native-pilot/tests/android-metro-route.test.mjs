@@ -5,7 +5,7 @@ import { configureAndroidMetroRoute } from '../scripts/android-metro-route.mjs';
 import { requireMetroLoopbackSource } from '../src/native-metro-source.mjs';
 
 const good = 'HTTP/1.0 200 OK\r\nContent-Length: 23\r\n\r\npackager-status:running';
-function fixture({ response = good, control = '', fault, readbackChanged = false, reverse = 'emulator-5554 tcp:8081 tcp:8081\n' } = {}) {
+function fixture({ response = good, control = '', fault, legacyNetcat = false, readbackChanged = false, reverse = 'emulator-5554 tcp:8081 tcp:8081\n' } = {}) {
   let stored = '';
   const calls = [];
   const adb = (args, options) => {
@@ -16,6 +16,7 @@ function fixture({ response = good, control = '', fault, readbackChanged = false
     if (args.includes('cat')) return { status: 0, stdout: readbackChanged ? '<map/>' : stored };
     // The original NAT path has no route, as observed in run 40610885003.
     assert.match(args.at(-1), /127\.0\.0\.1 8081$/);
+    if (legacyNetcat && / -(?:W|q) /.test(args.at(-1))) return { status: 1, stdout: '', stderr: 'nc: unknown option; usage: nc [-w SECONDS] HOST PORT' };
     return { status: 0, stdout: args.at(-1).includes('sleep 5') ? response : control };
   };
   return { adb, calls };
@@ -30,6 +31,11 @@ test('unavailable emulator NAT is avoided by a read-back RN preference and a rea
   assert.equal(evidence.status_body_matches, true);
   assert.equal(evidence.eof_control_bytes, 0);
   assert.ok(evidence.operations.every(op => op.elapsed_ms >= 0));
+});
+test('older Android netcat without W/q flags still performs the full held-input status exchange', () => {
+  const f=fixture({legacyNetcat:true});
+  assert.equal(configureAndroidMetroRoute({adb:f.adb}).verdict,'PASS');
+  assert.equal(f.calls.length,5,'no fallback or retried request');
 });
 test('wrong or empty HTTP evidence fails closed, even when adb exits zero', () => {
   for (const response of ['', 'HTTP/1.0 200 OK\r\n\r\n', 'HTTP/1.0 503 unavailable\r\n\r\npackager-status:running',
@@ -60,7 +66,9 @@ test('device HTTP probe has Host, connection close, and bounded connect/read wit
   assert.match(f.calls[4].args[2], /GET \/status HTTP\/1\.0/);
   assert.match(f.calls[4].args[2], /Host: 127\.0\.0\.1:8081/);
   assert.match(f.calls[4].args[2], /Connection: close/);
-  assert.match(f.calls[4].args[2], /toybox nc -w 5 -W 5 -q 5/);
+  assert.match(f.calls[4].args[2], /toybox nc -w 5 127\.0\.0\.1 8081$/);
+  assert.doesNotMatch(f.calls[4].args[2], / -(?:W|q) /);
+  assert.equal(f.calls[4].options.timeout, 10000, 'whole read/command bound is retained');
   assert.match(f.calls[4].args[2], /^\{ printf .*; sleep 5; \} \| /);
   assert.doesNotMatch(f.calls[3].args[2], /sleep/, 'the EOF control keeps the original close semantics');
 });

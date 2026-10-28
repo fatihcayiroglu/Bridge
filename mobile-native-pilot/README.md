@@ -4,6 +4,12 @@ This Expo SDK 57 / React Native 0.86 pilot is separate from the operational
 Capacitor client. P7 remains OPEN. No production replacement, merge or deployment
 is authorized by its tests. Abuse Lab B1 is unchanged.
 
+**Owner decision, 2026-10-28:** React Native / Expo is the intended long-term
+Android/iOS architecture. Stop new Capacitor-specific features; preserve the
+existing application and data until verified parity and a safe, lossless
+migration are available. Web and Electron remain. See the mandatory
+[OS/device acceptance matrix](../docs/P7_MOBILE_ARCHITECTURE_AND_COMPATIBILITY.md).
+
 ## Current executable path
 
 The configured app now restores a native session or opens system-browser PKCE

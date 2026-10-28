@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const outstanding = ['authentication-and-switching', 'messaging', 'voice-video', 'uploads',
   'notifications-and-background', 'release-startup-and-responsiveness'];
-export function storageEvidence({ platform, requested, observed, minimum, head, exit, verdict, binarySha256 }) {
+export function storageEvidence({ platform, requested, observed, minimum, head, exit, verdict, binarySha256, executed }) {
   assert.match(head, /^[a-f0-9]{40}$/);
   assert.match(binarySha256, /^[a-f0-9]{64}$/);
   assert.equal(String(observed), String(requested), 'WRONG_RUNTIME_VERSION');
@@ -15,11 +15,12 @@ export function storageEvidence({ platform, requested, observed, minimum, head, 
   assert.match(String(observed), /^\d+(\.\d+){0,2}$/);
   assert.ok(compare(observed, minimum) >= 0, 'OS_BELOW_BUILT_MINIMUM');
   const marker = `NATIVE_${platform.toUpperCase()}_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS`;
-  const passed = exit === 0 && verdict.split(/\r?\n/).some(line => line === marker || line.startsWith(marker + ' '));
+  const passed = executed === true && exit === 0 && verdict.split(/\r?\n/).some(line => line === marker || line.startsWith(marker + ' '));
+  const status=executed === true ? (passed ? 'PASS' : 'FAIL') : 'NOT EXECUTED';
   return { category: 'AUTOMATED / SIMULATOR / DEBUG', platform, requested, observed, minimum,
     head, binarySha256, scope: 'native-protected-storage-and-encrypted-recovery',
-    status: passed ? 'PASS' : 'FAIL', productCompatibility: 'NOT EXECUTED', physicalDevice: false,
-    features: { 'protected-storage-and-encrypted-recovery': passed ? 'PASS' : 'FAIL',
+    status, productCompatibility: 'NOT EXECUTED', physicalDevice: false,
+    features: { 'protected-storage-and-encrypted-recovery': status,
       ...Object.fromEntries(outstanding.map(name => [name, 'NOT EXECUTED'])) } };
 }
 const versionParts = version => String(version).split('.').map(Number);
@@ -55,7 +56,8 @@ function main([action, requested, code, directory]) {
     const minimum=/^sdkVersion:'(\d+)'/m.exec(fs.readFileSync('native-evidence/apk-badging.txt','utf8'))?.[1];
     assert.equal(minimum,'24','BUILT_ANDROID_MINIMUM_CHANGED');
     const report=storageEvidence({platform:'android',requested,observed:fs.readFileSync('native-evidence/runtime-api.txt','utf8').trim(),minimum,
-      head:head(),exit:Number(code),verdict:optional('native-evidence/native-verdict.txt'),binarySha256:sha('android/app/build/outputs/apk/debug/app-debug.apk')});
+      head:head(),exit:Number(code),executed:fs.existsSync('native-evidence/first-launch.txt'),
+      verdict:optional('native-evidence/native-verdict.txt'),binarySha256:sha('android/app/build/outputs/apk/debug/app-debug.apk')});
     write('native-evidence/compatibility.json',report);
     assert.equal(report.status,'PASS','NATIVE_STORAGE_COMPATIBILITY_FAILED');
   } else if(action==='ios-plan') {
@@ -65,7 +67,7 @@ function main([action, requested, code, directory]) {
     assert.ok(plan.runtimes.length,'NO_AVAILABLE_IOS_RUNTIME');
   } else if(action==='record-ios') {
     const report=storageEvidence({platform:'ios',requested,observed:fs.readFileSync(directory+'/runtime-version.txt','utf8').trim(),
-      minimum:fs.readFileSync('native-evidence/ios-deployment-target.txt','utf8').trim(),head:head(),exit:Number(code),
+      minimum:fs.readFileSync('native-evidence/ios-deployment-target.txt','utf8').trim(),head:head(),exit:Number(code),executed:fs.existsSync(directory+'/simulator-launch.txt'),
       verdict:optional(directory+'/native-verdict.txt'),binarySha256:sha(process.env.IOS_BINARY_PATH)});
     write(directory+'/compatibility.json',report);
     assert.equal(report.status,'PASS','NATIVE_STORAGE_COMPATIBILITY_FAILED');

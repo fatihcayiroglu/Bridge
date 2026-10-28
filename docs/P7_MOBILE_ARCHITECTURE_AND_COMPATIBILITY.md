@@ -50,7 +50,7 @@ EXECUTED. Debug Metro times never satisfy release startup targets (<1 s meaningf
 UI, <2 s usability). The system-browser authentication journey remains a
 separate #544 gate; backend/Chromium evidence cannot replace it.
 
-At authoring time the newly expanded matrix has NOT EXECUTED. The nine report
+At authoring time the newly expanded matrix has NOT EXECUTED. The ten report
 integrity tests are unit contracts, not mobile compatibility evidence. This
 document does not claim support for any additional OS version.
 
@@ -67,3 +67,28 @@ Verified App/Universal Links stay off pending real owner-controlled domain and
 release identities. Physical vendor devices, unavailable OS runtimes, release
 performance, reinstall policy and migration remain mandatory open requirements.
 P7, #209 and #416 remain open.
+
+## First matrix execution, head a7eb8a70
+
+Run **40674573715**: API35 passed the actual native storage/recovery fixture.
+API24 booted and installed the APK but failed before application launch, at
+`metro-route-configure`, `METRO_ROUTE_EOF-CONTROL_FAILED` (netcat exit1,
+722 stderr bytes). Its native storage journey was NOT EXECUTED. The original
+artifact is retained; the initial classifier's storage FAIL label is superseded
+by this phase-based classification, not rewritten in the old artifact.
+
+The probe used newer `-W` / `-q` netcat options. An old-netcat capability control
+fails against the old probe (8 pass / 1 fail), and the revised portable `-w5`
+probe plus evidence contracts pass 19/19 locally. The HTTP status/body check,
+held-input control and 10s whole-command bound remain mandatory, with no retry.
+Actual API24 execution is still required; the precise original stderr was not
+retained, so this is a compatibility hypothesis pending native verification.
+New probe failures retain bounded stderr from the fixed unauthenticated status
+command for diagnosis.
+
+API37 could not start: SDK Manager reported `Failed to find package
+'platforms;android-37'`. Native execution is NOT EXECUTED, not a support PASS
+or an application defect. The workflow now archives the installed/offered SDK
+catalog including preview channels, without substituting another API level.
+API36 and the iOS matrix were still pending at this checkpoint. Every new head
+requires fresh results; API35's prior pass does not apply automatically.
