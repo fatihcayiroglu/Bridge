@@ -6,14 +6,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
 const bundle='com.bridge.nativepilot',chrome='com.android.chrome',password=process.env.BRIDGE_MOBILE_PASSWORD;
 assert.equal(origin,'https://127.0.0.1:8443');assert.ok(password?.length>=32);
 fs.mkdirSync(out,{recursive:true});
-const facts={category:'AUTOMATED / ANDROID EMULATOR / DEBUG',status:'FAIL',stage:'prerequisites',cases:[],physicalDevice:false};
+const facts={category:'AUTOMATED / ANDROID EMULATOR / DEBUG',status:'FAIL',stage:'prerequisites',cases:[],anrDialogs:[],physicalDevice:false};
+const protectedNames=[JSON.parse(fs.readFileSync(new URL('../app.json',import.meta.url),'utf8')).expo.name,'Chrome'];
 const ids=['ANDROID_SYSTEM_BROWSER_CANCEL','ANDROID_AUTHENTICATE_RESTART_ROTATE','ANDROID_SWITCH_ISOLATE_REVOKE_RESTART'];
 let database;
 const secrets=()=>[password,process.env.BRIDGE_EMULATOR_PIN].filter(Boolean);
@@ -25,7 +26,11 @@ function adb(args,binary=false) {
   return binary?r.stdout:r.stdout.replace(/\r/g,'');
 }
 const shell=(...args)=>adb(['shell',...args]);
-async function ui() { shell('uiautomator','dump','/sdcard/bridge-auth-ui.xml');return nodesOf(shell('cat','/sdcard/bridge-auth-ui.xml')); }
+async function ui(answerAnr=true) {
+  for(;;){shell('uiautomator','dump','/sdcard/bridge-auth-ui.xml');const nodes=nodesOf(shell('cat','/sdcard/bridge-auth-ui.xml'));
+    const dialog=answerAnr?anrDialog(nodes):null,verdict=anrVerdict(dialog,protectedNames,facts.anrDialogs.length);
+    if(verdict==='NONE')return nodes;if(verdict!=='WAIT')throw Error(verdict);
+    facts.anrDialogs.push(dialog.process);tap(dialog.wait);await pause(1000);}}
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(action,label) {facts.lastWait=label;const end=performance.now()+60000;while(performance.now()<end){const r=await action();if(r)return r;await pause(600);}throw Error('MOBILE_AUTH_DEADLINE:'+label);}
 const tap=n=>shell('input','tap',...centerOf(n).map(String));
@@ -109,7 +114,7 @@ try {await setupTrustAndChrome();database=new Client({connectionString:process.e
 }catch(error){const known=/^[A-Z_]+(?::[a-z-]+)?$/.test(error.message);facts.failure=known?error.message:'NATIVE_OR_SERVICE_FAILED';
   if(!known){facts.errorKind=redact(error?.name,40,secrets());facts.errorMessage=redact(error?.message,160,secrets());}
   let n=[];try{facts.failureActivity=activity();}catch{}
-  try{n=await ui();facts.failureUi={packages:[...new Set(n.map(x=>x.package))],editFields:n.filter(x=>x.class==='android.widget.EditText').length};}catch{}
+  try{n=await ui(false);facts.failureUi={packages:[...new Set(n.map(x=>x.package))],editFields:n.filter(x=>x.class==='android.widget.EditText').length};}catch{}
   try{screenshot('first-failure');}catch{}
   facts.failureReport=failureReport({facts,nodes:n,secrets:secrets()});process.exitCode=1;
 }finally{facts.notExecuted=ids.filter(id=>!facts.cases.some(c=>c.id===id));fs.writeFileSync(path.join(out,'android-browser-auth.json'),JSON.stringify(facts,null,2));

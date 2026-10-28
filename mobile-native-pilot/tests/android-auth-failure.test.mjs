@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],firstAdbFailure:null});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],firstAdbFailure:null,anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -109,4 +109,36 @@ test('ambiguity is still fatal and "Install anyway" stays restricted to com.andr
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(src, /click\('Install anyway',\['com\.android\.settings'\]\)/);
   assert.match(src, /namedNode\(await ui\(\),label,SETTINGS_HOSTS\)/);
+});
+
+// ---- Foreign ANR dialog (first-failure #2: run 40680725164, "Pixel Launcher isn't responding") ----
+import { anrDialog, anrVerdict, MAX_ANR_DIALOGS } from '../scripts/android-auth-ui.mjs';
+const sys = (text, extra = {}) => ({ text, package: 'android', enabled: 'true', bounds: '[0,0][10,10]', ...extra });
+const launcherAnr = [sys("Pixel Launcher isn't responding"), sys('Close app'), sys('Wait')];
+const PROTECTED = ['Bridge Native Pilot', 'Chrome'];
+
+test('the real failing screen is recognised as a launcher ANR with a Wait control', () => {
+  const d = anrDialog(launcherAnr);
+  assert.equal(d.process, 'Pixel Launcher');
+  assert.ok(d.wait);
+  assert.equal(anrVerdict(d, PROTECTED), 'WAIT');
+  assert.equal(anrDialog([node('More security & privacy', 'com.google.android.permissioncontroller')]), null);
+  assert.equal(anrDialog([sys("Pixel Launcher isn\u2019t responding"), sys('Wait')]).process, 'Pixel Launcher');
+});
+test('negative control: an ANR of the app under test or of the browser is never dismissed', () => {
+  for (const name of PROTECTED) assert.equal(anrVerdict(anrDialog([sys(`${name} isn't responding`), sys('Wait')]), PROTECTED), 'APP_OR_BROWSER_ANR', name);
+});
+test('only OS dialogs count: the same text from a non-`android` package is ignored', () => {
+  assert.equal(anrDialog([node("Pixel Launcher isn't responding", 'com.evil.overlay'), node('Wait', 'com.evil.overlay')]), null);
+});
+test('a dialog without a usable Wait control, or beyond the bound, fails closed', () => {
+  assert.equal(anrVerdict(anrDialog([sys("Pixel Launcher isn't responding")]), PROTECTED), 'ANR_DIALOG_UNHANDLED');
+  assert.equal(anrVerdict(anrDialog(launcherAnr), PROTECTED, MAX_ANR_DIALOGS), 'ANR_DIALOG_UNHANDLED');
+});
+test('every answered dialog is visible in the failure report; the failure handler reads the screen without tapping', async () => {
+  assert.deepEqual(failureReport({ facts: { anrDialogs: ['Pixel Launcher', 'Pixel Launcher'] } }).anrDialogsAnswered, ['Pixel Launcher', 'Pixel Launcher']);
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(src, /n=await ui\(false\)/);
+  assert.match(src, /facts\.anrDialogs\.push\(dialog\.process\);tap\(dialog\.wait\)/);
 });

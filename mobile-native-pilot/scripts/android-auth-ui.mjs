@@ -25,3 +25,18 @@ export function centerOf(node) {
   assert.ok(x2>x1 && y2>y1,'EMPTY_NATIVE_CONTROL');
   return [Math.floor((x1+x2)/2),Math.floor((y1+y2)/2)];
 }
+
+// A system "<process> isn't responding" dialog (package `android`). It covers whatever app is below it, so a
+// foreign one (e.g. the launcher, #209) is answered with Wait; the caller records every press. An ANR of the
+// app under test or of the browser is a real failure and is never dismissed.
+export const MAX_ANR_DIALOGS=10;
+export function anrDialog(nodes) {
+  const title=nodes.find(n=>n.package==='android' && /^.+ isn[\u2019']t responding$/.test(n.text ?? ''));
+  return title ? {process:title.text.replace(/ isn[\u2019']t responding$/,''), wait:namedNode(nodes,'Wait',['android'])} : null;
+}
+export function anrVerdict(dialog, protectedNames, handled=0) {
+  if(!dialog) return 'NONE';
+  if(protectedNames.includes(dialog.process)) return 'APP_OR_BROWSER_ANR';
+  if(!dialog.wait || handled>=MAX_ANR_DIALOGS) return 'ANR_DIALOG_UNHANDLED';
+  return 'WAIT';
+}
