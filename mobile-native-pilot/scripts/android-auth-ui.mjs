@@ -18,8 +18,17 @@ const sameName=(value,label,ignoreCase)=>typeof value==='string' && (ignoreCase 
 export function namedNode(nodes, label, packages, {ignoreCase=false}={}) {
   const matches=nodes.filter(n=>packages.includes(n.package) && n.enabled==='true'
     && (sameName(n.text,label,ignoreCase) || sameName(n['content-desc'],label,ignoreCase)));
-  assert.ok(matches.length<=1,'AMBIGUOUS_NATIVE_CONTROL');
-  return matches[0] ?? null;
+  if(matches.length<=1)return matches[0] ?? null;
+  // React Native exposes one Pressable as a clickable container plus its Text child, both carrying the label.
+  // That is one control: accept it only when exactly one match is clickable and every other match lies inside it.
+  const clickable=matches.filter(n=>n.clickable==='true');
+  if(clickable.length===1 && matches.every(n=>n===clickable[0] || boundsWithin(n.bounds,clickable[0].bounds)))return clickable[0];
+  throw Object.assign(Error('AMBIGUOUS_NATIVE_CONTROL'),{matches:matches.slice(0,6).map(n=>({class:n.class,package:n.package,clickable:n.clickable,bounds:n.bounds}))});
+}
+function boundsWithin(inner,outer) {
+  const parse=b=>{const m=/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(b ?? '');return m&&m.slice(1).map(Number);};
+  const i=parse(inner),o=parse(outer);
+  return Boolean(i&&o&&i[0]>=o[0]&&i[1]>=o[1]&&i[2]<=o[2]&&i[3]<=o[3]);
 }
 export function centerOf(node) {
   const m=/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(node?.bounds ?? '');

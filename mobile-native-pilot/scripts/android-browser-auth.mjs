@@ -125,6 +125,7 @@ try {await setupTrustAndChrome();database=new Client({connectionString:process.e
     const count=wire('native-refresh').length;shell('am','force-stop',bundle);shell('am','start','-n',bundle+'/.MainActivity');await until(()=>nativeScreen('Sign in with your browser'),'signed-out-restart');assert.equal(wire('native-refresh').length,count);});
   facts.status='PASS';facts.stage='complete';
 }catch(error){const known=/^[A-Z_]+(?::[a-z-]+)?$/.test(error.message);facts.failure=known?error.message:'NATIVE_OR_SERVICE_FAILED';
+  if(Array.isArray(error?.matches))facts.ambiguousMatches=error.matches;
   if(!known){facts.errorKind=redact(error?.name,40,secrets());facts.errorMessage=redact(error?.message,160,secrets());}
   let n=[];try{facts.failureActivity=activity();}catch{}
   try{n=await ui(false);facts.failureUi={packages:[...new Set(n.map(x=>x.package))],editFields:n.filter(x=>x.class==='android.widget.EditText').length};}catch{}

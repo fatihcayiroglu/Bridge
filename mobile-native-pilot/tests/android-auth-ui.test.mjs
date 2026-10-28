@@ -17,3 +17,23 @@ test('accessibility labels decode XML entities and gestures use actual positive 
   assert.throws(()=>centerOf({bounds:'[0,0][0,0]'}),/EMPTY_NATIVE_CONTROL/);
   assert.throws(()=>nodesOf('<html/>'),/NATIVE_UI_HIERARCHY_REQUIRED/);
 });
+// Run 40691530402: the native "Sign in with your browser" Pressable is a clickable container plus a Text child.
+const rn=(cls,clickable,bounds,text='Sign in with your browser',pkg='bridge')=>({class:cls,package:pkg,text,'content-desc':'',enabled:'true',clickable,bounds});
+test('a clickable container and its labelled child are one control and the container is chosen',()=>{
+  const container=rn('android.view.ViewGroup','true','[10,20][310,120]'),child=rn('android.widget.TextView','false','[20,30][300,110]');
+  assert.equal(namedNode([child,container],'Sign in with your browser',['bridge']),container);
+});
+test('duplicate labels that are not one nested clickable control still fail closed',()=>{
+  const a=rn('android.view.ViewGroup','true','[10,20][310,120]'),b=rn('android.view.ViewGroup','true','[10,200][310,300]');
+  assert.throws(()=>namedNode([a,b],'Sign in with your browser',['bridge']),/AMBIGUOUS_NATIVE_CONTROL/);
+  const apart=rn('android.widget.TextView','false','[10,400][310,500]');
+  assert.throws(()=>namedNode([a,apart],'Sign in with your browser',['bridge']),/AMBIGUOUS_NATIVE_CONTROL/);
+  assert.throws(()=>namedNode([rn('android.widget.TextView','false','[1,1][2,2]'),rn('android.widget.TextView','false','[1,1][2,2]')],'Sign in with your browser',['bridge']),/AMBIGUOUS_NATIVE_CONTROL/);
+  assert.throws(()=>namedNode([a,rn('android.widget.TextView','false','[20,30][300,110]'),rn('android.view.View','true','[20,30][300,110]')],'Sign in with your browser',['bridge']),/AMBIGUOUS_NATIVE_CONTROL/);
+});
+test('the ambiguity error carries the matching nodes for the failure report',async()=>{
+  const {failureReport}=await import('../scripts/android-auth-failure.mjs');
+  let err;try{namedNode([rn('a','true','[0,0][5,5]'),rn('b','true','[0,0][5,5]')],'Sign in with your browser',['bridge']);}catch(e){err=e;}
+  assert.equal(err.matches.length,2);
+  assert.equal(failureReport({facts:{ambiguousMatches:err.matches}}).ambiguousMatches.length,2);
+});
