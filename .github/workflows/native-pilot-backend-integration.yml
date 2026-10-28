@@ -89,7 +89,9 @@ jobs:
           npm run build
       - name: Refresh-cookie security regression contracts
         working-directory: server
-        run: npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts
+        run: |
+          npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts tests/app-integration.test.ts --json --outputFile ../integration-evidence/server-cookie-contracts.json
+          node -e 'const r=require("../integration-evidence/server-cookie-contracts.json");if(!r.success || !r.numTotalTests || r.numPassedTests!==r.numTotalTests || r.numFailedTests || r.numPendingTests || r.numTodoTests)throw Error("SERVER_CONTRACTS_INCOMPLETE");console.log(JSON.stringify({tests:r.numTotalTests,pass:r.numPassedTests,failed:r.numFailedTests,skipped:r.numPendingTests,todo:r.numTodoTests}))'
       - name: Install real Chromium and certificate management tools
         run: |
           (cd e2e && npx playwright install --with-deps chromium)

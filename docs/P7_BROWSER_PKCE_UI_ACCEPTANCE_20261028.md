@@ -33,6 +33,19 @@ never trusts request forwarding headers; production stays Secure regardless,
 and local HTTP development retains its existing behavior. Four Jest contracts
 and the unchanged real-browser assertions qualify this stricter policy.
 
+The third run, 40664771031 at ea8edd4d, passed cookie contracts, backend 18/18,
+cancel and TLS refusal. Approved consent reached a real 403 Origin not allowed.
+Helmet's final document policy was no-referrer. A separate real Edge 156 control
+confirmed that this makes a navigation form POST serialize Origin as null;
+same-origin policy preserves the expected Origin. This matches the
+[Fetch Origin algorithm](https://fetch.spec.whatwg.org/#append-a-request-origin-header).
+Only the /native-auth entry document now uses same-origin referrer policy,
+with no cross-origin referrer disclosure. The browser removes its query before
+the form is offered. Ordinary documents and the authorization redirect retain
+no-referrer. CORS still refuses null/foreign origins; no origin exception or
+fabricated header is added. Unit pipeline controls and real browser assertions
+must qualify this change; the failed run and screenshots remain preserved.
+
 Three mandatory cases, zero retries/skips:
 
 1. UI password login and explicit consent produce the real 303 callback. The

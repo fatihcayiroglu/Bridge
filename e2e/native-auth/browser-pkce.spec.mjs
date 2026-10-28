@@ -73,9 +73,13 @@ test('approved UI consent exchanges PKCE and restores with a rotated token', asy
       const authorized = page.waitForResponse(response => new URL(response.url()).pathname === '/api/refresh/native-authorize');
       await dialog.locator('[data-product-dialog-action="confirm"]').click();
       const response = await authorized;
+      const headers = await response.request().allHeaders();
+      await test.info().attach('authorize-boundary.json', { contentType: 'application/json', body: JSON.stringify({
+        status: response.status(), origin: headers.origin === origin ? 'expected' : headers.origin === 'null' ? 'null' : headers.origin ? 'other' : 'absent',
+        sameOriginFetch: headers['sec-fetch-site'] === 'same-origin',
+      }) });
       assert.ok(response.status() === 303, 'CONSENT_DID_NOT_ISSUE_REDIRECT');
       assert.ok(response.request().method() === 'POST', 'CONSENT_WAS_NOT_A_FORM_POST');
-      const headers = await response.request().allHeaders();
       assert.ok(headers.origin === origin && headers['sec-fetch-site'] === 'same-origin', 'BROWSER_ORIGIN_BOUNDARY_FAILED');
       return { type: 'success', url: response.headers().location };
     },
