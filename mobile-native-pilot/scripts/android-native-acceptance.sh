@@ -58,12 +58,24 @@ foreign_anr_count=0
 # the pilot's own dialog into a "foreign" one.
 own_label=$(node -p 'require("./app.json").expo.name')
 function assert_native_marker() {
-  local marker="$1" output="$2"
+  local marker="$1" output="$2" missing_dumps=0
   for i in $(seq 1 90); do
+    # `uiautomator dump` can exit 0 and write no file (runs 40684476439 and 40684975946 saw
+    # "No such file or directory"; a Custom Tabs run recorded the dump printing nothing). The
+    # first miss used to abort the whole run under `set -e`, so the 90-dump budget never
+    # applied. Remove the old file first (a stale dump must never be read as the current
+    # screen), treat a missing file as "not yet" inside the SAME budget, and record every miss.
+    adb shell rm -f /sdcard/native-acceptance.xml || true
     # Dump output kept (was /dev/null) so a failing dump leaves its message behind;
     # pull progress still goes to the job log as before.
-    adb shell uiautomator dump /sdcard/native-acceptance.xml >> native-evidence/uiautomator-dump.log 2>&1
-    adb pull /sdcard/native-acceptance.xml "$output" >/dev/null
+    adb shell uiautomator dump /sdcard/native-acceptance.xml >> native-evidence/uiautomator-dump.log 2>&1 || echo "dump-exit=$?" >> native-evidence/uiautomator-dump.log
+    rm -f "$output"
+    if ! adb pull /sdcard/native-acceptance.xml "$output" >/dev/null 2>> native-evidence/ui-dump-missing.txt; then
+      missing_dumps=$((missing_dumps + 1))
+      echo "NATIVE_ANDROID_UI_DUMP_MISSING dump=$i marker=$marker" | tee -a native-evidence/ui-dump-missing.txt >&2
+      sleep 2
+      continue
+    fi
     if grep -q NATIVE_ACCEPTANCE_FAILED "$output"; then
       acceptance_detail="$marker:app-reported-failure"; acceptance_print_ui_text "$output" android; return 1
     fi
@@ -87,7 +99,7 @@ function assert_native_marker() {
     esac
     sleep 2
   done
-  acceptance_detail="$marker:not-seen-in-90-dumps"
+  acceptance_detail="$marker:not-seen-in-90-dumps missing_dumps=$missing_dumps"
   acceptance_print_ui_text "$output" android
   return 1
 }
