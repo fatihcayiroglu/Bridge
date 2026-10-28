@@ -44,6 +44,7 @@ import emailRouter                          from '../routes/email';
 import adminRouter                          from '../routes/admin';
 import ssoRouter                            from '../routes/sso';
 import { createNativeAuthRouters }           from '../routes/nativeAuth';
+import { createNativeAppLinksRouter }        from '../routes/nativeAppLinks';
 import invitePreviewRouter                  from '../routes/invitePreview';
 import mobilePushRouter                     from '../routes/mobilePush';
 import webpushRouter                        from '../routes/webpush';
@@ -170,6 +171,9 @@ export function setupRoutes(app: Application): void {
   const nativeAuth = createNativeAuthRouters();
   mountApi('/refresh/native-authorize', nativeAuth.authorize);
   mountApi('/native-auth', nativeAuth.token);
+  // Verified-link association + inert landing page, only on a configured https
+  // callback host (off by default; docs/NATIVE_AUTH.md).
+  app.use(createNativeAppLinksRouter());
   app.use('/invite', invitePreviewRouter);
   mountApi('/mobile', mobilePushRouter);
   mountApi('/webpush', webpushRouter);
