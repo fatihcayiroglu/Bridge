@@ -4,8 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
-const load = (f) => import(path.join(__dirname, 'perf-acceptance', f));
+const load = (f) => import(pathToFileURL(path.join(__dirname, 'perf-acceptance', f)).href);
 
 // Test-only fixture, never written by the harness: the shape a genuine executed entry must carry.
 function executed(scenario, over = {}) {
