@@ -43,13 +43,13 @@ test('no value, username or password text ever appears in the evidence', () => {
 
 test('the iOS driver records the evidence on failure from the page source, not from argument values', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, assertUsernameIntact \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /facts\.failureUi\.login = loginEvidence\(s, activeUsername\)/);
 });
 
 test('the evidence is printed to the job log (artifacts are not downloadable) from the closed shape only', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login \}\)\}`\)/);
+  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, secretGeometry: facts\.secretGeometry \?\? null \}\)\}`\)/);
 });
 
 import { assertUsernameIntact } from '../scripts/ios-login-evidence.mjs';
@@ -64,7 +64,29 @@ test('the username field must hold exactly the username after typing; the failur
   for (const code of ['LOGIN_PASSWORD_TYPED_INTO_USERNAME_FIELD', 'LOGIN_USERNAME_FIELD_NOT_SET', 'LOGIN_USERNAME_FIELD_NOT_UNIQUE']) assert.match(code, /^[A-Z_]+(?::[a-z-]+)?$/);
 });
 
-test('the iOS driver focuses the password field by click before typing, then checks the username field', () => {
+test('the iOS driver re-finds the password field after the username keyboard, taps it like a finger, then types and checks', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);\s*\/\/[^\n]*\n\s*await command\('POST', `\/element\/\$\{key\(secrets\[0\]\)\}\/click`, \{\}\);\s*await command\('POST', `\/element\/\$\{key\(secrets\[0\]\)\}\/value`, \{ text: password \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
+  assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);[\s\S]*?const freshSecrets = await elements\('class name', 'XCUIElementTypeSecureTextField'\);\s*assert\.ok\(freshSecrets\.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED'\);/);
+  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/value`, \{ text: password \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
+  assert.ok(!/key\(secrets\[0\]\)\}\/value/.test(s), 'the stale element reference is never typed into');
+});
+
+import { fieldGeometry, centerOf, tapActions } from '../scripts/ios-login-evidence.mjs';
+test('geometry helpers produce plain numbers, a centre, and a single touch tap', () => {
+  assert.deepEqual(fieldGeometry({ x: 10.4, y: 20.6, width: 100, height: 40, label: 'secret' }), { x: 10, y: 21, width: 100, height: 40 });
+  assert.deepEqual(fieldGeometry(undefined), { x: null, y: null, width: null, height: null });
+  assert.deepEqual(centerOf({ x: 10, y: 20, width: 100, height: 40 }), { x: 60, y: 40 });
+  for (const bad of [undefined, { x: 1, y: 1, width: 0, height: 5 }, { x: 'a', y: 1, width: 5, height: 5 }]) assert.throws(() => centerOf(bad), /LOGIN_FIELD_RECT_REQUIRED/);
+  const t = tapActions({ x: 7, y: 9 });
+  assert.equal(t.actions.length, 1);
+  const kinds = t.actions[0].actions.map((a) => a.type);
+  assert.deepEqual(kinds, ['pointerMove', 'pointerDown', 'pause', 'pointerUp']);
+  assert.equal(t.actions[0].parameters.pointerType, 'touch');
+  assert.deepEqual([t.actions[0].actions[0].x, t.actions[0].actions[0].y], [7, 9]);
+});
+
+test('the printed login evidence carries the field geometry and nothing else free-form', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(s, /login: facts\.failureUi\.login, secretGeometry: facts\.secretGeometry \?\? null/);
 });

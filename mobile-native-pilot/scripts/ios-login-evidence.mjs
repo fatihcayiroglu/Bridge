@@ -30,3 +30,20 @@ export function assertUsernameIntact(evidence) {
   if (!visible[0].valueIsUsername) throw new Error(visible[0].valueContainsUsername ? 'LOGIN_PASSWORD_TYPED_INTO_USERNAME_FIELD' : 'LOGIN_USERNAME_FIELD_NOT_SET');
   return true;
 }
+
+// Where a field is on screen, as plain numbers: the password field moved after the username keyboard opened (the
+// stale-position hypothesis for run 40706730676, where focus still landed in the username field).
+export function fieldGeometry(rect) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+  return { x: n(rect?.x), y: n(rect?.y), width: n(rect?.width), height: n(rect?.height) };
+}
+export function centerOf(rect) {
+  const g = fieldGeometry(rect);
+  if ([g.x, g.y, g.width, g.height].some((v) => v === null) || g.width <= 0 || g.height <= 0) throw new Error('LOGIN_FIELD_RECT_REQUIRED');
+  return { x: g.x + Math.floor(g.width / 2), y: g.y + Math.floor(g.height / 2) };
+}
+// W3C pointer actions for one real touch tap at a point (the same path a finger takes), no element shortcut.
+export function tapActions(point) {
+  return { actions: [{ type: 'pointer', id: 'finger1', parameters: { pointerType: 'touch' }, actions: [
+    { type: 'pointerMove', duration: 0, x: point.x, y: point.y }, { type: 'pointerDown', button: 0 }, { type: 'pause', duration: 120 }, { type: 'pointerUp', button: 0 }] }] };
+}

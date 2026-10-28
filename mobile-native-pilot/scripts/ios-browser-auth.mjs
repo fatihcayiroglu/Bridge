@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { loginEvidence, assertUsernameIntact } from './ios-login-evidence.mjs';
+import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -120,10 +120,18 @@ async function signIn(user, expectedPid) {
   const fields = await elements('class name', 'XCUIElementTypeTextField');
   const secrets = await elements('class name', 'XCUIElementTypeSecureTextField');
   assert.ok(fields.length === 1 && secrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
+  const secretBefore = fieldGeometry(await command('GET', `/element/${key(secrets[0])}/rect`));
   await command('POST', `/element/${key(fields[0])}/value`, { text: user.username });
-  // Focus the password field itself before typing: without it the text went into the username field (run 40700229648).
-  await command('POST', `/element/${key(secrets[0])}/click`, {});
-  await command('POST', `/element/${key(secrets[0])}/value`, { text: password });
+  // The page moves once the username keyboard is up, so the first element reference can point at a stale position
+  // (runs 40700229648 and 40706730676: the password still landed in the username field). Look the field up again,
+  // record where it is now, touch that spot like a finger, and only then type.
+  const freshSecrets = await elements('class name', 'XCUIElementTypeSecureTextField');
+  assert.ok(freshSecrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
+  const secretRect = await command('GET', `/element/${key(freshSecrets[0])}/rect`);
+  facts.secretGeometry = { beforeUsername: secretBefore, afterUsername: fieldGeometry(secretRect) };
+  await command('POST', '/actions', tapActions(centerOf(secretRect)));
+  await command('POST', `/element/${key(freshSecrets[0])}/click`, {});
+  await command('POST', `/element/${key(freshSecrets[0])}/value`, { text: password });
   assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
   await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
@@ -226,7 +234,7 @@ try {
       alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length };
       // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
       facts.failureUi.login = loginEvidence(s, activeUsername);
-      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login })}`);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, secretGeometry: facts.secretGeometry ?? null })}`);
       await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;
