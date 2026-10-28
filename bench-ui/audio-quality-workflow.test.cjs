@@ -33,6 +33,8 @@ test('actual received PCM is analyzed, not inferred solely from RTP packet count
   assert.match(runtime, /valid\.length < 12/);
   assert.match(runtime, /packets < group\.count \* 35/);
   assert.match(runtime, /measuredMs < MEASURE_MS/);
+  assert.match(runtime, /setDraft\(draft\(i\)\)/);
+  assert.match(runtime, /textContent !== draft\(7\)/);
   assert.doesNotMatch(runtime, /Math\.random/);
 });
 test('one warmup + five paired recorded samples with fresh renderer per workload', () => {

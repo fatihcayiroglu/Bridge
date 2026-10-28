@@ -175,15 +175,16 @@
     })();
     let uiWorkMs = 0;
     if (mode === 'voice2_chat') {
+      const draft = i => 'audio-stress-' + i + '-'.repeat(64);
       const t = performance.now();
       await window.__bench.reset(10_000);
       for (let i = 0; i < 8; i++) {
         await window.__bench.appendBatch(100);
-        await window.__bench.setDraft('audio-stress-' + i + '-'.repeat(64));
+        await window.__bench.setDraft(draft(i));
       }
       uiWorkMs = performance.now() - t;
       if (document.querySelector('#rows')?.childElementCount !== 10_800 ||
-          document.querySelector('#preview')?.textContent !== 'audio-stress-7-' + '-'.repeat(64)) {
+          document.querySelector('#preview')?.textContent !== draft(7)) {
         throw new Error('AUDIO_QUALITY_CHAT_NOT_COMMITTED');
       }
     }
