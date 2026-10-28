@@ -43,7 +43,10 @@ jobs:
       - name: Build both identical UI fixtures and verify fail-closed evidence
         run: |
           node bench-ui/build-assets.mjs
-          node --test bench-ui/*.test.cjs
+          # Node's default parallel file execution contends with the heavy
+          # 10k-row JSDOM fixture on loaded macOS runners. Keep ALL tests and
+          # their original 30s assertions, but give each test file isolation.
+          node --test --test-concurrency=1 bench-ui/*.test.cjs
       - name: Measure true local WebRTC RTP audio under identical framework load
         run: |
           set -euo pipefail
