@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -30,7 +30,7 @@ async function dumpUi() {
   for(let attempt=1;;attempt++){shell('rm','-f','/sdcard/bridge-auth-ui.xml');
     const output=shell('uiautomator','dump','/sdcard/bridge-auth-ui.xml');
     // The tool's message alone is not enough: the file itself must exist and be non-empty before it is read.
-    const present=dumpSucceeded(output)?shell('sh','-c','test -s /sdcard/bridge-auth-ui.xml && echo present || echo absent').trim():'no-confirmation';
+    const present=dumpSucceeded(output)?shell(nonEmptyFileProbe('/sdcard/bridge-auth-ui.xml')).trim():'no-confirmation';
     if(present==='present')return nodesOf(shell('cat','/sdcard/bridge-auth-ui.xml'));
     facts.uiDumpFailures.push({attempt,output:redact(output,120,secrets()),file:present});
     if(attempt>=MAX_UI_DUMP_ATTEMPTS)throw Error('UI_DUMP_UNAVAILABLE');await pause(1000);}}

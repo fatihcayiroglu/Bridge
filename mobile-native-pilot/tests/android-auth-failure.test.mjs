@@ -157,7 +157,32 @@ test('dump failures are retried a bounded number of times, recorded, removed-bef
   assert.equal(MAX_UI_DUMP_ATTEMPTS, 5);
   assert.match(src, /shell\('rm','-f','\/sdcard\/bridge-auth-ui\.xml'\)/, 'a stale dump must never be read');
   assert.match(src, /facts\.uiDumpFailures\.push\(\{attempt,output:redact\(output,120,secrets\(\)\),file:present\}\)/);
-  assert.match(src, /test -s \/sdcard\/bridge-auth-ui\.xml/, 'the file must exist and be non-empty before it is read');
+  assert.match(src, /nonEmptyFileProbe\('\/sdcard\/bridge-auth-ui\.xml'\)/, 'the file must exist and be non-empty before it is read');
   assert.match(src, /attempt>=MAX_UI_DUMP_ATTEMPTS\)throw Error\('UI_DUMP_UNAVAILABLE'\)/);
   assert.deepEqual(failureReport({ facts: { uiDumpFailures: [{ attempt: 1, output: 'ERROR: could not get idle state.' }] } }).uiDumpFailures, [{ attempt: 1, output: 'ERROR: could not get idle state.' }]);
+});
+
+// ---- the existence probe, run through a faithful model of `adb shell` argument handling ----
+import { nonEmptyFileProbe } from '../scripts/android-auth-ui.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+// adb joins the arguments with spaces and the device shell parses the result.
+const adbShell = (...args) => spawnSync('sh', ['-c', args.join(' ')], { encoding: 'utf8' }).stdout.trim();
+
+test('the probe answers present only for a non-empty file, absent for missing or empty', () => {
+  const d = mkdtempSync(join(tmpdir(), 'probe-'));
+  writeFileSync(join(d, 'full.xml'), '<hierarchy/>'); writeFileSync(join(d, 'empty.xml'), '');
+  assert.equal(adbShell(nonEmptyFileProbe(join(d, 'full.xml'))), 'present');
+  assert.equal(adbShell(nonEmptyFileProbe(join(d, 'empty.xml'))), 'absent');
+  assert.equal(adbShell(nonEmptyFileProbe(join(d, 'missing.xml'))), 'absent');
+});
+test('regression for run 40684975946: the split-argument form always answers absent, even for a real file', () => {
+  const d = mkdtempSync(join(tmpdir(), 'probe-')); const f = join(d, 'full.xml'); writeFileSync(f, '<hierarchy/>');
+  assert.equal(adbShell('sh', '-c', `test -s ${f} && echo present || echo absent`), 'absent', 'this is the bug that was shipped');
+  assert.equal(adbShell(nonEmptyFileProbe(f)), 'present');
+});
+test('the probe refuses a path that could inject shell syntax', () => {
+  for (const bad of ['/sdcard/x; rm -rf /', '/sdcard/$(id)', 'relative.xml', '/sdcard/a b', '']) assert.throws(() => nonEmptyFileProbe(bad), /PROBE_PATH_INVALID/, bad);
 });

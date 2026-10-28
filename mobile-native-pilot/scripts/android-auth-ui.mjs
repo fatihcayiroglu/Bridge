@@ -46,3 +46,11 @@ export function anrVerdict(dialog, protectedNames, handled=0) {
 export const MAX_UI_DUMP_ATTEMPTS=5;
 // The tool's own message misspells the word ("UI hierchary dumped to:", observed in run 40683551643); both spellings count.
 export const dumpSucceeded=output=>/UI hier(?:archy|chary) dumped to: \S+/.test(String(output ?? ''));
+
+// `adb shell a b c` joins its arguments with spaces and the DEVICE shell re-parses them, so a probe must be ONE
+// string: `sh -c test -s F && ...` as separate arguments runs a bare `test` and always answers "absent"
+// (run 40684975946). Only a plain absolute path is accepted, so nothing can be injected.
+export function nonEmptyFileProbe(file) {
+  if(!/^\/[\w./-]+$/.test(file)) throw new Error('PROBE_PATH_INVALID');
+  return `test -s ${file} && echo present || echo absent`;
+}
