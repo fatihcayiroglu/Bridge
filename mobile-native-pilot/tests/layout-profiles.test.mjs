@@ -66,3 +66,11 @@ test('emulator tools cannot consume the list of required profiles through fd 0',
     assert.match(script, /done 3< /);
   }
 });
+
+test('failure-trap diagnostics stay runnable on macOS Bash 3.2', () => {
+  const script = readFileSync(new URL('../scripts/acceptance-failure-trap.sh', import.meta.url), 'utf8');
+  assert.doesNotMatch(script, /\$\{label\^\^\}/);
+  assert.match(script, /acceptance_upper_label\(\)/);
+  assert.match(script, /tr '\''\[:lower:\]'\'' '\''\[:upper:\]'\''/);
+  assert.equal((script.match(/\$\(acceptance_upper_label "\$label"\)/g) ?? []).length, 7);
+});
