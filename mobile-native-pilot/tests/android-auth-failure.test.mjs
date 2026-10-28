@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],firstAdbFailure:null,uiDumpFailures:[],anrDialogsAnswered:[]});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -134,6 +134,8 @@ test('only OS dialogs count: the same text from a non-`android` package is ignor
 test('a dialog without a usable Wait control, or beyond the bound, fails closed', () => {
   assert.equal(anrVerdict(anrDialog([sys("Pixel Launcher isn't responding")]), PROTECTED), 'ANR_DIALOG_UNHANDLED');
   assert.equal(anrVerdict(anrDialog(launcherAnr), PROTECTED, MAX_ANR_DIALOGS), 'ANR_DIALOG_UNHANDLED');
+  assert.equal(anrVerdict(anrDialog(launcherAnr), PROTECTED, MAX_ANR_DIALOGS - 1), 'WAIT');
+  assert.equal(MAX_ANR_DIALOGS, 30, 'a bounded budget, recorded per press');
 });
 test('every answered dialog is visible in the failure report; the failure handler reads the screen without tapping', async () => {
   assert.deepEqual(failureReport({ facts: { anrDialogs: ['Pixel Launcher', 'Pixel Launcher'] } }).anrDialogsAnswered, ['Pixel Launcher', 'Pixel Launcher']);
@@ -207,4 +209,36 @@ test('every other control keeps exact matching: only the certificate warning but
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
   assert.equal((src.match(/ignoreCase:true/g) ?? []).length, 1);
   assert.equal(namedNode([node('Sign Out', 'com.bridge.nativepilot')], 'Sign out', ['com.bridge.nativepilot']), null);
+});
+
+// ---- recurring launcher ANR during PIN confirmation (first failure #7: run 40687924466) ----
+import { anrEvidence } from '../scripts/android-auth-ui.mjs';
+const AM = [
+  '10-28 12:37:01.100  1000  1100  1200 E ActivityManager: ANR in com.google.android.apps.nexuslauncher (com.google.android.apps.nexuslauncher/.NexusLauncherActivity)',
+  '10-28 12:37:01.100  1000  1100  1200 E ActivityManager: PID: 2468',
+  '10-28 12:37:01.100  1000  1100  1200 E ActivityManager: Reason: Input dispatching timed out (Application does not have a focused window)',
+  '10-28 12:37:01.100  1000  1100  1200 E ActivityManager: Load: 9.24 / 5.1 / 2.3',
+  '10-28 12:37:01.100  1000  1100  1200 E ActivityManager: unrelated chatter that must not appear',
+  `10-28 12:37:01.100  1000  1100  1200 E ActivityManager: Reason: token ${'q'.repeat(40)}`,
+];
+test('only the ActivityManager ANR facts are extracted: process, pid, reason, load; long token-like runs are masked', () => {
+  const lines = anrEvidence(AM.join('\n'));
+  assert.ok(lines.some(l => /ANR in com\.google\.android\.apps\.nexuslauncher/.test(l)));
+  assert.ok(lines.some(l => /Reason: Input dispatching timed out/.test(l)));
+  assert.ok(lines.some(l => /Load: 9\.24/.test(l)));
+  assert.ok(!lines.some(l => /unrelated chatter/.test(l)));
+  assert.ok(!lines.join(' ').includes('qqqqqqqq'));
+});
+test('the excerpt is bounded and tolerates missing input', () => {
+  assert.equal(anrEvidence(Array(100).fill('E ActivityManager: Reason: x').join('\n'), 10).length, 10);
+  assert.ok(anrEvidence(AM.join('\n'), 10, 40).every(l => l.length <= 40));
+  assert.deepEqual(anrEvidence(undefined), []);
+});
+test('the log read is a soft call (never the run\'s first adb failure) and is also taken on the run-ending dialog', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(src, /spawnSync\('adb',\['logcat','-d','-b','system'/, 'direct spawn, not the asserting adb() helper');
+  assert.match(src, /facts\.anrEvidence\.length===0\|\|verdict!=='WAIT'/);
+  assert.match(src, /logcat-unavailable exit=/);
+  assert.deepEqual(failureReport({ facts: { anrEvidence: ['x'] } }).anrEvidence, ['x']);
 });

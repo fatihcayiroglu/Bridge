@@ -32,7 +32,7 @@ export function centerOf(node) {
 // A system "<process> isn't responding" dialog (package `android`). It covers whatever app is below it, so a
 // foreign one (e.g. the launcher, #209) is answered with Wait; the caller records every press. An ANR of the
 // app under test or of the browser is a real failure and is never dismissed.
-export const MAX_ANR_DIALOGS=10;
+export const MAX_ANR_DIALOGS=30;
 export function anrDialog(nodes) {
   const title=nodes.find(n=>n.package==='android' && /^.+ isn[\u2019']t responding$/.test(n.text ?? ''));
   return title ? {process:title.text.replace(/ isn[\u2019']t responding$/,''), wait:namedNode(nodes,'Wait',['android'])} : null;
@@ -56,4 +56,12 @@ export const dumpSucceeded=output=>/UI hier(?:archy|chary) dumped to: \S+/.test(
 export function nonEmptyFileProbe(file) {
   if(!/^\/[\w./-]+$/.test(file)) throw new Error('PROBE_PATH_INVALID');
   return `test -s ${file} && echo present || echo absent`;
+}
+
+// What the system itself says about an ANR (process, reason, load). A bounded, redacted excerpt of ActivityManager's
+// own lines; nothing else from the log. Used to explain a recurring dialog instead of just dismissing it.
+const ANR_LINE=/\bANR in\b|Reason:|\bLoad:|CPU usage from|\bPID:/;
+export function anrEvidence(logText, max=10, width=200) {
+  return String(logText ?? '').split('\n').filter(l=>ANR_LINE.test(l))
+    .map(l=>l.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/[A-Za-z0-9+/_=-]{32,}/g,'[redacted]').replace(/\s+/g,' ').trim().slice(0,width)).slice(-max);
 }

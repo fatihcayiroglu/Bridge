@@ -6,14 +6,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
 const bundle='com.bridge.nativepilot',chrome='com.android.chrome',password=process.env.BRIDGE_MOBILE_PASSWORD;
 assert.equal(origin,'https://127.0.0.1:8443');assert.ok(password?.length>=32);
 fs.mkdirSync(out,{recursive:true});
-const facts={category:'AUTOMATED / ANDROID EMULATOR / DEBUG',status:'FAIL',stage:'prerequisites',cases:[],anrDialogs:[],uiDumpFailures:[],physicalDevice:false};
+const facts={category:'AUTOMATED / ANDROID EMULATOR / DEBUG',status:'FAIL',stage:'prerequisites',cases:[],anrDialogs:[],anrEvidence:[],uiDumpFailures:[],physicalDevice:false};
 const protectedNames=[JSON.parse(fs.readFileSync(new URL('../app.json',import.meta.url),'utf8')).expo.name,'Chrome'];
 const ids=['ANDROID_SYSTEM_BROWSER_CANCEL','ANDROID_AUTHENTICATE_RESTART_ROTATE','ANDROID_SWITCH_ISOLATE_REVOKE_RESTART'];
 let database;
@@ -37,7 +37,12 @@ async function dumpUi() {
 async function ui(answerAnr=true) {
   for(;;){const nodes=await dumpUi();
     const dialog=answerAnr?anrDialog(nodes):null,verdict=anrVerdict(dialog,protectedNames,facts.anrDialogs.length);
-    if(verdict==='NONE')return nodes;if(verdict!=='WAIT')throw Error(verdict);
+    if(verdict==='NONE')return nodes;
+    // Explain the dialog from the system's own ActivityManager lines (first one, and the one that ends the run).
+    // Soft call: `adb logcat -d` has exited 255 before and must not masquerade as the run's first adb failure.
+    if(facts.anrEvidence.length===0||verdict!=='WAIT'){const l=spawnSync('adb',['logcat','-d','-b','system','-t','800','-s','ActivityManager:E'],{encoding:'utf8',timeout:20000,maxBuffer:8*1024*1024});
+      facts.anrEvidence.push(...(l.status===0?anrEvidence(l.stdout):['logcat-unavailable exit='+String(l.status)+' signal='+String(l.signal)]));facts.anrEvidence=facts.anrEvidence.slice(-12);}
+    if(verdict!=='WAIT')throw Error(verdict);
     facts.anrDialogs.push(dialog.process);tap(dialog.wait);await pause(1000);}}
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(action,label) {facts.lastWait=label;const end=performance.now()+60000;while(performance.now()<end){const r=await action();if(r)return r;await pause(600);}throw Error('MOBILE_AUTH_DEADLINE:'+label);}

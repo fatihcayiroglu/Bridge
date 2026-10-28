@@ -51,6 +51,7 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     visibleText: visibleText(nodes, 40, secrets),
     firstAdbFailure: facts.firstAdbFailure ?? null,
     uiDumpFailures: (facts.uiDumpFailures ?? []).slice(0, 5),
+    anrEvidence: (facts.anrEvidence ?? []).slice(0, 12),
     anrDialogsAnswered: (facts.anrDialogs ?? []).map((name) => redact(name, 40, secrets)).slice(0, 10),
   };
 }
