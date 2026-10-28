@@ -219,6 +219,26 @@ test('pre-launch Metro probe: records tunnel and device-side /status, prints the
   assert.match(r.record, /^device_status_ms=\d+$/m);
   assert.match(r.record, /^device_status_body: packager-status:running$/m);
   assert.match(r.stderr, /NATIVE_ANDROID_PRELAUNCH: device_status_body: packager-status:running/);
+  // Both paths: the reverse tunnel and RN's emulator host alias that the app really uses.
+  assert.match(r.record, /^emulator_host_status_ms=\d+$/m);
+  assert.match(r.record, /^emulator_host_status_body: packager-status:running$/m);
+  assert.match(r.stderr, /NATIVE_ANDROID_PRELAUNCH: emulator_host_status_body: packager-status:running/);
+});
+
+test('the emulator-host probe targets 10.0.2.2:8081 and the tunnel probe 127.0.0.1:8081', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const block = s.slice(s.indexOf('stage=pre-launch-metro-probe'), s.indexOf('stage=first-launch'));
+  assert.match(block, /toybox nc -w 5 127\.0\.0\.1 8081/);
+  assert.match(block, /toybox nc -w 5 10\.0\.2\.2 8081/);
+});
+
+test('logcat from before the fixture clear is kept and its ANR reports printed on failure', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  assert.ok(s.indexOf('adb logcat -d > native-evidence/pre-test-logcat.txt') < s.indexOf('adb logcat -c'), 'saved before the clear');
+  assert.match(s, /acceptance_print_anr_reports android_boot < native-evidence\/pre-test-logcat\.txt/);
+  // The label is accepted by the printer (upper-cased tag).
+  const r = runInDir('acceptance_print_anr_reports android_boot < log.txt', { 'log.txt': '10-28 00:22:30.000 600 700 E ActivityManager: ANR in com.google.android.apps.nexuslauncher\n' });
+  assert.match(r.stderr, /^NATIVE_ANDROID_BOOT_ANR_REPORT: .*ANR in com\.google\.android\.apps\.nexuslauncher/m);
 });
 
 test('pre-launch Metro probe times with the monotonic clock, never the wall clock', () => {

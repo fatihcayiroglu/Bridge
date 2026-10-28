@@ -14,6 +14,9 @@ function cleanup() {
   adb logcat -d > native-evidence/android-logcat.txt 2>&1 || true
   (( status == 0 )) || acceptance_print_runtime_errors android < native-evidence/android-logcat.txt
   (( status == 0 )) || acceptance_print_anr_reports android < native-evidence/android-logcat.txt
+  if (( status != 0 )) && [[ -f native-evidence/pre-test-logcat.txt ]]; then
+    acceptance_print_anr_reports android_boot < native-evidence/pre-test-logcat.txt
+  fi
   if (( status != 0 )); then
     acceptance_print_tail native-evidence/first-launch.txt android LAUNCH 20
     acceptance_print_tail native-evidence/metro-android.log android METRO 40
@@ -36,6 +39,9 @@ stage=apk-install
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 stage=fixture-reset
 adb shell pm clear com.bridge.nativepilot
+# Keep what happened BEFORE the clear: run 40609188821 showed a launcher ANR dialog from
+# the first dump but no ANR report after this clear, i.e. it happened at/after boot.
+adb logcat -d > native-evidence/pre-test-logcat.txt 2>&1 || true
 adb logcat -c
 function assert_native_marker() {
   local marker="$1" output="$2"
@@ -69,8 +75,14 @@ stage=pre-launch-metro-probe
   probe_out=$(adb shell 'printf "GET /status HTTP/1.0\r\n\r\n" | toybox nc -w 5 127.0.0.1 8081' 2>&1 || true)
   echo "device_status_ms=$(( $(awk '{ printf "%d", $1 * 1000 }' /proc/uptime) - probe_start ))"
   echo "device_status_body: $(printf '%s' "$probe_out" | tail -n 1)"
+  # The app itself uses RN's emulator host alias 10.0.2.2 (log: "Loading from 10.0.2.2:8081"),
+  # i.e. the emulator NAT, not the reverse tunnel; probe that path too.
+  probe_start=$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)
+  probe_out=$(adb shell 'printf "GET /status HTTP/1.0\r\n\r\n" | toybox nc -w 5 10.0.2.2 8081' 2>&1 || true)
+  echo "emulator_host_status_ms=$(( $(awk '{ printf "%d", $1 * 1000 }' /proc/uptime) - probe_start ))"
+  echo "emulator_host_status_body: $(printf '%s' "$probe_out" | tail -n 1)"
 } > native-evidence/pre-launch-metro.txt 2>&1 || true
-acceptance_print_tail native-evidence/pre-launch-metro.txt android PRELAUNCH 5
+acceptance_print_tail native-evidence/pre-launch-metro.txt android PRELAUNCH 6
 stage=first-launch
 adb shell am start -W -n com.bridge.nativepilot/.MainActivity > native-evidence/first-launch.txt
 stage=first-ui-assertions
