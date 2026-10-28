@@ -2453,6 +2453,7 @@ const translations: Record<string, string> = {
   "native_auth_consent_title": "Войти в приложение Bridge?",
   "native_auth_consent_message": "Продолжайте, только если вы начали вход из приложения Bridge на этом устройстве. Приложение войдёт как {name}.",
   "native_auth_consent_continue": "Продолжить в приложении",
+  "native_auth_consent_switch": "Использовать другой аккаунт",
 };
 
 export default translations;

@@ -335,3 +335,38 @@ describe('product dialog focus containment', () => {
     expect(document.body.contains(detachedOpener)).toBe(false);
   });
 });
+
+describe('product dialog alternate choice', () => {
+  const alternate = (): HTMLButtonElement | null =>
+    document.querySelector<HTMLButtonElement>('[data-product-dialog-action="alternate"]');
+
+  it('has no third button unless asked for', async () => {
+    const pending = confirmProductAction({ message: 'm' });
+    await flush();
+    expect(alternate()).toBeNull();
+    action('cancel').click();
+    await pending;
+  });
+
+  it('the alternate button closes the dialog as cancelled and runs the callback once', async () => {
+    let calls = 0;
+    const pending = confirmProductAction({ message: 'm', alternateLabel: 'Other', onAlternate: () => { calls += 1; } });
+    await flush();
+    expect(alternate()!.textContent).toBe('Other');
+    alternate()!.click();
+    expect(await pending).toBe(false);
+    expect(calls).toBe(1);
+    expect(overlay()).toBeNull();
+  });
+
+  it('confirming or cancelling never runs the alternate callback', async () => {
+    let calls = 0;
+    for (const name of ['confirm', 'cancel'] as const) {
+      const pending = confirmProductAction({ message: 'm', alternateLabel: 'Other', onAlternate: () => { calls += 1; } });
+      await flush();
+      action(name).click();
+      expect(await pending).toBe(name === 'confirm');
+    }
+    expect(calls).toBe(0);
+  });
+});

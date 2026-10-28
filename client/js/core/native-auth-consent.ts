@@ -82,11 +82,30 @@ export function submitNativeAuthorization(request: NativeAuthRequest): void {
   form.submit();
 }
 
-/** After a successful sign-in: ask before handing a session to the app. */
+/** Put a taken request back so the next sign-in in this tab can offer it again. */
+function keepNativeAuthRequest(request: NativeAuthRequest, now: number = Date.now()): void {
+  try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...request, at: now })); }
+  catch { /* storage off: the request is simply not offered */ }
+}
+
+let signOutForSwitch: (() => void) | null = null;
+
+/**
+ * After a successful sign-in: ask before handing a session to the app. When this
+ * browser is already signed in as someone else, "Use a different account" ends
+ * only this browser session (the existing web sign-out) and keeps the pending
+ * request, so the next sign-in, as another person, is offered the same consent.
+ * Nothing is sent to the app until the person confirms.
+ */
 export async function offerNativeAuthConsent(displayName: string): Promise<boolean> {
   const request = takeNativeAuthRequest();
   if (!request) return false;
+  const switchAccount = signOutForSwitch;
   const confirmed = await confirmProductAction({
+    ...(switchAccount ? {
+      alternateLabel: t('native_auth_consent_switch'),
+      onAlternate: () => { keepNativeAuthRequest(request); switchAccount(); },
+    } : {}),
     title: t('native_auth_consent_title'),
     message: t('native_auth_consent_message', undefined, { name: displayName }),
     confirmLabel: t('native_auth_consent_continue'),
@@ -98,7 +117,8 @@ export async function offerNativeAuthConsent(displayName: string): Promise<boole
 
 let installed = false;
 /** Captures a native-auth request and offers consent after the next sign-in or restore. */
-export function installNativeAuthConsent(): void {
+export function installNativeAuthConsent(signOut?: () => void): void {
+  if (signOut) signOutForSwitch = signOut;
   captureNativeAuthRequest();
   if (installed) return;
   installed = true;

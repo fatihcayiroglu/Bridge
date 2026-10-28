@@ -807,7 +807,7 @@ function bindAuthShellEvents(): void {
 
 async function bootstrapAuthentication(): Promise<void> {
   // Before anything routes: a /native-auth request is remembered for consent after sign-in.
-  installNativeAuthConsent();
+  installNativeAuthConsent(logout);
   if (consumeResetLink()) return;
   if (!await consumeSsoSessionHandoff()) await restoreSession();
   consumeEmailVerifiedFlag();

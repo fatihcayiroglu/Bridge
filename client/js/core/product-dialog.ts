@@ -16,6 +16,9 @@ export interface ProductConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   tone?: ProductDialogTone;
+  /** Optional third choice. Runs `onAlternate`, then the dialog closes as cancelled. */
+  alternateLabel?: string;
+  onAlternate?: () => void;
 }
 
 export interface ProductPromptOptions extends ProductConfirmOptions {
@@ -125,7 +128,16 @@ function mountDialog<T>(
     confirmButton.dataset.productDialogAction = 'confirm';
     confirmButton.textContent = options.confirmLabel || t('confirm');
 
-    footer.append(cancelButton, confirmButton);
+    let alternateButton: HTMLButtonElement | null = null;
+    if (options.alternateLabel) {
+      alternateButton = document.createElement('button');
+      alternateButton.type = 'button';
+      alternateButton.className = 'btn btn-secondary';
+      alternateButton.dataset.productDialogAction = 'alternate';
+      alternateButton.textContent = options.alternateLabel;
+    }
+
+    footer.append(cancelButton, ...(alternateButton ? [alternateButton] : []), confirmButton);
     card.append(title, message);
     if (label) card.append(label);
     if (input) card.append(input);
@@ -183,6 +195,11 @@ function mountDialog<T>(
     };
 
     cancelButton.addEventListener('click', () => finish(false));
+    alternateButton?.addEventListener('click', () => {
+      if (settled) return;
+      finish(false);
+      options.onAlternate?.();
+    });
     confirmButton.addEventListener('click', () => finish(true));
     overlay.addEventListener('click', onOverlayClick);
     overlay.addEventListener('keydown', onKeyDown);
