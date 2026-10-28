@@ -56,7 +56,9 @@ acceptance_print_ui_text() {
 # runtime and fatal crashes only (not the whole log).
 acceptance_print_runtime_errors() {
   local label="$1"
-  { grep -E ' E (ReactNativeJS|ReactNative|AndroidRuntime|unknown:ReactNative)' || true; } \
+  # Plus RN's WARNING when its startup packager-status check fails (run 40608904348: the
+  # app fell back to the asset loader, "Unable to load script"); it carries the IOException.
+  { grep -E ' E (ReactNativeJS|ReactNative|AndroidRuntime|unknown:ReactNative)| W (ReactNative|unknown:ReactNative): .*[Pp]ackager' || true; } \
     | acceptance_redact | cut -c1-300 | tail -n 60 \
     | sed "s/^/NATIVE_${label^^}_RUNTIME_ERROR: /" >&2 || true
 }
