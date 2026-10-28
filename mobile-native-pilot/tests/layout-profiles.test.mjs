@@ -71,6 +71,6 @@ test('failure-trap diagnostics stay runnable on macOS Bash 3.2', () => {
   const script = readFileSync(new URL('../scripts/acceptance-failure-trap.sh', import.meta.url), 'utf8');
   assert.doesNotMatch(script, /\$\{label\^\^\}/);
   assert.match(script, /acceptance_upper_label\(\)/);
-  assert.match(script, /tr '\''\[:lower:\]'\'' '\''\[:upper:\]'\''/);
+  assert.ok(script.includes("tr '[:lower:]' '[:upper:]'"));
   assert.equal((script.match(/\$\(acceptance_upper_label "\$label"\)/g) ?? []).length, 7);
 });
