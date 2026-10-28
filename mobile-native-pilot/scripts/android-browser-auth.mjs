@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -40,7 +40,7 @@ async function ui(answerAnr=true) {
     if(verdict==='NONE')return nodes;
     // Explain the dialog from the system's own ActivityManager lines (first one, and the one that ends the run).
     // Soft call: `adb logcat -d` has exited 255 before and must not masquerade as the run's first adb failure.
-    if(facts.anrEvidence.length===0||verdict!=='WAIT'){const l=spawnSync('adb',['logcat','-d','-b','system','-t','800','-s','ActivityManager:E'],{encoding:'utf8',timeout:20000,maxBuffer:8*1024*1024});
+    if(facts.anrEvidence.length===0||verdict!=='WAIT'){const l=spawnSync('adb',['logcat','-d','-b','system,events','-t','4000'],{encoding:'utf8',timeout:20000,maxBuffer:8*1024*1024});
       facts.anrEvidence.push(...(l.status===0?anrEvidence(l.stdout):['logcat-unavailable exit='+String(l.status)+' signal='+String(l.signal)]));facts.anrEvidence=facts.anrEvidence.slice(-12);}
     if(verdict!=='WAIT')throw Error(verdict);
     facts.anrDialogs.push(dialog.process);tap(dialog.wait);await pause(1000);}}
@@ -98,7 +98,7 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   // Normal Settings UI, not a privileged CA-install API, root write or TLS bypass.
   await findSetting('More security & privacy');await findSetting('Encryption & credentials');
   await findSetting('Install a certificate');await findSetting('CA certificate');await click('Install anyway',['com.android.settings'],{ignoreCase:true});
-  await until(async()=>{const n=await ui(),field=n.find(x=>x.package==='com.android.settings' && x.class==='android.widget.EditText');
+  await until(async()=>{const n=await ui(),field=findPinField(n);
     if(field){tap(field);shell('input','text',pin);shell('input','keyevent','66');return true;}
     return n.some(x=>x.package==='com.google.android.documentsui' || x.package==='com.android.documentsui');},'settings-confirmation');
   const documents=['com.google.android.documentsui','com.android.documentsui'];

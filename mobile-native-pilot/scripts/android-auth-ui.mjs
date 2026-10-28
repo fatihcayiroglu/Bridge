@@ -60,8 +60,18 @@ export function nonEmptyFileProbe(file) {
 
 // What the system itself says about an ANR (process, reason, load). A bounded, redacted excerpt of ActivityManager's
 // own lines; nothing else from the log. Used to explain a recurring dialog instead of just dismissing it.
-const ANR_LINE=/\bANR in\b|Reason:|\bLoad:|CPU usage from|\bPID:/;
+const ANR_LINE=/\bANR in\b|Reason:|\bLoad:|CPU usage from|\bPID:|\bam_anr\b/;
 export function anrEvidence(logText, max=10, width=200) {
   return String(logText ?? '').split('\n').filter(l=>ANR_LINE.test(l))
     .map(l=>l.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/[A-Za-z0-9+/_=-]{32,}/g,'[redacted]').replace(/\s+/g,' ').trim().slice(0,width)).slice(-max);
+}
+
+// On API 35 the device-PIN prompt of the certificate install is an AuthCredentialPasswordView hosted by System UI
+// even though the activity is Settings' ConfirmDeviceCredentialActivity (run 40689648802: visible package was only
+// com.android.systemui). OS packages only; more than one candidate field is ambiguous and fatal.
+export const PIN_HOSTS=['com.android.settings','com.android.systemui'];
+export function findPinField(nodes) {
+  const fields=nodes.filter(n=>PIN_HOSTS.includes(n.package) && n.enabled==='true' && n.class==='android.widget.EditText');
+  assert.ok(fields.length<=1,'AMBIGUOUS_PIN_FIELD');
+  return fields[0] ?? null;
 }

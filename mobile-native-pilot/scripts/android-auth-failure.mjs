@@ -49,6 +49,8 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     activity: redact(facts.failureActivity ?? '', 120, secrets),
     packages: [...new Set(nodes.map((node) => node.package).filter(Boolean))].slice(0, 12),
     visibleText: visibleText(nodes, 40, secrets),
+    classes: [...new Set(nodes.map((node) => node.class).filter(Boolean))].slice(0, 16).map((c) => redact(c, 60, secrets)),
+    editFields: nodes.filter((node) => node.class === 'android.widget.EditText').length,
     firstAdbFailure: facts.firstAdbFailure ?? null,
     uiDumpFailures: (facts.uiDumpFailures ?? []).slice(0, 5),
     anrEvidence: (facts.anrEvidence ?? []).slice(0, 12),

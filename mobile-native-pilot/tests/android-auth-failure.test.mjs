@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],anrDialogsAnswered:[]});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -237,8 +237,42 @@ test('the excerpt is bounded and tolerates missing input', () => {
 test('the log read is a soft call (never the run\'s first adb failure) and is also taken on the run-ending dialog', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(src, /spawnSync\('adb',\['logcat','-d','-b','system'/, 'direct spawn, not the asserting adb() helper');
+  assert.match(src, /spawnSync\('adb',\['logcat','-d','-b','system,events'/, 'direct spawn, not the asserting adb() helper');
   assert.match(src, /facts\.anrEvidence\.length===0\|\|verdict!=='WAIT'/);
   assert.match(src, /logcat-unavailable exit=/);
   assert.deepEqual(failureReport({ facts: { anrEvidence: ['x'] } }).anrEvidence, ['x']);
+});
+
+// ---- PIN prompt hosted by System UI (first failure #8: run 40689648802) ----
+import { findPinField, PIN_HOSTS } from '../scripts/android-auth-ui.mjs';
+const edit = (pkg, extra = {}) => ({ ...node('', pkg), class: 'android.widget.EditText', ...extra });
+const pinScreen = [node('Tap to cancel authentication', 'com.android.systemui'), node('Re-enter your PIN', 'com.android.systemui'), node('Enter your PIN to continue', 'com.android.systemui')];
+test('reproduces the failure: a Settings-only search cannot see a PIN field hosted by System UI', () => {
+  const nodes = [...pinScreen, edit('com.android.systemui')];
+  assert.equal(nodes.find(x => x.package === 'com.android.settings' && x.class === 'android.widget.EditText'), undefined);
+  assert.equal(findPinField(nodes).package, 'com.android.systemui');
+  assert.equal(findPinField([edit('com.android.settings')]).package, 'com.android.settings');
+});
+test('PIN field negative controls: non-OS packages, disabled fields and other classes never match; ambiguity is fatal', () => {
+  assert.equal(findPinField([edit('com.evil.overlay')]), null);
+  assert.equal(findPinField([edit('com.android.systemui', { enabled: 'false' })]), null);
+  assert.equal(findPinField([{ ...edit('com.android.systemui'), class: 'android.widget.TextView' }]), null);
+  assert.equal(findPinField(pinScreen), null);
+  assert.throws(() => findPinField([edit('com.android.systemui'), edit('com.android.settings')]), /AMBIGUOUS_PIN_FIELD/);
+  assert.deepEqual(PIN_HOSTS, ['com.android.settings', 'com.android.systemui']);
+});
+test('the failure report names node classes and the EditText count, so a missing PIN field is diagnosable', () => {
+  const r = failureReport({ facts: {}, nodes: [...pinScreen, { ...node('x', 'com.android.systemui'), class: 'android.widget.TextView' }, edit('com.android.systemui')] });
+  assert.equal(r.editFields, 1);
+  assert.ok(r.classes.includes('android.widget.EditText') && r.classes.includes('android.widget.TextView'));
+});
+test('the events-buffer am_anr line (which carries the reason) is extracted too', () => {
+  const lines = anrEvidence('10-28 12:40:00.000  1000  1000 I am_anr  : [0,2468,com.google.android.apps.nexuslauncher,949,Input dispatching timed out]\nunrelated');
+  assert.equal(lines.length, 1); assert.match(lines[0], /am_anr .*Input dispatching timed out/);
+});
+test('the harness finds the PIN field through findPinField, never through a Settings-only EditText search', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(src, /field=findPinField\(n\)/);
+  assert.doesNotMatch(src, /x\.package==='com\.android\.settings' && x\.class==='android\.widget\.EditText'/);
 });
