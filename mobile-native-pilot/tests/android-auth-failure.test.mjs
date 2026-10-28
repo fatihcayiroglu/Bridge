@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],visibleTextTail:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,caDownloadsTaps:0,settingsHopTaps:0,pinEntries:0,loginTabPresses:0,chromeConsole:[],ambiguousMatches:[],anrDialogsAnswered:[]});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],visibleTextTail:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,caDownloadsTaps:0,settingsHopTaps:0,settingsNavigation:[],pinEntries:0,loginTabPresses:0,chromeConsole:[],ambiguousMatches:[],anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -108,7 +108,9 @@ test('ambiguity is still fatal and "Install anyway" stays restricted to com.andr
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(src, /click\('Install anyway',\['com\.android\.settings'\],\{ignoreCase:true\}\)/);
-  assert.match(src, /const n=namedNode\(nodes,label,SETTINGS_HOSTS\);if\(n\)\{tap\(n\);return;\}/);
+  const navigation = readFileSync(new URL('../scripts/android-settings-navigation.mjs', import.meta.url), 'utf8');
+  assert.match(navigation, /namedNode\(nodes, from, SETTINGS_HOSTS\)/);
+  assert.match(navigation, /namedNode\(nodes, to, SETTINGS_HOSTS,/);
 });
 
 // ---- Foreign ANR dialog (first-failure #2: run 40680725164, "Pixel Launcher isn't responding") ----
@@ -207,10 +209,12 @@ test('negative controls: still package-scoped, enabled-only, and ambiguity stays
 test('every other control keeps exact matching: only the certificate warning button opts in', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
-  // The warning button is reached by the verified hop (as the next screen's marker) and then clicked: two uses, both for it.
+  // The warning marker lives in the navigator; the explicit click remains here.
   const optIns = src.split('\n').filter((line) => line.includes('ignoreCase:true'));
-  assert.equal((src.match(/ignoreCase:true/g) ?? []).length, 2);
+  assert.equal((src.match(/ignoreCase:true/g) ?? []).length, 1);
   assert.ok(optIns.every((line) => line.includes("'Install anyway'")), optIns.join('\n'));
+  const navigation = readFileSync(new URL('../scripts/android-settings-navigation.mjs', import.meta.url), 'utf8');
+  assert.match(navigation, /ignoreCase: step === 'ca-warning'/);
   assert.equal(namedNode([node('Sign Out', 'com.bridge.nativepilot')], 'Sign out', ['com.bridge.nativepilot']), null);
 });
 

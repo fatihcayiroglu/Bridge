@@ -6,8 +6,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence,MAX_PIN_ENTRIES,tappable,MAX_TAB_PRESSES} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence,MAX_PIN_ENTRIES,tappable,MAX_TAB_PRESSES} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
+import {navigateSettings} from './android-settings-navigation.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
 const bundle='com.bridge.nativepilot',chrome='com.android.chrome',password=process.env.BRIDGE_MOBILE_PASSWORD;
@@ -109,17 +110,14 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   const answerPin=(nodes)=>{const field=findPinField(nodes);if(!field)return false;
     facts.pinEntries=(facts.pinEntries??0)+1;assert.ok(facts.pinEntries<=MAX_PIN_ENTRIES,'PIN_PROMPT_REPEATED');
     tap(field);shell('input','text',pin);shell('input','keyevent','66');return true;};
-  async function findSetting(label){for(let i=0;i<7;i++){const nodes=await ui();if(answerPin(nodes)){await pause(1500);i--;continue;}
-    const n=namedNode(nodes,label,SETTINGS_HOSTS);if(n){tap(n);return;}
-    shell('input','swipe','500','1600','500','600','400');}throw Error('SETTINGS_CONTROL_UNAVAILABLE');}
   // Normal Settings UI, not a privileged CA-install API, root write or TLS bypass.
-  await findSetting('More security & privacy');await findSetting('Encryption & credentials');
-  // A tap is only a hop once the NEXT screen shows: run 40701820173 stayed on the "Install a certificate" list after the
-  // "CA certificate" tap (ten foreign ANR dialogs were answered in that run, so a tap can be swallowed). Repeat the tap
-  // while the current screen still shows the label and the next one has not appeared; the 60 s deadline bounds it.
-  const hop=(label,next,nextOptions={})=>until(async()=>{const n=await ui();if(answerPin(n)){await pause(1500);return false;}if(namedNode(n,next,SETTINGS_HOSTS,nextOptions))return true;
-    const control=namedNode(n,label,SETTINGS_HOSTS);if(control){facts.settingsHopTaps=(facts.settingsHopTaps??0)+1;tap(control);}return false;},'settings-hop:'+label.toLowerCase().replace(/\W+/g,'-'));
-  await findSetting('Install a certificate');await hop('CA certificate','Install anyway',{ignoreCase:true});
+  // Run40730509075 remained on More security & privacy while a later search
+  // failed. Confirm every navigation, not just the final certificate warning.
+  const navigation={readUi:ui,answerPin:async nodes=>{if(!answerPin(nodes))return false;await pause(1500);return true;},
+    tap,swipe:()=>shell('input','swipe','500','1600','500','600','400'),until,
+    record:proof=>{facts.settingsNavigation??={};facts.settingsNavigation[proof.step]=proof;
+      facts.settingsHopTaps=Object.values(facts.settingsNavigation).reduce((n,p)=>n+p.taps,0);}};
+  for(const step of ['more-security','credentials','certificates','ca-warning'])await navigateSettings(step,navigation);
   await click('Install anyway',['com.android.settings'],{ignoreCase:true});
   await until(async()=>{const n=await ui(),field=findPinField(n);
     if(field){tap(field);shell('input','text',pin);shell('input','keyevent','66');return true;}

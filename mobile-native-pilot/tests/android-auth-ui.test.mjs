@@ -114,8 +114,9 @@ test('the failure report lists clickable nodes of the failing screen and the CA 
 // Run 40701820173: the CA certificate tap did not navigate (screen stayed on "Install a certificate").
 test('the Settings certificate hop repeats its tap until the next screen shows, bounded by until()',()=>{
   const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
-  assert.match(s,/const hop=\(label,next,nextOptions=\{\}\)=>until\(async\(\)=>\{const n=await ui\(\);if\(answerPin\(n\)\)\{await pause\(1500\);return false;\}if\(namedNode\(n,next,SETTINGS_HOSTS,nextOptions\)\)return true;\s*const control=namedNode\(n,label,SETTINGS_HOSTS\);if\(control\)\{facts\.settingsHopTaps=\(facts\.settingsHopTaps\?\?0\)\+1;tap\(control\);\}return false;\}/);
-  assert.match(s,/await findSetting\('Install a certificate'\);await hop\('CA certificate','Install anyway',\{ignoreCase:true\}\);/);
+  assert.match(s,/import \{navigateSettings\} from '\.\/android-settings-navigation\.mjs'/);
+  assert.match(s,/for\(const step of \['more-security','credentials','certificates','ca-warning'\]\)await navigateSettings\(step,navigation\);/);
+  assert.match(s,/const navigation=\{readUi:ui,[\s\S]*?until,/);
   assert.ok(!/await findSetting\('CA certificate'\)/.test(s),'a single unverified tap is not enough');
   assert.match(s,/await click\('Install anyway',\['com\.android\.settings'\],\{ignoreCase:true\}\)/,'the existing click of the warning button is kept');
 });
@@ -154,8 +155,8 @@ test('a PIN prompt at any Settings hop is answered, bounded, and counted',async(
   const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
   assert.equal(MAX_PIN_ENTRIES,3);
   assert.match(s,/const answerPin=\(nodes\)=>\{const field=findPinField\(nodes\);if\(!field\)return false;\s*facts\.pinEntries=\(facts\.pinEntries\?\?0\)\+1;assert\.ok\(facts\.pinEntries<=MAX_PIN_ENTRIES,'PIN_PROMPT_REPEATED'\);\s*tap\(field\);shell\('input','text',pin\);shell\('input','keyevent','66'\);return true;\};/);
-  assert.match(s,/async function findSetting\(label\)\{for\(let i=0;i<7;i\+\+\)\{const nodes=await ui\(\);if\(answerPin\(nodes\)\)\{await pause\(1500\);i--;continue;\}/);
-  assert.match(s,/const n=await ui\(\);if\(answerPin\(n\)\)\{await pause\(1500\);return false;\}if\(namedNode\(n,next,SETTINGS_HOSTS,nextOptions\)\)return true;/);
+  assert.match(s,/answerPin:async nodes=>\{if\(!answerPin\(nodes\)\)return false;await pause\(1500\);return true;\}/);
+  assert.match(s,/for\(const step of \['more-security','credentials','certificates','ca-warning'\]\)await navigateSettings\(step,navigation\);/);
   const {failureReport}=await import('../scripts/android-auth-failure.mjs');
   assert.equal(failureReport({facts:{pinEntries:2}}).pinEntries,2);
   // the screen of the failing run: a single enabled EditText hosted by Settings

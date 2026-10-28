@@ -73,6 +73,13 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     caFileRetaps: facts.caFileRetaps ?? 0,
     caDownloadsTaps: facts.caDownloadsTaps ?? 0,
     settingsHopTaps: facts.settingsHopTaps ?? 0,
+    settingsNavigation: ['more-security', 'credentials', 'certificates', 'ca-warning']
+      .filter(step => facts.settingsNavigation?.[step]).map(step => {
+        const p = facts.settingsNavigation[step];
+        const count = v => Number.isSafeInteger(v) && v >= 0 ? v : 0;
+        return { step, probes: count(p.probes), taps: count(p.taps), swipes: count(p.swipes),
+          pinPrompts: count(p.pinPrompts), destinationSeen: p.destinationSeen === true };
+      }),
     pinEntries: facts.pinEntries ?? 0,
     loginTabPresses: facts.loginTabPresses ?? 0,
     chromeConsole: (facts.chromeConsole ?? []).slice(0, 12),
