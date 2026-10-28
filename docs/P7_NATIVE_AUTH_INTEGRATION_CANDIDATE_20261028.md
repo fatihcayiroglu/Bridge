@@ -54,6 +54,29 @@ Android/iOS binaries/storage and both normal-screen auth journeys are UNVERIFIED
 on this new candidate until its exact-head CI completes. Parent evidence is
 retained separately; it is not relabelled as execution of this assembled head.
 
+First full-quality run40735922246 at8c0a8ca6 stopped on the new route file's
+missing OpenAPI metadata: OpenAPI validation and the minimum-Node release
+contract failed; dependent test/E2E jobs did not execute. Security audit passed.
+The validation gate is unchanged. All eight real browser operations now have
+canonical contracts (six root-origin paths), with the separate cookie, form CSRF,
+exact Origin, PKCE binding, one-time redirects and refusal behavior documented.
+The entry annotation mirrors that contract and the runtime JSON snapshot is
+regenerated. No empty annotation, ignore entry or coverage-count workaround.
+OpenAPI validation, server/pilot TypeScript, scoped ESLint,121/121 handler
+contracts and127/127 product-surface contracts passed locally. For the last
+suite, two unchanged YAML fixtures were read with the exact LF Git-blob content
+used by Linux CI, then their original Windows checkout format was restored;
+their Git object hashes matched and no deployment/workflow content changed.
+Initial dependency/Windows-line-ending failures are retained separately.
+
+Parent #562's actual Android run40734244522 has subsequently passed all3 native
+cases:3PASS/0FAIL/0NOT EXECUTED/0skipped. This includes real isolated B switching,
+native process restart, Keystore restoration and server revocation assertions.
+Artifact SHA256
+`b26e1c4560b480e15a1d5d987323ea3993fc9a5d2b96240985288defa5951251`
+is preserved. It does not erase the prior foreign-ANR/prerequisite failures or
+qualify this later combined head. Recurring ANR/root-cause work remains open.
+
 Prior Settings failure40730509075 remains0PASS/0FAIL/3NOT EXECUTED. Prior iOS
 a9da3508 run40729971780 failed before every case when WDA never became reachable
 and the240s session request aborted; its artifact SHA256
