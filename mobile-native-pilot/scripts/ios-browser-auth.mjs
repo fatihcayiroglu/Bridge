@@ -1,6 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
+import { loginEvidence } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -112,7 +113,9 @@ async function browserReady() {
   assert.ok([bundle, 'com.apple.SafariViewService', 'com.apple.AuthenticationServicesUI'].includes(active.bundleId), 'UNEXPECTED_AUTHENTICATION_APPLICATION');
   facts.systemBrowserObserved = true;
 }
+let activeUsername;
 async function signIn(user, expectedPid) {
+  activeUsername = user.username;
   await browserReady();
   const fields = await elements('class name', 'XCUIElementTypeTextField');
   const secrets = await elements('class name', 'XCUIElementTypeSecureTextField');
@@ -217,7 +220,11 @@ try {
     try { const active = await native('activeAppInfo'); facts.failureApplication = { bundleId: active.bundleId, pid: active.pid }; } catch {}
     try { const s = await command('GET', '/source'); facts.failureUi = { webViews: (s.match(/XCUIElementTypeWebView\b/g) || []).length,
       textFields: (s.match(/XCUIElementTypeTextField\b/g) || []).length, secureFields: (s.match(/XCUIElementTypeSecureTextField\b/g) || []).length,
-      alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length }; await screenshot('first-failure'); } catch {}
+      alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length };
+      // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
+      facts.failureUi.login = loginEvidence(s, activeUsername);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login })}`);
+      await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;
 } finally {
