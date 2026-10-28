@@ -8,12 +8,15 @@ class MessageReportRepository {
   async create(input: {
     serverId: string; channelId: string; messageId: string; reporterId: string;
     reason: MessageReportReason; detail: string;
+    /** Bounded evidence snapshot columns (lib/reportEvidence.ts); omitted unless REPORT_EVIDENCE_SNAPSHOT=1. */
+    evidence?: Record<string, unknown>;
   }): Promise<{ row: Record<string, unknown>; created: boolean }> {
+    const { evidence, ...base } = input;
     const existing = await db.messageReports.findOne({ reporterId: input.reporterId, messageId: input.messageId, status: 'open' });
     if (existing) return { row: existing as Record<string, unknown>, created: false };
     try {
       const row = await db.messageReports.insert({
-        _id: uuidv4(), ...input, status: 'open', createdAt: Date.now(),
+        _id: uuidv4(), ...base, ...(evidence ?? {}), status: 'open', createdAt: Date.now(),
         resolvedAt: null, resolvedBy: null, resolution: null,
       });
       return { row: row as Record<string, unknown>, created: true };

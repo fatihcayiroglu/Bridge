@@ -1057,6 +1057,31 @@ CREATE INDEX IF NOT EXISTS idx_message_reports_channel_open
 CREATE INDEX IF NOT EXISTS idx_message_reports_message
   ON message_reports("messageId");
 
+-- Migration 085 (P7 B5, #336): bounded evidence snapshot columns, nullable, written only
+-- when REPORT_EVIDENCE_SNAPSHOT=1. No retention/erasure rule is defined here.
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceCapturedAt" BIGINT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceAuthorId" TEXT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceAuthorName" TEXT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceText" TEXT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceTextTruncated" BOOLEAN;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceCreatedAt" BIGINT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceEditedAt" BIGINT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceFileName" TEXT;
+ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceFileType" TEXT;
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'message_reports'::regclass AND conname = 'message_reports_evidence_bounds_check'
+  ) THEN
+    ALTER TABLE message_reports ADD CONSTRAINT message_reports_evidence_bounds_check CHECK (
+      ("evidenceText" IS NULL OR char_length("evidenceText") <= 4000)
+      AND ("evidenceAuthorName" IS NULL OR char_length("evidenceAuthorName") <= 200)
+      AND ("evidenceFileName" IS NULL OR char_length("evidenceFileName") <= 200)
+      AND ("evidenceFileType" IS NULL OR char_length("evidenceFileType") <= 200)
+    );
+  END IF;
+END $$;
+
 
 -- P1 Saved follow-up reminders. Delivery state is separate from the saved item
 -- so a reminder can be scheduled, delivered and later rescheduled safely.

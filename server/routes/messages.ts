@@ -3,6 +3,7 @@ import express, { Request, Response, Router } from 'express';
 import { authMiddleware} from '../middleware/auth';
 
 import { Messages, Channels, Members, Notifications, MessageReports } from '../db/repositories';
+import { buildEvidenceSnapshot, reportEvidenceEnabled } from '../lib/reportEvidence';
 import { limits } from '../middleware/rateLimit';
 import { validateBody, schemas } from '../middleware/validate';
 import { cache } from '../lib/redisAdapter';
@@ -620,6 +621,8 @@ router.post('/:id/report', authMiddleware, limits.moderation(), async (req: Requ
     reporterId: _u.id,
     reason: reason as 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'other',
     detail,
+    // P7 B5 (#336): frozen copy of what was reported; off unless REPORT_EVIDENCE_SNAPSHOT=1.
+    ...(reportEvidenceEnabled() ? { evidence: { ...buildEvidenceSnapshot(msg as unknown as Record<string, unknown>, Date.now()) } } : {}),
   });
   return void res.status(result.created ? 201 : 200).json({ reported: true, created: result.created, id: String(result.row._id) });
 });

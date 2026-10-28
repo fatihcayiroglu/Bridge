@@ -170,11 +170,12 @@
   "063_message_reports": {
     "classification": "EXPECTED_DEPENDENCY",
     "kind": "cross-migration-dependency",
-    "expectedDifference": "idx_message_reports_message (created by 071) is lost when 063 drops message_reports and is not recreated by 063's re-up",
+    "expectedDifference": "idx_message_reports_message (created by 071) and the evidence snapshot columns message_reports.evidenceCapturedAt, message_reports.evidenceAuthorId, message_reports.evidenceAuthorName, message_reports.evidenceText, message_reports.evidenceTextTruncated, message_reports.evidenceCreatedAt, message_reports.evidenceEditedAt, message_reports.evidenceFileName, message_reports.evidenceFileType and message_reports_evidence_bounds_check (created by 085) are lost when 063 drops message_reports and are not recreated by 063's re-up",
     "dependsOn": [
-      "071_delete_cascade_fk_indexes"
+      "071_delete_cascade_fk_indexes",
+      "085_message_report_evidence"
     ],
-    "rationale": "071 adds the referencing-column index for the message_reports.messageId ON DELETE CASCADE foreign key. 063's down drops the whole table, taking 071's index with it; re-applying 063 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since."
+    "rationale": "071 adds the referencing-column index for the message_reports.messageId ON DELETE CASCADE foreign key, and 085 (P7 B5, #336) adds the nullable evidence snapshot columns and their bounds CHECK. 063's down drops the whole table, taking both with it; re-applying 063 alone cannot recreate objects owned by 071 or 085. Ordered rollback unwinds 085 and 071 first (their isolated cycles are lossless while no snapshot exists, and 085's down refuses to run once one does) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run for 071)."
   },
   "046_activitypub_message_visibility": {
     "classification": "EXPECTED_DEPENDENCY",
