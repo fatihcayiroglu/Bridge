@@ -84,3 +84,17 @@ export function findPinField(nodes) {
   assert.ok(fields.length<=1,'AMBIGUOUS_PIN_FIELD');
   return fields[0] ?? null;
 }
+
+// The Bridge login page has TWO controls named "Sign In": the active tab (client/index.html:140) and the submit
+// button below the password field (:150). Run 40694259425 failed AMBIGUOUS_NATIVE_CONTROL on exactly this pair
+// (bounds [105,999][538,1117] and [94,1676][987,1794]). The submit is the single match that starts at or below the
+// bottom of the password field; zero such matches means "not rendered yet" (null), several stay ambiguous.
+export function signInSubmit(nodes, label, packages, passwordField) {
+  const box=b=>{const m=/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(b ?? '');return m&&m.slice(1).map(Number);};
+  const field=box(passwordField?.bounds);
+  assert.ok(field && field[3]>field[1],'PASSWORD_FIELD_BOUNDS_REQUIRED');
+  const below=nodes.filter(n=>packages.includes(n.package) && n.enabled==='true' && n.clickable==='true'
+    && (n.text===label || n['content-desc']===label) && (box(n.bounds)?.[1] ?? -1)>=field[3]);
+  assert.ok(below.length<=1,'AMBIGUOUS_SIGN_IN_SUBMIT');
+  return below[0] ?? null;
+}

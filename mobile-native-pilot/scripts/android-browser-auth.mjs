@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -73,7 +73,8 @@ async function signIn(u,previousPid){await browserReady();const n=(await ui()).f
   tap(names[0]);shell('input','text',u.username);tap(secrets[0]);shell('input','text',password);
   // Back dismisses only an actually shown IME; otherwise it would cancel CCT.
   if(/mInputShown=true/.test(shell('dumpsys','input_method')))shell('input','keyevent','4');
-  await click('Sign In',[chrome]);
+  tap(await until(async()=>{const now=await ui(),field=now.find(x=>x.package===chrome && x.class==='android.widget.EditText' && x.password==='true');
+    return field && signInSubmit(now,'Sign In',[chrome],field);},'sign-in-submit'));
   await until(async()=>namedNode(await ui(),'Continue in the app',[chrome]),'explicit-consent');screenshot('consent-'+u.username.slice(4,5));
   const before=await families(u),count=wire('native-code').length;await click('Continue in the app',[chrome]);
   await until(()=>nativeScreen(u.serverName),'os-callback-to-native-community');

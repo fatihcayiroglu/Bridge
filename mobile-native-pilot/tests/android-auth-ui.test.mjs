@@ -37,3 +37,26 @@ test('the ambiguity error carries the matching nodes for the failure report',asy
   assert.equal(err.matches.length,2);
   assert.equal(failureReport({facts:{ambiguousMatches:err.matches}}).ambiguousMatches.length,2);
 });
+// Run 40694259425: the login page's "Sign In" tab and submit button, with the bounds the runner reported.
+import {signInSubmit} from '../scripts/android-auth-ui.mjs';
+import fs from 'node:fs';
+const btn=(bounds,over={})=>({class:'android.widget.Button',package:'chrome',text:'Sign In',enabled:'true',clickable:'true',bounds,...over});
+const pw={class:'android.widget.EditText',package:'chrome',password:'true',bounds:'[94,1400][987,1550]'};
+const tab=btn('[105,999][538,1117]'),submit=btn('[94,1676][987,1794]');
+test('the Sign In submit below the password field is chosen over the tab',()=>{
+  assert.equal(signInSubmit([tab,submit],'Sign In',['chrome'],pw),submit);
+  assert.equal(signInSubmit([submit,tab],'Sign In',['chrome'],pw),submit);
+});
+test('Sign In selection waits when the submit is absent and fails closed on several or bad input',()=>{
+  assert.equal(signInSubmit([tab],'Sign In',['chrome'],pw),null);
+  assert.throws(()=>signInSubmit([tab,submit,btn('[94,1800][987,1900]')],'Sign In',['chrome'],pw),/AMBIGUOUS_SIGN_IN_SUBMIT/);
+  assert.throws(()=>signInSubmit([tab,submit],'Sign In',['chrome'],{bounds:''}),/PASSWORD_FIELD_BOUNDS_REQUIRED/);
+  assert.equal(signInSubmit([tab,btn('[94,1676][987,1794]',{package:'evil'})],'Sign In',['chrome'],pw),null,'other packages never match');
+  assert.equal(signInSubmit([tab,btn('[94,1676][987,1794]',{enabled:'false'})],'Sign In',['chrome'],pw),null);
+  assert.equal(signInSubmit([tab,btn('[94,1676][987,1794]',{clickable:'false'})],'Sign In',['chrome'],pw),null);
+});
+test('the Android harness submits through signInSubmit, not a label click on Sign In',()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/signInSubmit\(now,'Sign In',\[chrome\],field\)/);
+  assert.ok(!/click\('Sign In'/.test(s));
+});
