@@ -192,21 +192,24 @@ function runMarkerLoop(dumps, marker = 'NATIVE_SQLCIPHER_WRITE_PASS') {
   const fn = s.slice(s.indexOf('foreign_anr_count=0'), s.indexOf('stage=first-launch'));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acc-'));
   fs.mkdirSync(path.join(dir, 'bin')); fs.mkdirSync(path.join(dir, 'native-evidence'));
-  dumps.forEach((xml, i) => fs.writeFileSync(path.join(dir, `dump-${i}.xml`), xml));
+  dumps.forEach((xml, i) => { if (xml !== null) fs.writeFileSync(path.join(dir, `dump-${i}.xml`), xml); }); // null = the dump wrote no file
   fs.copyFileSync('app.json', path.join(dir, 'app.json')); // the loop reads the app label from it
   fs.writeFileSync(path.join(dir, 'bin', 'adb'), `#!/usr/bin/env bash
 cd ${JSON.stringify(dir)}
 n=$(cat count 2>/dev/null || echo 0)
 case "$1 $2" in
-  "shell uiautomator") exit 0 ;;
-  "pull /sdcard/native-acceptance.xml") last=$(( ${dumps.length} - 1 )); (( n > last )) && n=$last; cp "dump-$n.xml" "$3"; echo $((n + 1)) > count ;;
+  "shell uiautomator") echo "dump" >> calls; exit 0 ;;
+  "pull /sdcard/native-acceptance.xml") last=$(( ${dumps.length} - 1 )); (( n > last )) && n=$last; echo "pull" >> calls
+    if [ ! -f "dump-$n.xml" ]; then echo $((n + 1)) > count; echo "adb: error: failed to stat remote object '$2': No such file or directory" >&2; exit 1; fi
+    cp "dump-$n.xml" "$3"; echo $((n + 1)) > count ;;
   "shell input") echo "$4 $5" >> taps ;;
+  "shell rm") echo "rm" >> calls ;;
 esac
 `, { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'case.sh'), `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\nsleep() { :; }\n${fn}\nassert_native_marker ${marker} native-evidence/ui.xml\necho "count=$foreign_anr_count"\n`);
+  fs.writeFileSync(path.join(dir, 'case.sh'), `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\nsleep() { :; }\n${fn}\nrc=0\nassert_native_marker ${marker} native-evidence/ui.xml || rc=$?\necho "detail=\${acceptance_detail:-}"\nif [ $rc -eq 0 ]; then echo "count=$foreign_anr_count"; fi\nexit $rc\n`);
   const r = spawnSync('bash', ['case.sh'], { encoding: 'utf8', cwd: dir, env: { ...process.env, PATH: `${dir}/bin:${process.env.PATH}` } });
   const read = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8') : '');
-  return { ...r, taps: read('taps'), evidence: read('native-evidence/foreign-anr.txt') };
+  return { ...r, taps: read('taps'), evidence: read('native-evidence/foreign-anr.txt'), calls: read('calls').trim().split('\n').filter(Boolean), missing: read('native-evidence/ui-dump-missing.txt') };
 }
 const PASS_XML = '<hierarchy><node text="NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS" /></hierarchy>';
 
@@ -434,4 +437,36 @@ test('final logcat: a good capture continues with nothing extra printed', () => 
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), 'continued');
   assert.equal(r.stderr, '');
+});
+
+test('loop: a dump that wrote no file is "not yet", recorded, and the marker is still found within the same budget', () => {
+  const r = runMarkerLoop([null, null, PASS_XML]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /NATIVE_ANDROID_UI_DUMP_MISSING dump=1 marker=NATIVE_SQLCIPHER_WRITE_PASS/);
+  assert.match(r.stderr, /NATIVE_ANDROID_UI_DUMP_MISSING dump=2 /);
+  assert.equal((r.missing.match(/NATIVE_ANDROID_UI_DUMP_MISSING/g) ?? []).length, 2);
+  assert.match(r.missing, /failed to stat remote object/, 'the adb error itself is kept');
+});
+test('loop: if the dump never appears the run still FAILS after the same 90 polls and names the count', () => {
+  const r = runMarkerLoop([null]);
+  assert.equal(r.status, 1);
+  assert.equal(r.calls.filter((c) => c === 'pull').length, 90);
+  assert.match(r.stdout, /^detail=NATIVE_SQLCIPHER_WRITE_PASS:not-seen-in-90-dumps missing_dumps=90$/m);
+  assert.equal(r.taps, '');
+});
+test('loop: the old dump file is removed before every new dump, so a stale screen is never read', () => {
+  const r = runMarkerLoop([null, PASS_XML]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.calls.slice(0, 6), ['rm', 'dump', 'pull', 'rm', 'dump', 'pull']);
+});
+test('loop: an app-reported failure and a redbox still fail at once, even after missing dumps', () => {
+  const r = runMarkerLoop([null, '<hierarchy><node text="NATIVE_ACCEPTANCE_FAILED" /></hierarchy>', PASS_XML]);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^detail=NATIVE_SQLCIPHER_WRITE_PASS:app-reported-failure$/m);
+});
+test('loop: after missing dumps the failure never prints an EARLIER screen as if it were the last one', () => {
+  const r = runMarkerLoop(['<hierarchy><node text="STALE EARLIER SCREEN" /></hierarchy>', null]);
+  assert.equal(r.status, 1);
+  assert.equal((r.missing.match(/NATIVE_ANDROID_UI_DUMP_MISSING/g) ?? []).length, 89);
+  assert.doesNotMatch(r.stderr, /STALE EARLIER SCREEN/);
 });
