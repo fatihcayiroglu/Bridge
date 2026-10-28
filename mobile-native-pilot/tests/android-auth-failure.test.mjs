@@ -107,7 +107,7 @@ test('ambiguity is still fatal and "Install anyway" stays restricted to com.andr
   assert.throws(() => namedNode([node('X', 'com.android.settings'), node('X', 'com.google.android.permissioncontroller')], 'X', SETTINGS_HOSTS), /AMBIGUOUS_NATIVE_CONTROL/);
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(src, /click\('Install anyway',\['com\.android\.settings'\]\)/);
+  assert.match(src, /click\('Install anyway',\['com\.android\.settings'\],\{ignoreCase:true\}\)/);
   assert.match(src, /namedNode\(await ui\(\),label,SETTINGS_HOSTS\)/);
 });
 
@@ -185,4 +185,26 @@ test('regression for run 40684975946: the split-argument form always answers abs
 });
 test('the probe refuses a path that could inject shell syntax', () => {
   for (const bad of ['/sdcard/x; rm -rf /', '/sdcard/$(id)', 'relative.xml', '/sdcard/a b', '']) assert.throws(() => nonEmptyFileProbe(bad), /PROBE_PATH_INVALID/, bad);
+});
+
+// ---- "INSTALL ANYWAY" (first failure #6: run 40686263044, screen InstallCaCertificateWarning) ----
+const warning = ['Your data won\u2019t be private', 'INSTALL ANYWAY', 'DON\u2019T INSTALL'].map(t => node(t, 'com.android.settings'));
+test('reproduces the failure: exact matching cannot find the capitalised system button', () => {
+  assert.equal(namedNode(warning, 'Install anyway', ['com.android.settings']), null);
+});
+test('opt-in case-insensitive matching finds it, and only it', () => {
+  assert.equal(namedNode(warning, 'Install anyway', ['com.android.settings'], { ignoreCase: true }).text, 'INSTALL ANYWAY');
+  assert.equal(namedNode(warning, 'Install', ['com.android.settings'], { ignoreCase: true }), null, 'a prefix is not a match');
+  assert.equal(namedNode(warning, "Don't install", ['com.android.settings'], { ignoreCase: true }), null, 'a different (curly-apostrophe) control is not matched');
+});
+test('negative controls: still package-scoped, enabled-only, and ambiguity stays fatal', () => {
+  assert.equal(namedNode([node('INSTALL ANYWAY', 'com.evil.overlay')], 'Install anyway', ['com.android.settings'], { ignoreCase: true }), null);
+  assert.equal(namedNode([{ ...node('INSTALL ANYWAY', 'com.android.settings'), enabled: 'false' }], 'Install anyway', ['com.android.settings'], { ignoreCase: true }), null);
+  assert.throws(() => namedNode([node('INSTALL ANYWAY', 'com.android.settings'), node('Install Anyway', 'com.android.settings')], 'Install anyway', ['com.android.settings'], { ignoreCase: true }), /AMBIGUOUS_NATIVE_CONTROL/);
+});
+test('every other control keeps exact matching: only the certificate warning button opts in', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.equal((src.match(/ignoreCase:true/g) ?? []).length, 1);
+  assert.equal(namedNode([node('Sign Out', 'com.bridge.nativepilot')], 'Sign out', ['com.bridge.nativepilot']), null);
 });

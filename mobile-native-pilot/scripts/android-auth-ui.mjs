@@ -12,9 +12,12 @@ export function nodesOf(xml) {
 // System packages that host the Settings navigation. On API 35 `android.settings.SECURITY_SETTINGS` opens Safety
 // Center, owned by the permission controller, not com.android.settings (run 40678995495). Only OS packages.
 export const SETTINGS_HOSTS=['com.android.settings','com.google.android.permissioncontroller','com.android.permissioncontroller'];
-export function namedNode(nodes, label, packages) {
+// Some system buttons are rendered in capitals ("INSTALL ANYWAY", run 40686263044). `ignoreCase` is opt-in per
+// call so every other control keeps exact matching; package scoping, enabled-only and ambiguity checks are unchanged.
+const sameName=(value,label,ignoreCase)=>typeof value==='string' && (ignoreCase ? value.toLocaleLowerCase('en-US')===label.toLocaleLowerCase('en-US') : value===label);
+export function namedNode(nodes, label, packages, {ignoreCase=false}={}) {
   const matches=nodes.filter(n=>packages.includes(n.package) && n.enabled==='true'
-    && (n.text===label || n['content-desc']===label));
+    && (sameName(n.text,label,ignoreCase) || sameName(n['content-desc'],label,ignoreCase)));
   assert.ok(matches.length<=1,'AMBIGUOUS_NATIVE_CONTROL');
   return matches[0] ?? null;
 }

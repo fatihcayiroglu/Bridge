@@ -42,7 +42,7 @@ async function ui(answerAnr=true) {
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(action,label) {facts.lastWait=label;const end=performance.now()+60000;while(performance.now()<end){const r=await action();if(r)return r;await pause(600);}throw Error('MOBILE_AUTH_DEADLINE:'+label);}
 const tap=n=>shell('input','tap',...centerOf(n).map(String));
-async function click(label,packages=[bundle]) {tap(await until(async()=>namedNode(await ui(),label,packages),'native-control'));}
+async function click(label,packages=[bundle],options={}) {tap(await until(async()=>namedNode(await ui(),label,packages,options),'native-control'));}
 function activity() {const raw=shell('dumpsys','activity','activities');return /(?:mResumedActivity|topResumedActivity)[^\n]*?\b([A-Za-z][\w.]+\/[\w.$]+)/.exec(raw)?.[1]??'';}
 const pid=()=>shell('pidof',bundle).trim();
 async function nativeScreen(label) {return activity().startsWith(bundle+'/') && namedNode(await ui(),label,[bundle]);}
@@ -92,7 +92,7 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
     shell('input','swipe','500','1600','500','600','400');}throw Error('SETTINGS_CONTROL_UNAVAILABLE');}
   // Normal Settings UI, not a privileged CA-install API, root write or TLS bypass.
   await findSetting('More security & privacy');await findSetting('Encryption & credentials');
-  await findSetting('Install a certificate');await findSetting('CA certificate');await click('Install anyway',['com.android.settings']);
+  await findSetting('Install a certificate');await findSetting('CA certificate');await click('Install anyway',['com.android.settings'],{ignoreCase:true});
   await until(async()=>{const n=await ui(),field=n.find(x=>x.package==='com.android.settings' && x.class==='android.widget.EditText');
     if(field){tap(field);shell('input','text',pin);shell('input','keyevent','66');return true;}
     return n.some(x=>x.package==='com.google.android.documentsui' || x.package==='com.android.documentsui');},'settings-confirmation');
