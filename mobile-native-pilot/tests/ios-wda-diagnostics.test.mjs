@@ -39,8 +39,8 @@ test('runner prints the excerpt only inside the pre-input gate, and before Appiu
   assert.ok(gate > 0 && diag > gate && kill > diag, 'gate < diagnostics < kill');
   assert.match(sh, /ios-wda-diagnostics\.mjs "\$task_appium_debug" \|\| true/);
   const js = readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(js, /driverDeadlineMs = 240000/);
-  assert.match(js, /\}, 240000\);/, 'the session deadline is unchanged');
+  assert.match(js, /driverDeadlineMs = 480000/);
+  assert.match(js, /\}, 480000\);/, 'the session deadline is the evidence-based 480 s');
 });
 
 // ---- end-of-log evidence summary ----

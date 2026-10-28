@@ -184,7 +184,7 @@ try {
   assert.ok(String((await database.query('SHOW server_version_num')).rows[0].server_version_num).startsWith('16'), 'REAL_POSTGRES16_REQUIRED');
   const a = await fixture('A'), b = await fixture('B');
   facts.stage = 'native-xcuitest-session';
-  facts.driverDeadlineMs = 240000;
+  facts.driverDeadlineMs = 480000;
   const created = await wd('POST', '/session', { capabilities: { alwaysMatch: {
     platformName: 'iOS', 'appium:automationName': 'XCUITest', 'appium:udid': process.env.IOS_SIMULATOR_UDID,
     'appium:app': path.resolve(process.env.IOS_APP_PATH), 'appium:bundleId': bundle,
@@ -193,12 +193,13 @@ try {
     // Use the WebDriverAgent compiled in the previous step; never rebuild it inside the journey's deadline.
     ...(process.env.WDA_DERIVED_DATA ? {
       'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA,
-      // Run 40729971780: two 60 s attempts both ended with nothing listening on 8100. One attempt with room to start
-      // fits inside the pinned 240 s driver deadline; the deadline itself is unchanged.
-      'appium:wdaLaunchTimeout': 200000, 'appium:wdaStartupRetries': 1,
+      // Run 40729971780: two 60 s attempts both ended with nothing listening on 8100. Run 40769336956 (200 s allowed):
+      // the prebuilt agent started after 227.9 s and the session was created at 21:24:38.9, one second after the
+      // previous 240 s deadline had already failed the journey. The deadline is still bounded, only larger.
+      'appium:wdaLaunchTimeout': 420000, 'appium:wdaStartupRetries': 1,
     } : {}),
     'appium:printPageSourceOnFindFailure': false, 'appium:newCommandTimeout': 180,
-  } } }, 240000);
+  } } }, 480000);
   session = created.sessionId; assert.ok(session, 'NATIVE_XCTEST_SESSION_REQUIRED');
   const runtime = created.capabilities?.platformVersion;
   if (typeof runtime === 'string' && /^\d+(\.\d+){0,2}$/.test(runtime)) facts.runtimeVersion = runtime;

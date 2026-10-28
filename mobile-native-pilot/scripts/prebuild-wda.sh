@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile WebDriverAgent for the simulator in its own bounded step, so the journey's 240 s driver deadline measures
+# Compile WebDriverAgent for the simulator in its own bounded step, so the journey's driver deadline measures
 # the session and the app, not a cold Xcode build. Runs 40688639373 and 40712701537 hit that deadline while Appium's
 # own WDA build was still compiling (xcodebuild "Analyze ... WebDriverAgentLib" lines seconds before the gate).
 # Fail-closed: if the project is not found or the build fails, this step fails with a distinct code; nothing is skipped.
