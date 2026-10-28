@@ -37,3 +37,10 @@ test('test includes an idle audio control and heavy 10k UI load with true DOM as
   assert.match(bench, /ITERATIONS = 8/);
   assert.match(bench, /Performance\.getMetrics/);
 });
+test('CPU numbers come from real Electron process-interval measurements', () => {
+  assert.match(bench, /process\?\.cpu\?\.percentCPUUsage/);
+  assert.match(bench, /const metricsBefore = app\.getAppMetrics\(\)/);
+  assert.match(bench, /const metricsAfter = app\.getAppMetrics\(\)/);
+  assert.doesNotMatch(bench, /const cpu = process\?\.cpu\?\.percentCPU;/);
+  assert.match(bench, /cpuIntervalPercent: summary/);
+});

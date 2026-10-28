@@ -7,8 +7,9 @@ the same Electron version, viewport, Web Audio 48 kHz 440 Hz generated stream,
 local ICE-only RTCPeerConnection pair, and browser-runner OS.
 
 It compares idle and UI-busy RTP jitter/loss **as reported by getStats()**, UI
-work duration, Chromium renderer TaskDuration, and optional instantaneous
-Electron renderer working-set/CPU snapshots. The order alternates by round,
+work duration, Chromium renderer TaskDuration, and bounded-interval average
+Electron renderer CPU `percentCPUUsage` plus optional cumulative CPU seconds.
+Renderer working set remains an after-round snapshot. The order alternates by round,
 two warmups and eight recorded attempts per candidate per platform.
 
 The report is invalid if either framework, a required sample, live audio RTP,
@@ -25,8 +26,9 @@ Boundaries:
   capture-quality result. No physical devices, screen/system audio, OS audio
   route changes, hardware codec, battery, or end-to-end acoustic delay are
   verified.
-- Renderer task time is not whole-machine CPU; Electron CPU percent is a
-  single optional process snapshot; renderer working set is not full-app RAM.
+- Renderer task time is not whole-machine CPU; Electron CPU percent is the
+  average for one measured renderer interval, not whole-app CPU or a peak.
+  Renderer working set is not full-app RAM.
 - This does not compare the full production Svelte Bridge with a fully
   feature-equivalent React Bridge. The React product equivalent is not built.
 - Linux, Windows and macOS hosted runners are different machines; compare

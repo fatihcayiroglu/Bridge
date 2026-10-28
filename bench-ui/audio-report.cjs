@@ -7,6 +7,7 @@ const metrics = [
   'uiWorkMs', 'idleDurationMs', 'stressDurationMs',
   'idleJitterMs', 'stressJitterMs',
   'idleLossPercent', 'stressLossPercent', 'rendererTaskSeconds',
+  'cpuIntervalPercent',
 ];
 
 function verify(report) {
@@ -28,7 +29,7 @@ function verify(report) {
         candidate.samples.length !== report.iterations) {
       throw new Error('AUDIO_FRAMEWORK_SAMPLES_MISSING_' + name);
     }
-    if (!String(candidate.cpuDefinition).includes('instantaneous poll') ||
+    if (!String(candidate.cpuDefinition).includes('average over bounded sample interval') ||
         !String(candidate.memoryDefinition).includes('NOT total app RAM')) {
       throw new Error('AUDIO_RESOURCE_SCOPE_INVALID_' + name);
     }
@@ -52,9 +53,8 @@ function verify(report) {
           (!Number.isFinite(entry.rendererWorkingSetMB) || entry.rendererWorkingSetMB <= 0)) {
         throw new Error('AUDIO_INVALID_MEMORY_SNAPSHOT');
       }
-      if (entry.cpuInstantPercent !== null &&
-          (!Number.isFinite(entry.cpuInstantPercent) || entry.cpuInstantPercent < 0)) {
-        throw new Error('AUDIO_INVALID_CPU_SNAPSHOT');
+      if (!Number.isFinite(entry.cpuIntervalPercent) || entry.cpuIntervalPercent < 0) {
+        throw new Error('AUDIO_CPU_INTERVAL_NOT_MEASURED');
       }
     }
     for (const key of metrics) {

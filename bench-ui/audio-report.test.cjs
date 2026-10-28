@@ -9,7 +9,7 @@ const raw = () => ({
   idleLossPercent: 0, stressLossPercent: 0,
   idlePacketsReceived: 40, stressPacketsReceived: 45,
   idlePacketsSent: 40, stressPacketsSent: 45, rendererTaskSeconds: 0.15,
-  rendererWorkingSetMB: null, cpuInstantPercent: null,
+  rendererWorkingSetMB: null, cpuIntervalPercent: 18.5, cpuIntervalSeconds: null,
 });
 const metric = () => ({ samples: 8, p50: 1, p95: 2 });
 const candidate = () => ({
@@ -17,7 +17,8 @@ const candidate = () => ({
   uiWorkMs: metric(), idleDurationMs: metric(), stressDurationMs: metric(),
   idleJitterMs: metric(), stressJitterMs: metric(),
   idleLossPercent: metric(), stressLossPercent: metric(), rendererTaskSeconds: metric(),
-  cpuDefinition: 'instantaneous poll; NOT whole desktop CPU',
+  cpuIntervalPercent: metric(),
+  cpuDefinition: 'average over bounded sample interval; NOT whole desktop CPU',
   memoryDefinition: 'single renderer snapshot; NOT total app RAM',
 });
 const specimen = () => ({
@@ -58,4 +59,10 @@ test('local loopback must not be passed off as full Bridge or real network quali
   assert.throws(() => verify(r), /SCOPE_MISREPRESENTED/);
   const a = specimen(); a.limitation = 'real-world network quality verified';
   assert.throws(() => verify(a), /SCOPE_MISREPRESENTED/);
+});
+test('missing OS CPU evidence cannot silently count as a measured CPU comparison', () => {
+  const r = specimen(); r.variants.react.samples[2].cpuIntervalPercent = null;
+  assert.throws(() => verify(r), /BAD_RAW_METRIC/);
+  const a = specimen(); delete a.variants.svelte.cpuIntervalPercent;
+  assert.throws(() => verify(a), /BAD_SUMMARY/);
 });

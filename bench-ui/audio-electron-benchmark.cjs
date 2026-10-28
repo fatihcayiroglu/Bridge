@@ -63,15 +63,23 @@ async function taskDuration(win) {
   return task;
 }
 
-function osSnapshot(win) {
+function osSnapshot(win, beforeMetrics, afterMetrics) {
   const pid = win.webContents.getOSProcessId();
-  const process = app.getAppMetrics().find(item => item.pid === pid);
+  const previous = beforeMetrics.find(item => item.pid === pid);
+  const process = afterMetrics.find(item => item.pid === pid);
   const workingSetKB = process?.memory?.workingSetSize;
-  const cpu = process?.cpu?.percentCPU;
+  // Electron CPUUsage uses percentCPUUsage, NOT percentCPU. The latter was
+  // silently undefined in the first run and left all three OS CPU values null.
+  // Both calls bound one measurement interval; never label this a peak/instant.
+  const cpu = process?.cpu?.percentCPUUsage;
+  const cpuBefore = previous?.cpu?.cumulativeCPUUsage;
+  const cpuAfter = process?.cpu?.cumulativeCPUUsage;
   return {
     rendererWorkingSetMB: Number.isFinite(workingSetKB) && workingSetKB > 0
       ? Number((workingSetKB / 1024).toFixed(2)) : null,
-    cpuInstantPercent: Number.isFinite(cpu) && cpu >= 0 ? Number(cpu.toFixed(2)) : null,
+    cpuIntervalPercent: Number.isFinite(cpu) && cpu >= 0 ? Number(cpu.toFixed(2)) : null,
+    cpuIntervalSeconds: Number.isFinite(cpuBefore) && Number.isFinite(cpuAfter) &&
+      cpuAfter >= cpuBefore ? Number((cpuAfter - cpuBefore).toFixed(6)) : null,
   };
 }
 
@@ -79,10 +87,12 @@ async function measure(name, round) {
   const win = windows[name];
   win.show();
   win.focus();
+  const metricsBefore = app.getAppMetrics();
   const before = await taskDuration(win);
   const result = await win.webContents.executeJavaScript(
     'window.__audioBench.run(' + SAMPLE_SIZE + ',' + UPDATES + ')');
   const after = await taskDuration(win);
+  const metricsAfter = app.getAppMetrics();
   if (!result?.senderConnected || !result?.receiverConnected ||
       result.observedRows !== SAMPLE_SIZE + UPDATES * 100 ||
       !Number.isFinite(result.uiWorkMs) || result.uiWorkMs <= 0 ||
@@ -103,7 +113,7 @@ async function measure(name, round) {
     idlePacketsSent: result.idle?.sentPackets,
     stressPacketsSent: result.stressed?.sentPackets,
     rendererTaskSeconds: Number((after - before).toFixed(6)),
-    ...osSnapshot(win),
+    ...osSnapshot(win, metricsBefore, metricsAfter),
   };
 }
 
@@ -143,7 +153,8 @@ async function run() {
       idleLossPercent: summary(s, 'idleLossPercent'),
       stressLossPercent: summary(s, 'stressLossPercent'),
       rendererTaskSeconds: summary(s, 'rendererTaskSeconds'),
-      cpuDefinition: 'Electron renderer percentCPU one instantaneous poll; optional, NOT a run-average',
+      cpuIntervalPercent: summary(s, 'cpuIntervalPercent'),
+      cpuDefinition: 'Electron renderer percentCPUUsage average over bounded sample interval; not whole app or peak CPU',
       memoryDefinition: 'Electron renderer working-set single snapshot after each round; NOT total app RAM',
     };
   }
