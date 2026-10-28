@@ -20,6 +20,9 @@ xvfb-run -a electron/node_modules/electron/dist/electron --no-sandbox bench-ui/e
 The runner fails on missing controls, wrong message counts, timeouts or
 incomplete samples. It prints `BENCHMARK_RESULT` and creates a JSON artifact.
 Five warmups are followed by 30 measured rounds, alternating the order of
-Svelte and React to reduce drift. Compare p50 and p95 only within the same
-runner and the same Electron version. **Never infer CPU/RAM, voice/video,
+Svelte and React to reduce drift. Each duration ends at the `MutationObserver`
+notification when the expected number of DOM elements has committed. The
+two animation frames are awaited for correctness, **not included in timing**.
+Compare p50 and p95 only within the same runner and the same Electron version.
+**Never infer CPU/RAM, voice/video,
 file uploads or complete-app parity from this test.**

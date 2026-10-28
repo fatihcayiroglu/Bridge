@@ -10,3 +10,11 @@ test('runtime job explicitly installs and verifies the pinned Electron executabl
   assert.match(workflow, /test -x electron\/node_modules\/electron\/dist\/electron/);
   assert.match(workflow, /xvfb-run -a electron\/node_modules\/electron\/dist\/electron/);
 });
+
+test('latency benchmark measures DOM commit, not a fixed animation-frame wait', () => {
+  const runner = readFileSync(join(__dirname, 'electron-benchmark.cjs'), 'utf8');
+  assert.match(runner, /new MutationObserver/);
+  assert.match(runner, /root\.childElementCount/);
+  assert.match(runner, /return result\.committedMs/);
+  assert.doesNotMatch(runner, /return result\.elapsedMs/);
+});

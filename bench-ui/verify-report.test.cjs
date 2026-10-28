@@ -5,6 +5,7 @@ const { verify } = require('./verify-report.cjs');
 
 const specimen = () => ({
   scope: 'synthetic message-list renderer benchmark; NOT full Bridge or WebRTC',
+  timingDefinition: 'milliseconds until DOM mutation with expected count; excludes rAF',
   platform: 'linux', electron: 'test', chromium: 'test',
   iterations: 30, warmups: 5, sampleSize: 1000,
   variants: Object.fromEntries(['svelte', 'react'].map(name => [name, {
@@ -35,4 +36,9 @@ test('missing synthetic-scope warning fails', () => {
   const result = specimen();
   result.scope = 'Full Bridge is faster';
   assert.throws(() => verify(result), /synthetic/);
+});
+test('unlabelled timing definition fails', () => {
+  const result = specimen();
+  result.timingDefinition = 'two rAF';
+  assert.throws(() => verify(result), /DOM commit/);
 });

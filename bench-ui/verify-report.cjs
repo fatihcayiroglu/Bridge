@@ -9,6 +9,9 @@ function verify(report) {
   if (!String(report.scope || '').includes('synthetic message-list')) {
     throw new Error('The report must identify its synthetic, non-product scope');
   }
+  if (!String(report.timingDefinition || '').includes('DOM mutation')) {
+    throw new Error('The report must identify DOM commit latency, not frame-wait time');
+  }
   if (report.iterations !== 30 || report.warmups !== 5 || report.sampleSize !== 1000) {
     throw new Error('Unexpected test configuration');
   }

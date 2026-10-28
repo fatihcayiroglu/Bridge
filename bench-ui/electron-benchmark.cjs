@@ -53,14 +53,25 @@ async function start(name) {
 async function measure(name, operation, expectedCount) {
   const call = operation === 'reset' ? 'reset(1000)' : operation === 'filter' ? 'filter("message-7")' : 'append()';
   const result = await windows[name].webContents.executeJavaScript(
-    '(async()=>{const t=performance.now();await window.__bench.' + call +
-    ';return {elapsedMs:performance.now()-t,count:document.querySelectorAll("#rows article").length}})()'
+    '(async()=>{' +
+    'const root=document.querySelector("#rows");' +
+    'if(!root)throw new Error("BENCH_ROOT_MISSING");' +
+    'const t=performance.now();let committedMs=null;' +
+    'const observer=new MutationObserver(()=>{' +
+    'if(committedMs===null && root.childElementCount===' + expectedCount + ')' +
+    'committedMs=performance.now()-t;' +
+    '});' +
+    'observer.observe(root,{childList:true,subtree:true,characterData:true});' +
+    'try{await window.__bench.' + call + ';' +
+    'return {committedMs,count:root.childElementCount};' +
+    '}finally{observer.disconnect()}' +
+    '})()'
   );
-  if (!Number.isFinite(result.elapsedMs) || result.elapsedMs <= 0 || result.count !== expectedCount) {
+  if (!Number.isFinite(result.committedMs) || result.committedMs <= 0 || result.count !== expectedCount) {
     throw new Error(name + ' ' + operation + ': invalid result ' + JSON.stringify(result) +
       ', expected ' + expectedCount + ' actual DOM nodes');
   }
-  return result.elapsedMs;
+  return result.committedMs;
 }
 
 async function run() {
@@ -79,6 +90,7 @@ async function run() {
 
   const output = {
     scope: 'synthetic message-list renderer benchmark; NOT full Bridge or WebRTC',
+    timingDefinition: 'milliseconds from state update request to DOM mutation with expected element count; excludes paint and rAF wait',
     platform: process.platform,
     electron: process.versions.electron,
     chromium: process.versions.chrome,
