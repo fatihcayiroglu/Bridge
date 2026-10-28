@@ -42,7 +42,7 @@ no authorization code or long-lived credential is returned to page JavaScript.
 
 - Existing native-auth/cookie contracts31/31 passed after the handler refactor.
 - Final combined nine suites of password, factor-race, native-auth, application
-  wiring and cookie contracts120/120
+  wiring and cookie contracts121/121
   passed, zero failed/pending/skipped/TODO. These use the actual handlers with
   an in-memory repository: NOT PostgreSQL or native acceptance.
 - Relevant native browser/session contracts25/25 passed; TypeScript passed.
@@ -58,6 +58,21 @@ no authorization code or long-lived credential is returned to page JavaScript.
   ESLint passed; test files follow the existing repository ignore policy. Exact
   dependency audits contain root7LOW, server6LOW, Electron6LOW, pilot0 and E2E0,
   with zero moderate/high/critical findings in these installed lockfiles.
+- First exact-head backend CI40729525524 at85e88176 stopped in the classified
+  in-memory contracts:51PASS/69FAIL/120, zero skipped. It did not execute real
+  integration. The job's REDIS_URL leaked into hermetic suites with no Redis
+  connection; additionally the route-assembly auth stubs lacked the newly
+  exported handler factories when native auth was enabled. Its original artifact
+  is retained with SHA256
+  `d994b08967e0a380611c319eec44aba8afe5ce29a92f8b943eeabc7b75fdeed2`.
+  Only that Jest step now selects the explicit in-memory Redis mode; the real
+  backend process and integration steps retain the job's real Redis authority.
+  Assembly stubs were updated and an enabled-router invalid-entry refusal added.
+  All121 contracts passed under the inherited CI native-auth/quota configuration
+  after these fixture/environment corrections. No assertion was relaxed.
+- Initial JS CI40729525327 passed all three jobs, including223/223 tests with
+  zero failures/cancelled/skipped/TODO and both JS exports. It is not native
+  product acceptance.
 - A new mandatory real PostgreSQL16/Redis case tests production client modules,
   isolated B authentication, two preserved A browser profiles, wrong-cookie and
   cross-origin refusal, late-login rejection, concurrent one-time consent,

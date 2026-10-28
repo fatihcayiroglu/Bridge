@@ -90,6 +90,12 @@ jobs:
           npm run build
       - name: Refresh-cookie security regression contracts
         working-directory: server
+        env:
+          # These are explicitly in-memory handler contracts, not the real
+          # backend process below. Do not inherit its configured Redis authority
+          # into Jest without opening a connection. Real integration retains
+          # the job's REDIS_URL and all production fail-closed checks.
+          REDIS_URL: ''
         run: |
           npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts tests/app-integration.test.ts tests/native-browser-switch.test.ts tests/native-switch-store.test.ts tests/native-auth.test.ts tests/twoFactor.test.ts tests/twofactor-check-races.test.ts tests/twofactor-rate-limit.test.ts tests/twofactor-challenge-fail-closed.test.ts --json --outputFile ../integration-evidence/server-cookie-contracts.json
           node -e 'const r=require("../integration-evidence/server-cookie-contracts.json");if(!r.success || !r.numTotalTests || r.numPassedTests!==r.numTotalTests || r.numFailedTests || r.numPendingTests || r.numTodoTests)throw Error("SERVER_CONTRACTS_INCOMPLETE");console.log(JSON.stringify({tests:r.numTotalTests,pass:r.numPassedTests,failed:r.numFailedTests,skipped:r.numPendingTests,todo:r.numTodoTests}))'
