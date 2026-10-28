@@ -63,6 +63,28 @@ acceptance_print_runtime_errors() {
     | sed "s/^/NATIVE_${label^^}_RUNTIME_ERROR: /" >&2 || true
 }
 
+# Classifies a uiautomator dump for an Android "<app> isn't responding" dialog.
+# Run 40599501153 failed with the emulator's launcher ANR dialog in front of the app for
+# all 90 dumps: a dialog of ANOTHER app blocked the observation, not the app under test.
+# Prints exactly one line:
+#   none                       no ANR dialog
+#   own <title>                the app under test is not responding (a real failure)
+#   foreign <x> <y> <title>    another app's dialog; (x, y) is the centre of its Wait button
+# $1 = dump, $2 = label of the app under test. Always returns 0.
+acceptance_classify_anr_dialog() {
+  local xml="$1" own="$2" title node bounds
+  title=$({ grep -oE "text=\"[^\"]* isn(&apos;|'|’)t responding\"" "$xml" 2>/dev/null || true; } | head -n 1 \
+    | sed -E "s/^text=\"//; s/\"$//; s/&apos;/'/g; s/&amp;/\&/g")
+  if [[ -z "$title" ]]; then echo none; return 0; fi
+  if [[ "$title" == "$own isn"* ]]; then echo "own $title"; return 0; fi
+  node=$({ grep -oE '<node [^>]*resource-id="android:id/aerr_wait"[^>]*>' "$xml" || true; } | head -n 1)
+  bounds=$(printf '%s' "$node" | sed -nE 's/.*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1 \2 \3 \4/p')
+  # A foreign dialog without a Wait button cannot be answered: report it as blocking.
+  if [[ -z "$bounds" ]]; then echo "foreign - - $title"; return 0; fi
+  read -r x1 y1 x2 y2 <<< "$bounds"
+  echo "foreign $(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 )) $title"
+}
+
 # Prints the last N lines of an evidence file to the job log (artifacts cannot always be
 # downloaded). Used for the Metro log, whose bundling/serving errors would explain a
 # redbox that appears before the bundle loads. $1 = file, $2 = label, $3 = tag, $4 = lines.
@@ -71,6 +93,12 @@ acceptance_print_tail() {
   if [[ ! -f "$file" ]]; then printf 'NATIVE_%s_%s: (missing %s)\n' "${label^^}" "$tag" "$file" >&2; return 0; fi
   { tail -n "$lines" "$file" || true; } | acceptance_redact | cut -c1-300 \
     | sed "s/^/NATIVE_${label^^}_${tag}: /" >&2 || true
+}
+
+# ActivityManager logs "ANR in <process> (...)" for EVERY ANR, whether or not a dialog was
+# shown or answered. Prints each ANR'd process once, from a logcat capture. Always 0.
+acceptance_anr_processes() {
+  { grep -oE 'ANR in [A-Za-z0-9._:]+' "$1" 2>/dev/null || true; } | sed 's/^ANR in //' | sort -u
 }
 
 # Reads an `adb logcat -d` capture on stdin; prints ActivityManager's ANR reports (which

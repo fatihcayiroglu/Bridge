@@ -43,6 +43,10 @@ adb shell pm clear com.bridge.nativepilot
 # the first dump but no ANR report after this clear, i.e. it happened at/after boot.
 adb logcat -d > native-evidence/pre-test-logcat.txt 2>&1 || true
 adb logcat -c
+foreign_anr_count=0
+# The ANR dialog title uses the app label; read it from app.json so a rename cannot turn
+# the pilot's own dialog into a "foreign" one.
+own_label=$(node -p 'require("./app.json").expo.name')
 function assert_native_marker() {
   local marker="$1" output="$2"
   for i in $(seq 1 90); do
@@ -57,6 +61,20 @@ function assert_native_marker() {
       acceptance_detail="$marker:redbox-or-runtime-not-ready"; acceptance_print_ui_text "$output" android; return 1
     fi
     if grep -q "$marker" "$output"; then return 0; fi
+    # Another app's ANR dialog hides the app under test from uiautomator. Answer it with
+    # Wait (never Close: that would kill a process we do not own), log it, and keep
+    # polling inside the same 90-dump budget. The pilot's own ANR fails at once.
+    local anr
+    anr=$(acceptance_classify_anr_dialog "$output" "$own_label")
+    case "$anr" in
+      own\ *) acceptance_detail="$marker:app-not-responding"; acceptance_print_ui_text "$output" android; return 1 ;;
+      foreign\ -\ *) acceptance_detail="$marker:foreign-anr-without-wait"; acceptance_print_ui_text "$output" android; return 1 ;;
+      foreign\ *)
+        foreign_anr_count=$((foreign_anr_count + 1))
+        echo "NATIVE_ANDROID_FOREIGN_ANR dump=$i marker=$marker dialog=${anr#foreign * * }" | tee -a native-evidence/foreign-anr.txt >&2
+        read -r _ x y _ <<< "$anr"
+        adb shell input tap "$x" "$y" ;;
+    esac
     sleep 2
   done
   acceptance_detail="$marker:not-seen-in-90-dumps"
@@ -120,7 +138,16 @@ if (( logcat_status != 0 )); then
   acceptance_detail="logcat-capture-failed:exit=$logcat_status"
   false
 fi
+# Independent of any dialog: the pilot must not have had an ANR at all during the run
+# (logcat was cleared before the first launch). Other processes' ANRs are recorded.
+stage=anr-check
+logcat_anrs=$(acceptance_anr_processes native-evidence/android-logcat.txt | tee native-evidence/logcat-anr-processes.txt | paste -sd, -)
+if grep -qE '^com\.bridge\.nativepilot(:|$)' native-evidence/logcat-anr-processes.txt; then
+  acceptance_detail="pilot-anr-in-logcat:$logcat_anrs"; false
+fi
 stage=verdict
-echo 'NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS' | tee native-evidence/native-verdict.txt
+# The verdict carries the number of foreign ANR dialogs answered, so a pass that needed
+# them is never indistinguishable from a clean one.
+echo "NATIVE_ANDROID_SECURE_STORE_AND_SQLCIPHER_RESTART=PASS foreign_anr_dialogs_answered=$foreign_anr_count logcat_anr_processes=${logcat_anrs:-none}" | tee native-evidence/native-verdict.txt
 # am start timing above is a debug/Metro diagnostic, NOT release TTID/TTFD or
 # proof of <1s/<2s meaningful UI targets. Never relabel these as performance PASS.
