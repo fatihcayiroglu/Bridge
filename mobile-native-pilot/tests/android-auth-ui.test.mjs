@@ -78,7 +78,7 @@ test('focus is read from the field, and a username with the password appended is
 });
 test('the Android harness gates every typed field on observed focus and checks the username afterwards',()=>{
   const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
-  assert.match(s,/isFocused\(loginFields\(await ui\(\),\[chrome\]\)\[which\]\)/);
+  assert.match(s,/const f=loginFields\(await ui\(\),\[chrome\]\);if\(isFocused\(f\[which\]\)\)return true;/);
   assert.match(s,/await fieldFocused\('name'\);shell\('input','text',u\.username\)/);
   assert.match(s,/await fieldFocused\('secret'\);shell\('input','text',password\)/);
   assert.match(s,/username-still-intact/);
@@ -172,4 +172,21 @@ test('after two ineffective file taps the CA picker is steered to the Downloads 
   const r=failureReport({facts:{caDownloadsTaps:1},nodes:[{class:'a.B',package:'docs',clickable:'true',selected:'true',focused:'true',bounds:'[0,0][1,1]'},{class:'a.C',package:'docs',clickable:'true',bounds:'[2,2][3,3]'}]});
   assert.equal(r.caDownloadsTaps,1);
   assert.deepEqual(r.clickables.map(c=>c.state),[['selected','focused'],[]]);
+});
+// Run 40710505946: the password field was reported with inverted bounds behind the keyboard -> EMPTY_NATIVE_CONTROL.
+import {tappable,MAX_TAB_PRESSES} from '../scripts/android-auth-ui.mjs';
+test('inverted, empty or malformed bounds are not tappable; real bounds are',()=>{
+  assert.equal(tappable({bounds:'[94,1235][987,1340]'}),true);
+  assert.equal(tappable({bounds:'[94,1437][987,1394]'}),false,'the exact bounds the failing run reported');
+  assert.equal(tappable({bounds:'[10,20][10,80]'}),false);
+  assert.equal(tappable({bounds:'[10,20][110,20]'}),false);
+  assert.equal(tappable({bounds:'bad'}),false);assert.equal(tappable(undefined),false);
+});
+test('a field hidden behind the keyboard gets at most two Tab presses and must still report focus',async()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.equal(MAX_TAB_PRESSES,2);
+  assert.match(s,/if\(isFocused\(f\[which\]\)\)return true;\s*if\(tappable\(f\[which\]\)\)tap\(f\[which\]\);else if\(tabs<MAX_TAB_PRESSES\)\{tabs\+\+;facts\.loginTabPresses=\(facts\.loginTabPresses\?\?0\)\+1;shell\('input','keyevent','61'\);\}return false;\},which\+'-field-focus'\)/);
+  assert.ok(!/tap\(loginFields\(await ui\(\),\[chrome\]\)\[which\]\)/.test(s),'an unconditional tap on possibly hidden bounds is not enough');
+  const {failureReport}=await import('../scripts/android-auth-failure.mjs');
+  assert.equal(failureReport({facts:{loginTabPresses:2}}).loginTabPresses,2);
 });

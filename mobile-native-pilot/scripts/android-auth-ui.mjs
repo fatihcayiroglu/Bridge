@@ -79,6 +79,7 @@ export function anrEvidence(logText, max=10, width=200) {
 // even though the activity is Settings' ConfirmDeviceCredentialActivity (run 40689648802: visible package was only
 // com.android.systemui). OS packages only; more than one candidate field is ambiguous and fatal.
 export const MAX_PIN_ENTRIES=3;
+export const MAX_TAB_PRESSES=2;
 export const PIN_HOSTS=['com.android.settings','com.android.systemui'];
 export function findPinField(nodes) {
   const fields=nodes.filter(n=>PIN_HOSTS.includes(n.package) && n.enabled==='true' && n.class==='android.widget.EditText');
@@ -136,4 +137,13 @@ const CHROME_LINE=/\b(?:chromium|cr_\w+|chromium_android)\b.*(?:CONSOLE|Uncaught
 export function chromeConsoleEvidence(logText, max=12, width=160) {
   return String(logText ?? '').split('\n').filter(l=>CHROME_LINE.test(l))
     .map(l=>l.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi,'<url>').replace(/[A-Za-z0-9+/_=-]{24,}/g,m=>/^ERR_[A-Z_]+$/.test(m)?m:'[redacted]').replace(/\s+/g,' ').trim().slice(0,width)).slice(-max);
+}
+
+// A node whose bounds are inverted or empty is outside the visible viewport (Chrome clips the page to the area above
+// the soft keyboard: run 40710505946 reported the password field as [94,1437][987,1394]) and cannot be tapped.
+export function tappable(node) {
+  const m=/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(node?.bounds ?? '');
+  if(!m)return false;
+  const [x1,y1,x2,y2]=m.slice(1).map(Number);
+  return x2>x1 && y2>y1;
 }

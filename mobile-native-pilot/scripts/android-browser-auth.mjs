@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence,MAX_PIN_ENTRIES} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence,MAX_PIN_ENTRIES,tappable,MAX_TAB_PRESSES} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -71,8 +71,11 @@ async function browserReady(){await until(async()=>{const a=activity();if(!a.sta
 async function signIn(u,previousPid){await browserReady();
   // Every field is re-read after the previous input and must report focus before it receives text; a tap on stale
   // bounds once sent the password into the username field (run 40695774846).
-  const fieldFocused=async(which)=>{tap(loginFields(await ui(),[chrome])[which]);
-    await until(async()=>isFocused(loginFields(await ui(),[chrome])[which]),which+'-field-focus');};
+  // A field hidden behind the soft keyboard has inverted bounds and cannot be tapped (run 40710505946: EMPTY_NATIVE_CONTROL);
+  // move the page focus to it with at most two Tab key presses instead, and still require the field to report focus.
+  const fieldFocused=async(which)=>{let tabs=0;
+    await until(async()=>{const f=loginFields(await ui(),[chrome]);if(isFocused(f[which]))return true;
+      if(tappable(f[which]))tap(f[which]);else if(tabs<MAX_TAB_PRESSES){tabs++;facts.loginTabPresses=(facts.loginTabPresses??0)+1;shell('input','keyevent','61');}return false;},which+'-field-focus');};
   await fieldFocused('name');shell('input','text',u.username);
   await until(async()=>usernameIntact(await ui(),[chrome],u.username),'username-entered');
   await fieldFocused('secret');shell('input','text',password);

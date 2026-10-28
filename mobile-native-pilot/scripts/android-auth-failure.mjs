@@ -60,6 +60,7 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     caDownloadsTaps: facts.caDownloadsTaps ?? 0,
     settingsHopTaps: facts.settingsHopTaps ?? 0,
     pinEntries: facts.pinEntries ?? 0,
+    loginTabPresses: facts.loginTabPresses ?? 0,
     chromeConsole: (facts.chromeConsole ?? []).slice(0, 12),
     ambiguousMatches: (facts.ambiguousMatches ?? []).slice(0, 6),
     anrDialogsAnswered: (facts.anrDialogs ?? []).map((name) => redact(name, 40, secrets)).slice(0, 10),
