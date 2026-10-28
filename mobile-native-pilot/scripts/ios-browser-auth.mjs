@@ -135,7 +135,9 @@ async function signIn(user, expectedPid) {
   // (run 40717519808: the password still landed in the username field after the touch action above).
   await native('tap', centerOf(secretRect));
   facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
-  await command('POST', `/element/${key(freshSecrets[0])}/value`, { text: password });
+  // Element-addressed typing reached the username field in runs 40700229648, 40706730676, 40717519808 and 40725593481,
+  // so type through the keyboard instead; assertUsernameIntact still gates the result.
+  await native('keys', { keys: [password] });
   assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
   await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');

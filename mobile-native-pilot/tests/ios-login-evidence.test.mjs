@@ -68,7 +68,7 @@ test('the iOS driver re-finds the password field after the username keyboard, ta
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);[\s\S]*?const freshSecrets = await elements\('class name', 'XCUIElementTypeSecureTextField'\);\s*assert\.ok\(freshSecrets\.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED'\);/);
-  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);[\s\S]*?await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/value`, \{ text: password \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
+  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);[\s\S]*?(?:\/\/[^\n]*\s*)*await native\('keys', \{ keys: \[password\] \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
   assert.ok(!/key\(secrets\[0\]\)\}\/value/.test(s), 'the stale element reference is never typed into');
 });
 
@@ -103,5 +103,5 @@ test('the page-source focus flag is read as true, false or unknown, never as fre
 
 test('the driver taps natively, then records the focus snapshot before typing the password', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/value`, \{ text: password \}\);/);
+  assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*(?:\/\/[^\n]*\s*)*await native\('keys', \{ keys: \[password\] \}\);/);
 });
