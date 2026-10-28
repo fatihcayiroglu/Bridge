@@ -126,7 +126,8 @@ async function signIn(user, expectedPid) {
   // Run40730915313 proved the active element remained different from the secure
   // field after the coordinate/click sequence. Remove the username keyboard and
   // prove that transition before obtaining a new password-element reference.
-  await dismissUsernameKeyboard({ elements, native, until,
+  await dismissUsernameKeyboard({ elements, native, command, until,
+    recordControls: proof => { facts.usernameKeyboardControls = proof; },
     record: proof => { facts.usernameKeyboard = proof; } });
   // The page moves once the username keyboard is up, so the first element reference can point at a stale position
   // (runs 40700229648 and 40706730676: the password still landed in the username field). Look the field up again,
@@ -243,6 +244,7 @@ try {
   facts.failure = /^[A-Z_]+(?::[a-z-]+)?$/.test(error?.message ?? '') ? error.message : 'DRIVER_OR_SERVICE_FAILED';
   console.log(`IOS_PASSWORD_FOCUS ${JSON.stringify(facts.passwordKeyboardFocus ?? null)}`);
   console.log(`IOS_USERNAME_KEYBOARD ${JSON.stringify(facts.usernameKeyboard ?? null)}`);
+  console.log(`IOS_KEYBOARD_CONTROLS ${JSON.stringify(facts.usernameKeyboardControls ?? null)}`);
   if (error?.message?.startsWith('WebDriver ')) facts.driverFailure = error.message;
   // Driver/server messages can contain credentials or callback URLs. Preserve
   // the closed stage, AX counts and screenshots, never raw source/arguments.

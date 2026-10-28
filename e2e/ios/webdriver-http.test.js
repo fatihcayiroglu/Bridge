@@ -75,3 +75,16 @@ test('WebDriver preserves a configured base path and rejects incomplete W3C enve
   const { webdriverRequest } = await load();
   await assert.rejects(webdriverRequest(base + '/wd/hub/', 'POST', '/session'), /invalid W3C response/);
 });
+
+test('native keyboard and element refusals retain only their standard W3C type', async t => {
+  let kind;
+  const base = await server(t, (_request, response) => {
+    response.statusCode = 400;
+    response.end(JSON.stringify({ value: { error: kind, message: 'private form contents', stacktrace: 'private driver payload' } }));
+  });
+  const { webdriverRequest } = await load();
+  for (kind of ['invalid element state', 'element not interactable', 'element click intercepted', 'stale element reference', 'invalid selector']) {
+    await assert.rejects(webdriverRequest(base, 'POST', '/execute/sync', { args: ['private form contents'] }),
+      { message: `WebDriver sync failed (400; ${kind})` });
+  }
+});
