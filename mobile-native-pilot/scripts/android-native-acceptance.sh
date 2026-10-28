@@ -108,7 +108,23 @@ adb shell screencap -p /sdcard/native-acceptance.png
 stage=final-screenshot-pull
 adb pull /sdcard/native-acceptance.png native-evidence/android.png
 stage=final-logcat
-adb logcat -d > native-evidence/android-logcat.txt
+# Run 40609216285 (#535, 8d651642) passed both marker stages, then `adb logcat -d` exited
+# 255 here with no stderr, and the cleanup's own capture was empty too. The log is
+# evidence (and #535's pilot-ANR check reads it), so a failed capture still FAILS the run,
+# but now says why: exit code, stderr, bytes read, logd state, buffer sizes.
+logcat_status=0
+adb logcat -d > native-evidence/android-logcat.txt 2> native-evidence/logcat-stderr.txt || logcat_status=$?
+if (( logcat_status != 0 )); then
+  {
+    echo "exit=$logcat_status bytes=$(wc -c < native-evidence/android-logcat.txt)"
+    echo "stderr: $(tr '\n' ' ' < native-evidence/logcat-stderr.txt)"
+    echo "logd: $(adb shell getprop init.svc.logd 2>&1 | tr '\n' ' ' || true)"
+    echo "buffers: $(adb logcat -g 2>&1 | tr '\n' ' ' || true)"
+  } > native-evidence/logcat-failure.txt 2>&1 || true
+  acceptance_print_tail native-evidence/logcat-failure.txt android LOGCAT 8
+  acceptance_detail="logcat-capture-failed:exit=$logcat_status"
+  false
+fi
 # Independent of any dialog: the pilot must not have had an ANR at all during the run
 # (logcat was cleared before the first launch). Other processes' ANRs are recorded.
 stage=anr-check
