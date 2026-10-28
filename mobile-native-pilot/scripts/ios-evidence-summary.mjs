@@ -24,6 +24,21 @@ export function journeySummary(r) {
 export function podCacheLines(text, max = 30) {
   return String(text ?? '').split('\n').filter((l) => POD_LINE.test(l)).map((l) => l.replace(/[\u0000-\u001f]+/g, ' ').slice(0, 220)).slice(-max);
 }
+// The proxy logs only a closed `kind`, the HTTP status and two booleans per native-auth request (no URLs, codes,
+// tokens or bodies). Print the ordered sequence, run-length compressed, so a stalled step shows which request
+// happened and what the server answered.
+export function wireSequence(text, max = 60) {
+  const out = [];
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.startsWith('NATIVE_AUTH_HTTP ')) continue;
+    let r; try { r = JSON.parse(line.slice(17)); } catch { continue; }
+    if (typeof r?.kind !== 'string' || !/^[a-z][\w-]{0,40}$/.test(r.kind)) continue;
+    const label = `${r.kind}:${Number.isInteger(r.status) ? r.status : '?'}`;
+    const last = out[out.length - 1];
+    if (last && last.label === label) last.n += 1; else out.push({ label, n: 1 });
+  }
+  return out.slice(-max).map((e) => (e.n > 1 ? `${e.label}x${e.n}` : e.label));
+}
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
@@ -31,6 +46,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   console.log('IOS_EVIDENCE_SUMMARY_BEGIN');
   console.log('prefetch ' + JSON.stringify(prefetchSummary(readJson(join(dir, 'prefetch-ios-prebuilt.json')))));
   console.log('journey ' + JSON.stringify(journeySummary(readJson(join(dir, 'ios-browser-auth.json')))));
+  const proxy = join(dir, 'proxy.log');
+  console.log('wire ' + JSON.stringify(existsSync(proxy) ? wireSequence(readFileSync(proxy, 'utf8')) : '(no proxy.log)'));
   const pods = join(dir, 'pods.log');
   for (const l of existsSync(pods) ? podCacheLines(readFileSync(pods, 'utf8')) : ['(no pods.log)']) console.log('pods| ' + l);
   console.log('IOS_EVIDENCE_SUMMARY_END');

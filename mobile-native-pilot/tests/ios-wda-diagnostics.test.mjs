@@ -44,7 +44,7 @@ test('runner prints the excerpt only inside the pre-input gate, and before Appiu
 });
 
 // ---- end-of-log evidence summary ----
-import { prefetchSummary, journeySummary, podCacheLines } from '../scripts/ios-evidence-summary.mjs';
+import { prefetchSummary, journeySummary, podCacheLines, wireSequence } from '../scripts/ios-evidence-summary.mjs';
 test('the summary prints allow-listed facts only (no fixture names, ids, tokens or driver traffic)', () => {
   const j = journeySummary({ status: 'FAIL', stage: 'native-xcuitest-session', runtimeVersion: '26.2', cases: [], notExecuted: ['a', 'b', 'c'],
     userA: 'mob_A_deadbeef', token: 'x'.repeat(64), fixtureId: 'u-123' });
@@ -75,4 +75,16 @@ test('a failed case run reports case ids/statuses, the closed failure code, UI c
   assert.equal(j.failure, 'POSTGRES_ROTATION_REQUIRED'); assert.deepEqual(j.failureUi, { webViews: 1, textFields: 0, secureFields: 0, alerts: 0 });
   assert.equal(j.foregroundBundle, 'com.bridge.nativepilot'); assert.equal(j.passed, 1); assert.equal(j.failed, 1); assert.equal(j.notExecuted, 1);
   assert.ok(!JSON.stringify(j).match(/SECRETCODE|hunter2|WebDriver 500|4242|nope|<x>/));
+});
+
+test('the wire summary is the ordered, run-length-compressed kind:status sequence and nothing else', () => {
+  const log = [
+    'noise line', 'NATIVE_AUTH_HTTP ' + JSON.stringify({ kind: 'native-authorize', status: 200, cookiePresent: false, bearerPresent: false, url: '/x?code=SECRET', body: 'hunter2' }),
+    'NATIVE_AUTH_HTTP ' + JSON.stringify({ kind: 'native-login', status: 401 }), 'NATIVE_AUTH_HTTP ' + JSON.stringify({ kind: 'native-login', status: 401 }),
+    'NATIVE_AUTH_HTTP {not json', 'NATIVE_AUTH_HTTP ' + JSON.stringify({ kind: 'Bad Kind!', status: 200 }), 'NATIVE_AUTH_HTTP ' + JSON.stringify({ kind: 'native-code', status: 200 }),
+  ].join('\n');
+  assert.deepEqual(wireSequence(log), ['native-authorize:200', 'native-login:401x2', 'native-code:200']);
+  assert.ok(!JSON.stringify(wireSequence(log)).match(/SECRET|hunter2|cookiePresent/));
+  assert.deepEqual(wireSequence(undefined), []);
+  assert.equal(wireSequence(Array(300).fill(0).map((_, i) => 'NATIVE_AUTH_HTTP ' + JSON.stringify({ kind: `k${i % 2}`, status: 200 })).join('\n'), 10).length, 10);
 });
