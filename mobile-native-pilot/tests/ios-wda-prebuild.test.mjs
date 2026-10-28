@@ -27,8 +27,15 @@ test('the workflow runs the prebuild as its own bounded step before the journey'
 });
 
 test('the driver uses the prebuilt agent and keeps its own deadline unchanged', () => {
-  assert.match(driver, /process\.env\.WDA_DERIVED_DATA \? \{ 'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process\.env\.WDA_DERIVED_DATA \} : \{\}/);
+  assert.match(driver, /process\.env\.WDA_DERIVED_DATA \? \{\s*'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process\.env\.WDA_DERIVED_DATA,[\s\S]*?\} : \{\}/);
   assert.match(driver, /driverDeadlineMs/);
   assert.match(driver, /facts\.driverDeadlineMs = 240000;/);
   assert.match(driver, /\} \} \}, 240000\);/, 'the session-creation deadline is not raised');
+});
+
+test('a prebuilt WDA gets one long launch attempt inside the unchanged 240 s driver deadline', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(s, /'appium:wdaLaunchTimeout': 200000, 'appium:wdaStartupRetries': 1/);
+  assert.match(s, /facts\.driverDeadlineMs = 240000/);
+  assert.ok(200000 < 240000);
 });

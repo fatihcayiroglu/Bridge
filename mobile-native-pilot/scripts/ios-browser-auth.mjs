@@ -191,7 +191,12 @@ try {
     'appium:isHeadless': true, 'appium:noReset': true, 'appium:autoAcceptAlerts': false,
     'appium:showXcodeLog': true,
     // Use the WebDriverAgent compiled in the previous step; never rebuild it inside the journey's deadline.
-    ...(process.env.WDA_DERIVED_DATA ? { 'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA } : {}),
+    ...(process.env.WDA_DERIVED_DATA ? {
+      'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA,
+      // Run 40729971780: two 60 s attempts both ended with nothing listening on 8100. One attempt with room to start
+      // fits inside the pinned 240 s driver deadline; the deadline itself is unchanged.
+      'appium:wdaLaunchTimeout': 200000, 'appium:wdaStartupRetries': 1,
+    } : {}),
     'appium:printPageSourceOnFindFailure': false, 'appium:newCommandTimeout': 180,
   } } }, 240000);
   session = created.sessionId; assert.ok(session, 'NATIVE_XCTEST_SESSION_REQUIRED');
