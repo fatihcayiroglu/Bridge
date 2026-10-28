@@ -150,10 +150,12 @@ try {
   assert.ok(String((await database.query('SHOW server_version_num')).rows[0].server_version_num).startsWith('16'), 'REAL_POSTGRES16_REQUIRED');
   const a = await fixture('A'), b = await fixture('B');
   facts.stage = 'native-xcuitest-session';
+  facts.driverDeadlineMs = 240000;
   const created = await wd('POST', '/session', { capabilities: { alwaysMatch: {
     platformName: 'iOS', 'appium:automationName': 'XCUITest', 'appium:udid': process.env.IOS_SIMULATOR_UDID,
     'appium:app': path.resolve(process.env.IOS_APP_PATH), 'appium:bundleId': bundle,
     'appium:isHeadless': true, 'appium:noReset': true, 'appium:autoAcceptAlerts': false,
+    'appium:showXcodeLog': true,
     'appium:printPageSourceOnFindFailure': false, 'appium:newCommandTimeout': 180,
   } } }, 240000);
   session = created.sessionId; assert.ok(session, 'NATIVE_XCTEST_SESSION_REQUIRED');
