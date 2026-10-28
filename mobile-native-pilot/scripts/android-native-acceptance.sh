@@ -13,6 +13,10 @@ function cleanup() {
   acceptance_record_failure "$status" native-evidence android
   adb logcat -d > native-evidence/android-logcat.txt 2>&1 || true
   (( status == 0 )) || acceptance_print_runtime_errors android < native-evidence/android-logcat.txt
+  if (( status != 0 )); then
+    acceptance_print_tail native-evidence/first-launch.txt android LAUNCH 20
+    acceptance_print_tail native-evidence/metro-android.log android METRO 40
+  fi
   adb shell screencap -p /sdcard/native-failure.png >/dev/null 2>&1 && adb pull /sdcard/native-failure.png native-evidence/final-screen.png >/dev/null 2>&1 || true
   kill "$metro_pid" 2>/dev/null || true
   exit "$status"
