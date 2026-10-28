@@ -134,6 +134,24 @@ T2 remains open while it is the redirect. The server side of the fix is in
   link to the app: no script or external resources, never echoes the URL (the code),
   `no-store`, `no-referrer`, `default-src 'none'`, `noindex`.
 - Any malformed value disables the whole feature (fail closed).
+- Callback paths must be literal, without wildcard or percent-encoded
+  characters. Apple `components` treats `*` and `?` as patterns, not exact URI
+  characters; ambiguous encoded paths are refused rather than assuming the OS
+  and HTTP router decode identically. With iOS configured, a non-default HTTPS
+  port also disables the feature: associated domains do not support port numbers.
+  See Apple's [component matching rules](https://developer.apple.com/documentation/bundleresources/applinks/details-swift.dictionary/components-swift.dictionary)
+  and [TN3155](https://developer.apple.com/documentation/technotes/tn3155-debugging-universal-links).
+
+Owner configuration must come from the actual release identity and controlled
+HTTPS host. Obtain Android SHA-256 values from the release signing certificate
+(including the Play app-signing certificate when applicable), not an emulator
+debug certificate. Obtain the full Apple application identifier prefix and
+bundle ID from the provisioned app; the prefix is not always the Team ID.
+Verify association files on the exact callback host over valid HTTPS without
+redirects, then test both the intended signed app and an unassociated app on
+real supported OS versions. A successful JSON contract test does not prove
+exclusive OS dispatch or interception resistance. Keep the feature off until
+the owner supplies these values; do not insert example identifiers into builds.
 
 **Not done, owner/deployment decisions:** choosing the callback domain, its DNS/TLS,
 the release signing certificate fingerprint and Apple Team ID; the app side (Android

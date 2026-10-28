@@ -60,6 +60,13 @@ export function loadNativeAppLinksConfig(env: NodeJS.ProcessEnv = process.env): 
   for (const uri of auth.redirectUris) {
     const url = new URL(uri);
     if (url.protocol !== 'https:') continue;
+    // AASA components are glob patterns, whereas native-auth accepts one exact
+    // redirect URI. Never turn a literal configured path into a broader claim.
+    // Percent-encoded paths are refused conservatively: OS and HTTP routing
+    // must not disagree about decoding separators or wildcard characters.
+    if (/[*?%]/.test(url.pathname) || (iosIds && url.port)) {
+      return { enabled: false, reason: 'invalid_configuration' };
+    }
     const host = url.host.toLowerCase();
     const paths = callbacks.get(host) ?? [];
     if (!paths.includes(url.pathname)) paths.push(url.pathname);
