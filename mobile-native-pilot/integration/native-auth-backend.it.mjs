@@ -546,3 +546,51 @@ test('ACK namespace: concurrent same-user replay deduplicates; another user may 
     assert.equal(String(rowsB[0].userId), b.coordinator.getState().userId);
   } finally { sockets.forEach(rt => rt.dispose()); await a.coordinator.signOut(); await b.coordinator.signOut(); }
 });
+
+test('isolated native B switch preserves browser A and another profile, consumes consent once, restores and revokes', { timeout: 60000 }, async () => {
+  // HTTP browser adapter = real-backend integration, NOT Custom Tabs/ASWeb/Keychain.
+  const a=await browserRegister('switchweb'),b=await browserRegister('switchother');
+  const secondProfile=await fetch(`${ORIGIN}/api/login`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:a.username,password:PASSWORD})});
+  assert.equal(secondProfile.status,200);const secondCookie=refreshCookie(secondProfile);assert.ok(secondCookie);
+  const s=await signIn(a);await s.coordinator.signOut();
+  let issued;
+  const browser=createBrowserSignIn({origin:ORIGIN,redirectUri:REDIRECT,createPkce:()=>createPkceAttempt(nodeCrypto),
+    openAuthSession:async url=>{
+      assert.equal(new URL(url).pathname,'/native-auth/switch');
+      const page=await fetch(url,{headers:{Cookie:`bridge_refresh=${a.cookie}`},redirect:'manual'});
+      assert.equal(page.status,200);const html=await page.text();
+      const nativeCookie=(page.headers.getSetCookie()??[]).find(line=>line.startsWith('__Secure-bridge_native_switch='))?.split(';')[0];
+      const base=/action="([^"?]+)\/login"/.exec(html)?.[1],csrf=/name="flow_csrf" value="([A-Za-z0-9_-]+)"/.exec(html)?.[1];
+      assert.ok(nativeCookie&&base&&csrf);
+      const headers={'Content-Type':'application/x-www-form-urlencoded',Origin:ORIGIN,'Sec-Fetch-Site':'same-origin',Cookie:`${nativeCookie}; bridge_refresh=${a.cookie}`};
+      const wrongCookie=await fetch(ORIGIN+base+'/login',{headers:{Cookie:'__Secure-bridge_native_switch='+'x'.repeat(43)}});assert.equal(wrongCookie.status,410);
+      const crossOrigin=await fetch(ORIGIN+base+'/login',{method:'POST',headers:{...headers,Origin:'https://untrusted.example'},redirect:'manual',
+        body:new URLSearchParams({flow_csrf:csrf,username:b.username,password:PASSWORD})});assert.equal(crossOrigin.status,403);
+      const signed=await fetch(ORIGIN+base+'/login',{method:'POST',headers,redirect:'manual',
+        body:new URLSearchParams({flow_csrf:csrf,username:b.username,password:PASSWORD})});
+      assert.equal(signed.status,303);assert.equal(signed.headers.getSetCookie().length,0,'fresh login must not replace shared web cookies');
+      const consentPage=await fetch(ORIGIN+base+'/consent',{headers:{Cookie:nativeCookie}});assert.equal(consentPage.status,200);
+      const consentHtml=await consentPage.text();assert.ok(consentHtml.includes(b.username)&&!consentHtml.includes(a.username),'explicit consent must name the freshly verified account');
+      const lateLogin=await fetch(ORIGIN+base+'/login',{method:'POST',headers,redirect:'manual',body:new URLSearchParams({flow_csrf:csrf,username:b.username,password:PASSWORD})});
+      assert.equal(lateLogin.status,410,'a late login cannot replace or destroy the authenticated transaction');
+      const responses=await Promise.all([0,1].map(()=>fetch(ORIGIN+base+'/authorize',{method:'POST',headers,redirect:'manual',body:new URLSearchParams({flow_csrf:csrf})})));
+      assert.deepEqual(responses.map(r=>r.status).sort(),[303,410],'one authoritative consent winner');
+      const success=responses.find(r=>r.status===303);assert.equal(await success.text(),'','authorization code is not echoed in a response body');
+      return {type:'success',url:success.headers.get('location')};
+    }});
+  const enter=createBrowserSessionSignIn({browser,coordinator:s.coordinator,
+    authApi:{...s.authApi,exchangeCode:async input=>{issued=await s.authApi.exchangeCode(input);return issued;}}});
+  await enter({freshAuthentication:true});assert.equal((await s.read.getMe()).id,b.userId);
+  for(const cookie of [a.cookie,secondCookie]){
+    const renewed=await fetch(`${ORIGIN}/api/refresh`,{method:'POST',headers:{Cookie:`bridge_refresh=${cookie}`}});assert.equal(renewed.status,200);
+    const access=(await renewed.json()).token;
+    const me=await fetch(`${ORIGIN}/api/me`,{headers:{Authorization:`Bearer ${access}`}});assert.equal(me.status,200);
+    const user=await me.json();assert.equal(String(user._id??user.id),a.userId,'unrelated browser identity must stay A');
+  }
+  const restarted=app(s.store);await restarted.coordinator.restore();assert.equal((await restarted.read.getMe()).id,b.userId);
+  assert.notEqual(s.store.stored(),issued.refreshToken,'restart must rotate B');const active=s.store.stored();
+  await restarted.coordinator.signOut();assert.equal(s.store.stored(),null);
+  const rejected=await fetch(`${ORIGIN}/api/native-auth/refresh`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:active})});assert.equal(rejected.status,401);
+  const afterSignOut=app(s.store);await afterSignOut.coordinator.restore();assert.notEqual(afterSignOut.coordinator.getState().phase,'authenticated');
+});

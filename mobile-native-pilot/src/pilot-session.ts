@@ -19,7 +19,7 @@ import { createPersistentOutbox, type PersistentOutbox } from './persistent-outb
 export type PilotSession = {
   coordinator: SessionCoordinator;
   /** Opens the system browser, then exchanges the code and adopts the session. */
-  signInWithBrowser(): Promise<SessionState>;
+  signInWithBrowser(options?: { freshAuthentication?: boolean }): Promise<SessionState>;
   /** Reads with the current validated session only; fenced against account changes. */
   read: BridgeReadApi;
   /** Channel messaging over the existing Socket.IO contract; one socket per session epoch. */

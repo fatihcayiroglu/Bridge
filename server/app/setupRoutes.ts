@@ -44,6 +44,7 @@ import emailRouter                          from '../routes/email';
 import adminRouter                          from '../routes/admin';
 import ssoRouter                            from '../routes/sso';
 import { createNativeAuthRouters }           from '../routes/nativeAuth';
+import { createNativeBrowserSwitchRouter }   from '../routes/nativeBrowserSwitch';
 import invitePreviewRouter                  from '../routes/invitePreview';
 import mobilePushRouter                     from '../routes/mobilePush';
 import webpushRouter                        from '../routes/webpush';
@@ -170,6 +171,7 @@ export function setupRoutes(app: Application): void {
   const nativeAuth = createNativeAuthRouters();
   mountApi('/refresh/native-authorize', nativeAuth.authorize);
   mountApi('/native-auth', nativeAuth.token);
+  app.use('/native-auth/switch', createNativeBrowserSwitchRouter());
   app.use('/invite', invitePreviewRouter);
   mountApi('/mobile', mobilePushRouter);
   mountApi('/webpush', webpushRouter);

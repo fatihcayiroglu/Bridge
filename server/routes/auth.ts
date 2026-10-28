@@ -50,6 +50,7 @@ import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import { uploadRoot } from '../lib/runtimePaths';
 import { parseTokenVersion } from '../lib/tokenVersion';
 import { mintSignInGrants } from '../lib/stepUp';
+import type { AuthenticationDestination } from '../lib/authenticationDestination';
 
 // sanitizeUser artık lib/userUtils.js'de tanımlı — tüm importlar oradan gelsin
 
@@ -265,7 +266,8 @@ router.post('/register',
  *         description: Rate limit aşıldı
  */
 // POST /api/login
-router.post('/login',
+export function passwordLoginHandlers(destination?: AuthenticationDestination): express.RequestHandler[] {
+  return [
   captcha.botFilterMiddleware(70),          // bot filtresi
   captcha.loginLockMiddleware,              // IP kilit kontrolü (async-safe)
   captcha.progressiveCaptchaMiddleware,     // 3+ başarısız denemeden sonra CAPTCHA sor
@@ -316,10 +318,13 @@ router.post('/login',
   // only from server-side state by /api/2fa/check.
   if (user.twoFactorEnabled) {
     const tempToken = await issueTwoFactorLoginChallenge(user._id, parseTokenVersion(user.tokenVersion));
+    if (destination) return destination.factorPending(req, res, user, tempToken);
     return res.status(202).json({ requiresTwoFactor: true, tempToken });
   }
 
   await Users.setStatus(user._id, 'online');
+
+  if (destination) return destination.authenticated(req, res, user);
 
   const token        = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
@@ -330,7 +335,9 @@ router.post('/login',
   checkAndAwardAutoBadges(user._id).catch(() => {});
   // A password sign-in is a fresh level-1 proof: one step-up grant per scope (P7 B2).
   res.json({ token, user: sanitizeOwnUser({ ...user, status: 'online' }), stepUp: mintSignInGrants(user, 'password') });
-});
+  }];
+}
+router.post('/login', ...passwordLoginHandlers());
 
 // POST /api/refresh  — refresh token rotation
 /**
@@ -948,3 +955,4 @@ export default router;
 module.exports = router;
 module.exports.router = router;
 module.exports.default = router;
+module.exports.passwordLoginHandlers = passwordLoginHandlers;
