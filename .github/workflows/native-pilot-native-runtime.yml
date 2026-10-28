@@ -94,6 +94,9 @@ jobs:
           npm ci --no-fund
           npm audit --audit-level=low
           npx expo prebuild --platform ios --no-install
+          # Integrity-pinned, bounded acquisition of the RN and Hermes prebuilt tarballs (CocoaPods
+          # otherwise downloads them with unbounded curl; run 40683551729 died on the Hermes one).
+          PREFETCH_EVIDENCE=native-evidence/prefetch-ios-prebuilt.json node scripts/prefetch-ios-prebuilt.mjs
           cd ios
           pod install 2>&1 | tee ../native-evidence/pods.log
           # Do not synthesize a provisioning Team ID or Keychain sharing group.

@@ -111,6 +111,9 @@ jobs:
           echo $! > "$RUNNER_TEMP/mobile-proxy.pid"
           for i in $(seq 1 60); do curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > mobile-auth-evidence/health.json && break; sleep 1; done
           curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > mobile-auth-evidence/health.json
+      - name: Integrity-pinned React Native prebuilt artifacts (SHA-512, bounded, fail-closed)
+        working-directory: mobile-native-pilot
+        run: node scripts/prefetch-ios-prebuilt.mjs
       - name: Build the real normal-screen iOS app
         working-directory: mobile-native-pilot
         run: |
