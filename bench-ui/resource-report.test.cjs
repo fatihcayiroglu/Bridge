@@ -19,7 +19,7 @@ function candidate(mode) {
     audio: links ? { peerLinks: links, receivedPackets: links * 25, lostPackets: 0,
       jitterMs: 1, lossPercent: 0, localCandidateRttMs: null } : null,
     video: video ? { source: 'synthetic-canvas; not real OS screen',
-      framesDecoded: 20, decodedFps: 14 } : null,
+      presentedFrames: 20, receivedVideoPackets: 40, presentedFps: 14 } : null,
   });
   return {
     samples: Array.from({ length: 5 }, raw),
@@ -59,9 +59,11 @@ test('10-peer scenario cannot pass with no real RTP', () => {
   const r = specimen(); r.scenarios.voice10.variants.react.samples[3].audio.receivedPackets = 0;
   assert.throws(() => verify(r), /REAL_RTP_MISSING/);
 });
-test('video and synthetic screen must decode actual frames', () => {
-  const r = specimen(); r.scenarios.video2.variants.react.samples[1].video.framesDecoded = 0;
+test('video and synthetic screen must prove RTP AND genuinely presented frames', () => {
+  const r = specimen(); r.scenarios.video2.variants.react.samples[1].video.presentedFrames = 0;
   assert.throws(() => verify(r), /REAL_VIDEO_FRAMES_MISSING/);
+  const b = specimen(); b.scenarios.video2.variants.react.samples[1].video.receivedVideoPackets = 0;
+  assert.throws(() => verify(b), /REAL_VIDEO_FRAMES_MISSING/);
   const a = specimen(); a.scenarios.screen2.variants.svelte.samples[0].video = null;
   assert.throws(() => verify(a), /REAL_VIDEO_FRAMES_MISSING/);
 });

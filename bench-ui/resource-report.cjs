@@ -71,8 +71,10 @@ function verify(report) {
         }
         if (expected.video) {
           if (!s.video || !String(s.video.source).includes('synthetic-canvas') ||
-              !validMetric(s.video.framesDecoded, false) || s.video.framesDecoded < 5 ||
-              !validMetric(s.video.decodedFps, false)) {
+              !validMetric(s.video.presentedFrames, false) || s.video.presentedFrames < 5 ||
+              !validMetric(s.video.receivedVideoPackets, false) ||
+              s.video.receivedVideoPackets < 10 ||
+              !validMetric(s.video.presentedFps, false)) {
             throw new Error('RESOURCE_REAL_VIDEO_FRAMES_MISSING_' + name);
           }
         } else if (s.video !== null) {

@@ -25,13 +25,15 @@ test('CPU and RAM come from measured Electron renderer process IDs, not hardcode
   assert.match(runner, /RESOURCE_OS_CPU_OR_RAM_NOT_MEASURED/);
   assert.doesNotMatch(runner, /cpu\.percentCPU\b/);
 });
-test('media uses actual RTP, audio/video getStats, and decoder frames with no fake metrics', () => {
+test('media uses actual RTP and presented HTML video frames with no fake metrics', () => {
   assert.match(media, /RTCPeerConnection/);
   assert.match(media, /getStats\(\)/);
-  assert.match(media, /framesDecoded/);
+  assert.match(media, /getVideoPlaybackQuality/);
+  assert.match(media, /totalVideoFrames - quality\.droppedVideoFrames/);
   assert.match(media, /canvas\.captureStream\(15\)/);
   assert.match(media, /RESOURCE_AUDIO_RTP_NOT_MEASURED/);
-  assert.match(media, /RESOURCE_VIDEO_FRAMES_NOT_DECODED/);
+  assert.match(media, /RESOURCE_VIDEO_RTP_OR_PRESENTED_FRAMES_MISSING/);
+  assert.match(media, /receivedVideoPackets < 10/);
   assert.doesNotMatch(media, /Math\.random\(\)/);
   assert.doesNotMatch(media, /test\.(skip|fixme)\(/);
 });
@@ -43,4 +45,7 @@ test('media setup lies outside the bounded CPU interval and cannot hide a failed
   assert.match(runner, /__resourceBench\.teardown/);
   assert.match(workflow, /set -euo pipefail/);
   assert.match(workflow, /if: always\(\)/);
+  assert.match(media, /while \(performance\.now\(\) - started < DURATION_MS\)/);
+  assert.match(runner, /result\.measuredMs < 1200/);
+  assert.match(runner, /RESOURCE_SCENARIO_START/);
 });

@@ -93,7 +93,12 @@ async function measure(name, mode, round) {
     const taskSeconds = taskAfter - taskBefore;
     if (result?.mode !== mode || result.measuredMs < 1200 ||
         !Number.isFinite(taskSeconds) || taskSeconds < 0) {
-      throw new Error('RESOURCE_SCENARIO_NOT_MEASURED_' + mode);
+      throw new Error('RESOURCE_SCENARIO_NOT_MEASURED_' + mode +
+        ' ' + JSON.stringify({
+          measuredMs: result?.measuredMs ?? null,
+          returnedMode: result?.mode ?? null,
+          rendererTaskDeltaSeconds: Number.isFinite(taskSeconds) ? taskSeconds : null,
+        }));
     }
     return {
       round, mode,
@@ -115,6 +120,7 @@ async function run() {
     for (let round = 0; round < WARMUPS + ITERATIONS; round++) {
       const order = round % 2 ? [...variants].reverse() : variants;
       for (const name of order) {
+        if (round === 0) console.log('RESOURCE_SCENARIO_START ' + JSON.stringify({ mode, name }));
         const sample = await measure(name, mode, round);
         if (round >= WARMUPS) samples[name].push(sample);
       }

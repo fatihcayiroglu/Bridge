@@ -24,7 +24,7 @@
 
   async function stats(group) {
     const report = { audioPackets: 0, audioLost: 0, maxAudioJitterMs: 0,
-      videoFrames: 0, rttSamplesMs: [] };
+      videoFramesPresented: 0, videoPackets: 0, rttSamplesMs: [] };
     for (const pair of group.pairs) {
       const entries = await pair.right.getStats();
       const audio = inbound(entries, 'audio');
@@ -43,10 +43,19 @@
       }
       if (group.videoKind) {
         const video = inbound(entries, 'video');
-        if (!video || !Number.isFinite(video.framesDecoded)) {
-          throw new Error('RESOURCE_VIDEO_DECODE_UNAVAILABLE');
+        // Some Chromium/macOS builds do not expose framesDecoded in WebRTC
+        // inbound stats. Require two independent, real signals instead:
+        // inbound video RTP packets and *presented* video-element frames.
+        // A received packet alone is never evidence that video rendered.
+        if (video && Number.isFinite(video.packetsReceived) && video.packetsReceived >= 0) {
+          report.videoPackets += video.packetsReceived;
         }
-        report.videoFrames += video.framesDecoded;
+        const quality = pair.videoElement?.getVideoPlaybackQuality?.();
+        if (quality && Number.isFinite(quality.totalVideoFrames) &&
+            Number.isFinite(quality.droppedVideoFrames) &&
+            quality.totalVideoFrames >= quality.droppedVideoFrames) {
+          report.videoFramesPresented += quality.totalVideoFrames - quality.droppedVideoFrames;
+        }
       }
     }
     return report;
@@ -120,6 +129,7 @@
             video.srcObject = new MediaStream([event.track]);
             document.body.appendChild(video);
             group.videos.push(video);
+            pair.videoElement = video;
             void video.play().catch(() => {});
           };
         }
@@ -133,7 +143,8 @@
       await until(async () => {
         const now = await stats(group);
         return now.audioPackets >= count * 12 &&
-          (!videoKind || now.videoFrames >= count * 2);
+          (!videoKind || (now.videoPackets >= count * 12 &&
+            now.videoFramesPresented >= count * 2));
       }, 'RESOURCE_MEDIA_NOT_RECEIVED');
       return group;
     } catch (error) {
@@ -195,7 +206,12 @@
         throw new Error('RESOURCE_UI_NOT_COMMITTED');
       }
     }
-    await pause(Math.max(0, DURATION_MS - (performance.now() - started)));
+    // setTimeout is permitted to wake slightly before its nominal deadline
+    // on CI hosts. Keep waiting until measured elapsed time REALLY reaches
+    // the original 1200 ms gate; never weaken the gate to make a cell green.
+    while (performance.now() - started < DURATION_MS) {
+      await pause(Math.max(2, Math.ceil(DURATION_MS - (performance.now() - started))));
+    }
     const measuredMs = performance.now() - started;
     const after = group ? await stats(group) : null;
     let audio = null;
@@ -219,14 +235,17 @@
               after.rttSamplesMs.length).toFixed(4)) : null,
       };
       if (videoKind) {
-        const framesDecoded = after.videoFrames - before.videoFrames;
-        if (!Number.isFinite(framesDecoded) || framesDecoded < 5) {
-          throw new Error('RESOURCE_VIDEO_FRAMES_NOT_DECODED');
+        const framesPresented = after.videoFramesPresented - before.videoFramesPresented;
+        const receivedVideoPackets = after.videoPackets - before.videoPackets;
+        if (!Number.isFinite(framesPresented) || framesPresented < 5 ||
+            !Number.isFinite(receivedVideoPackets) || receivedVideoPackets < 10) {
+          throw new Error('RESOURCE_VIDEO_RTP_OR_PRESENTED_FRAMES_MISSING');
         }
         video = {
           source: 'synthetic-canvas; not physical camera/OS screen',
-          framesDecoded,
-          decodedFps: Number((framesDecoded * 1000 / measuredMs).toFixed(2)),
+          presentedFrames: framesPresented,
+          receivedVideoPackets,
+          presentedFps: Number((framesPresented * 1000 / measuredMs).toFixed(2)),
         };
       }
     }

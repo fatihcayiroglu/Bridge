@@ -21,10 +21,15 @@ real RTP *before* the CPU interval begins. A paired Electron
 `percentCPUUsage` across the measured interval and an after-interval
 working-set snapshot; CDP `TaskDuration` records renderer main-thread work.
 The report includes all raw intervals, p50/p95 summaries, received RTP and
-decoded video frame counts where applicable.
+**presented** video frames where applicable. Video acceptance requires BOTH
+inbound RTP packets and five genuinely presented frames in the measured
+interval, determined from `HTMLVideoElement.getVideoPlaybackQuality()` minus
+dropped frames; a media packet alone cannot count as a rendered frame.
+This avoids relying on the optional WebRTC `framesDecoded` stats field,
+missing on one observed macOS runner, without accepting unrendered video.
 
 The test is **red** if CPU, renderer RAM, either framework, a scenario, live
-RTP or actual video decode is missing. The contract tests reject a fabricated
+RTP or actually presented video is missing. The contract tests reject a fabricated
 summary and assertions cannot be skipped. First-failure artifacts are kept
 without rerunning failed CI jobs.
 
