@@ -110,7 +110,7 @@ import { uiSurvey } from '../scripts/ios-login-evidence.mjs';
 test('uiSurvey counts element types and reports only allow-listed names, never text or values', () => {
   const src = `<AppiumAUT>${[
     el('WebView', { visible: 'true' }), el('WebView', { visible: 'false' }),
-    el('Button', { name: 'Continue', label: 'Continue' }), el('Button', { name: 'my-secret-name', label: 'tok_abc123' }),
+    el('Button', { name: 'Continue', label: 'Continue' }), el('Button', { name: 'my_secret_name_42', label: 'tok_abc123' }),
     el('StaticText', { value: 'secret text value https://127.0.0.1:8443/x?code=abc' }),
   ].join('')}</AppiumAUT>`;
   const s = uiSurvey(src);
@@ -119,10 +119,23 @@ test('uiSurvey counts element types and reports only allow-listed names, never t
   assert.deepEqual(s.namesPresent, ['Continue']);
   const out = JSON.stringify(s);
   assert.ok(!/secret|tok_abc|code=|127\.0\.0\.1/.test(out));
-  assert.deepEqual(uiSurvey(undefined), { nodes: 0, byType: {}, namesPresent: [], visibleWebViews: 0 });
+  assert.deepEqual(uiSurvey(undefined), { nodes: 0, byType: {}, namesPresent: [], visibleWebViews: 0, plainLabels: [] });
 });
 test('the failure handler prints the survey next to the login evidence', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /facts\.failureUi\.survey = uiSurvey\(s\);/);
   assert.match(s, /survey: facts\.failureUi\.survey, secretGeometry/);
+});
+
+test('uiSurvey plainLabels keeps plain UI words and drops user names, URLs, tokens, long text and duplicates', () => {
+  const src = `<AppiumAUT>${[
+    el('Button', { name: 'Reload', label: 'Reload' }), el('Button', { name: 'Reload', label: 'Reload' }),
+    el('StaticText', { name: 'Safari cannot open the page.', value: 'Safari cannot open the page.' }),
+    el('StaticText', { name: 'and_A_388ccb9f' }), el('StaticText', { name: 'https://127.0.0.1:8443/x' }),
+    el('Button', { name: 'tok_abc123' }), el('StaticText', { name: 'user@example.com' }),
+    el('StaticText', { name: 'a'.repeat(41) }), el('Other', { name: 'Not A Control' }),
+  ].join('')}</AppiumAUT>`;
+  const labels = uiSurvey(src).plainLabels;
+  assert.deepEqual(labels, ['Reload', 'Safari cannot open the page.']);
+  assert.ok(uiSurvey(`<A>${Array.from({ length: 30 }, (_, i) => el('Button', { name: 'Word ' + 'abcdefghijklmnopqrstuvwxyz'[i % 26] + ' x' + 'q'.repeat(i) })).join('')}</A>`).plainLabels.length <= 12);
 });
