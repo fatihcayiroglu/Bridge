@@ -40,3 +40,8 @@ export function anrVerdict(dialog, protectedNames, handled=0) {
   if(!dialog.wait || handled>=MAX_ANR_DIALOGS) return 'ANR_DIALOG_UNHANDLED';
   return 'WAIT';
 }
+
+// `uiautomator dump` can exit 0 without writing the file (e.g. no idle state on a screen that is still
+// loading; run 40682196007). Success is the tool's own confirmation, never the exit code alone.
+export const MAX_UI_DUMP_ATTEMPTS=5;
+export const dumpSucceeded=output=>/UI hierarchy dumped to: \S+/.test(String(output ?? ''));
