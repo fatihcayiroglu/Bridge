@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { enterFocusedPassword, dismissUsernameKeyboard } from '../scripts/ios-password-focus.mjs';
+import { enterFocusedPassword, dismissUsernameKeyboard, NATIVE_TOOLBAR_DONE } from '../scripts/ios-password-focus.mjs';
 
 function driver(states, type = 'XCUIElementTypeSecureTextField') {
   const writes = [], records = [], calls = []; let index = 0;
@@ -63,20 +63,24 @@ test('closed evidence never includes element ids, password, field values or driv
   assert.ok(Object.values(d.records[0]).every(x => typeof x === 'boolean'));
 });
 
-function keyboard(states, failure) {
-  let i = 0; const calls = [], proofs = [];
-  return { calls, proofs, ports: {
-    elements: async (using, type) => { assert.equal(using, 'class name'); assert.equal(type, 'XCUIElementTypeKeyboard');
+function keyboard(states, failure, toolbar = []) {
+  let i = 0; const calls = [], proofs = [], controls = [];
+  return { calls, proofs, controls, ports: {
+    elements: async (using, type) => {
+      if (using === 'xpath') { assert.equal(type, NATIVE_TOOLBAR_DONE); calls.push('observe-toolbar'); return toolbar; }
+      assert.equal(using, 'class name'); assert.equal(type, 'XCUIElementTypeKeyboard');
       calls.push('observe-keyboard'); return Array(states[Math.min(i++, states.length - 1)]).fill({}); },
     native: async method => { calls.push(method); if (failure) throw failure; },
+    command: async (method, route) => { assert.equal(method, 'POST'); assert.equal(route, '/element/toolbar-done/click'); calls.push('toolbar-done-click'); },
     record: p => proofs.push(p),
+    recordControls: p => controls.push(p),
     until: async (probe, label) => { for (let n = 0; n < 4; n++) if (await probe()) return;
       throw Error('MOBILE_AUTH_DEADLINE:' + label); },
   } };
 }
 test('dismisses the actual username keyboard and observes its absence before returning', async () => {
   const k = keyboard([1, 1, 0, 0]); await dismissUsernameKeyboard(k.ports);
-  assert.deepEqual(k.calls, ['observe-keyboard', 'hideKeyboard', 'observe-keyboard', 'observe-keyboard', 'observe-keyboard']);
+  assert.deepEqual(k.calls, ['observe-keyboard', 'observe-toolbar', 'hideKeyboard', 'observe-keyboard', 'observe-keyboard', 'observe-keyboard']);
   assert.equal(k.proofs.slice(0, -1).every(p => p.wasVisible && !p.dismissed), true);
   assert.deepEqual(k.proofs.at(-1), { wasVisible: true, dismissed: true });
 });
@@ -98,4 +102,25 @@ test('a keyboard that appears after an initially absent frame must still be dism
   const k = keyboard([0, 1, 0, 0]); await dismissUsernameKeyboard(k.ports);
   assert.equal(k.calls.filter(x => x === 'hideKeyboard').length, 1);
   assert.deepEqual(k.proofs.at(-1), { wasVisible: true, dismissed: true });
+});
+
+const done = { 'element-6066-11e4-a52e-4f735466cecf': 'toolbar-done' };
+test('uses the uniquely observed native toolbar Done button and still requires keyboard absence', async () => {
+  const k = keyboard([1, 0, 0], undefined, [done]); await dismissUsernameKeyboard(k.ports);
+  assert.equal(k.calls.includes('hideKeyboard'), false);
+  assert.equal(k.calls.filter(x => x === 'toolbar-done-click').length, 1);
+  assert.deepEqual(k.controls, [{ toolbarDoneCount: 1, toolbarDoneSelected: true }]);
+  assert.equal(k.proofs.at(-1).dismissed, true);
+});
+test('ambiguous or invalid toolbar controls never receive a click or bypass the focus gate', async () => {
+  for (const [toolbar, error] of [[[done, done], 'LOGIN_KEYBOARD_DONE_NOT_UNIQUE'], [[{}], 'LOGIN_KEYBOARD_DONE_ID_REQUIRED']]) {
+    const k = keyboard([1], undefined, toolbar); await assert.rejects(dismissUsernameKeyboard(k.ports), new RegExp(error));
+    assert.equal(k.calls.some(x => x === 'toolbar-done-click' || x === 'hideKeyboard'), false);
+    assert.equal(k.proofs.at(-1).dismissed, false);
+  }
+});
+test('a toolbar click that does not hide the keyboard remains a deadline failure', async () => {
+  const k = keyboard([1], undefined, [done]); await assert.rejects(dismissUsernameKeyboard(k.ports), /username-keyboard-dismissed/);
+  assert.equal(k.calls.filter(x => x === 'toolbar-done-click').length, 1);
+  assert.equal(k.proofs.every(p => !p.dismissed), true);
 });

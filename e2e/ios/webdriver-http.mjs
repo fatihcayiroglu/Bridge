@@ -9,6 +9,8 @@ const W3C_ERRORS = new Set([
   'unknown error', 'invalid argument', 'invalid session id', 'session not created',
   'timeout', 'script timeout', 'no such context', 'no such window',
   'no such element', 'javascript error', 'unsupported operation', 'unknown command',
+  'invalid element state', 'element not interactable', 'element click intercepted',
+  'stale element reference', 'invalid selector',
 ]);
 
 export function webdriverRequest(base, method, route, body, timeout = 90_000) {

@@ -1,7 +1,8 @@
 // WDA's iOS /element/active resolves hasKeyboardFocus, unlike the optional
 // page-source focused attribute (absent in run40725593481). Never type a secret
 // on the strength of a click succeeding or of a matching rectangle alone.
-export async function dismissUsernameKeyboard({ elements, native, until, record }) {
+export const NATIVE_TOOLBAR_DONE = '//XCUIElementTypeToolbar//XCUIElementTypeButton[@name="Done" and @visible="true" and @enabled="true"]';
+export async function dismissUsernameKeyboard({ elements, native, command, until, record, recordControls = () => {} }) {
   let wasVisible = false, requested = false, absent = 0;
   await until(async () => {
     const visible = (await elements('class name', 'XCUIElementTypeKeyboard')).length > 0;
@@ -9,7 +10,19 @@ export async function dismissUsernameKeyboard({ elements, native, until, record 
     record({ wasVisible, dismissed: false });
     if (visible) {
       absent = 0;
-      if (!requested) { requested = true; await native('hideKeyboard'); }
+      if (!requested) {
+        requested = true;
+        // WDA's generic hideKeyboard searches keyboard descendants only. Safari
+        // may expose its dismissal button in a separate native accessory toolbar.
+        const done = await elements('xpath', NATIVE_TOOLBAR_DONE);
+        recordControls({ toolbarDoneCount: Math.min(2, done.length), toolbarDoneSelected: done.length === 1 });
+        if (done.length > 1) throw Error('LOGIN_KEYBOARD_DONE_NOT_UNIQUE');
+        if (done.length === 1) {
+          const id = done[0]?.['element-6066-11e4-a52e-4f735466cecf'] ?? done[0]?.ELEMENT;
+          if (typeof id !== 'string' || !id) throw Error('LOGIN_KEYBOARD_DONE_ID_REQUIRED');
+          await command('POST', `/element/${id}/click`, {});
+        } else await native('hideKeyboard');
+      }
       return false;
     }
     return ++absent >= 2;
