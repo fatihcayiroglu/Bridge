@@ -1,0 +1,64 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { enterFocusedPassword } from '../scripts/ios-password-focus.mjs';
+
+function driver(states, type = 'XCUIElementTypeSecureTextField') {
+  const writes = [], records = [], calls = []; let index = 0;
+  return { writes, records, calls, ports: {
+    targetId: 'secure-target', record: r => records.push(r),
+    typePassword: async (id, value) => { calls.push({ method: 'POST', route: '/keyboard' }); writes.push({ route: `/element/${id}/value`, body: { text: value } }); },
+    until: async (probe, label) => {
+      for (let i = 0; i < states.length; i++) { if (await probe()) return; index++; }
+      throw Error('MOBILE_AUTH_DEADLINE:' + label);
+    },
+    command: async (method, route, body) => {
+      calls.push({ method, route });
+      if (route === '/element/active') {
+        if (states[index] instanceof Error) throw states[index];
+        return states[index];
+      }
+      if (route.endsWith('/attribute/type')) return type;
+      if (method === 'POST' && route.endsWith('/value')) writes.push({ route, body });
+      else throw Error('UNEXPECTED_COMMAND');
+    },
+  } };
+}
+const active = id => ({ 'element-6066-11e4-a52e-4f735466cecf': id });
+test('no password command is issued until the exact secure field owns keyboard focus', async () => {
+  const d = driver([active('username'), active('secure-target')]);
+  await enterFocusedPassword(d.ports, 'fixture-secret');
+  assert.deepEqual(d.records, [
+    { activeFound: true, targetMatches: false, secureType: false },
+    { activeFound: true, targetMatches: true, secureType: true },
+  ]);
+  assert.deepEqual(d.writes, [{ route: '/element/secure-target/value', body: { text: 'fixture-secret' } }]);
+  assert.equal(d.calls.at(-1).method, 'POST');
+});
+test('username focus, another secure field, absent and malformed active elements never receive the password', async () => {
+  for (const state of [active('username'), active('other-secure'), {}, null,
+    Error('WebDriver active failed (404; no such element)')]) {
+    const d = driver([state]);
+    await assert.rejects(enterFocusedPassword(d.ports, 'fixture-secret'), /^Error: MOBILE_AUTH_DEADLINE:password-keyboard-focus$/);
+    assert.equal(d.writes.length, 0);
+    assert.deepEqual(d.records[0].secureType, false);
+  }
+});
+test('a matching id without a proven secure type fails closed', async () => {
+  for (const type of ['XCUIElementTypeTextField', undefined, 'SecureTextField']) {
+    const d = driver([active('secure-target')], type);
+    // undefined would otherwise select the fixture default argument.
+    if (type === undefined) d.ports.command = async (_method, route) => route === '/element/active' ? active('secure-target') : undefined;
+    await assert.rejects(enterFocusedPassword(d.ports, 'fixture-secret'), /password-keyboard-focus/);
+    assert.equal(d.writes.length, 0);
+  }
+});
+test('driver transport/authentication failures are not swallowed as missing focus', async () => {
+  const d = driver([Error('WebDriver active transport failed (ECONNRESET)')]);
+  await assert.rejects(enterFocusedPassword(d.ports, 'fixture-secret'), /ECONNRESET/);
+  assert.equal(d.writes.length, 0);
+});
+test('closed evidence never includes element ids, password, field values or driver payloads', async () => {
+  const d = driver([active('secure-target')]); await enterFocusedPassword(d.ports, 'fixture-secret');
+  assert.deepEqual(Object.keys(d.records[0]).sort(), ['activeFound', 'secureType', 'targetMatches']);
+  assert.ok(Object.values(d.records[0]).every(x => typeof x === 'boolean'));
+});

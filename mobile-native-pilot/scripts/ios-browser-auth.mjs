@@ -1,6 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
+import { enterFocusedPassword } from './ios-password-focus.mjs';
 import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -136,8 +137,10 @@ async function signIn(user, expectedPid) {
   await native('tap', centerOf(secretRect));
   facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
   // Element-addressed typing reached the username field in runs 40700229648, 40706730676, 40717519808 and 40725593481,
-  // so type through the keyboard instead; assertUsernameIntact still gates the result.
-  await native('keys', { keys: [password] });
+  // so preserve #553's keyboard typing, but require positive keyboard ownership first.
+  await enterFocusedPassword({ targetId: key(freshSecrets[0]), command, until,
+    typePassword: (_id, value) => native('keys', { keys: [value] }),
+    record: proof => { facts.passwordKeyboardFocus = proof; } }, password);
   assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
   await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
@@ -232,6 +235,7 @@ try {
   facts.status = 'PASS'; facts.stage = 'complete';
 } catch (error) {
   facts.failure = /^[A-Z_]+(?::[a-z-]+)?$/.test(error?.message ?? '') ? error.message : 'DRIVER_OR_SERVICE_FAILED';
+  console.log(`IOS_PASSWORD_FOCUS ${JSON.stringify(facts.passwordKeyboardFocus ?? null)}`);
   if (error?.message?.startsWith('WebDriver ')) facts.driverFailure = error.message;
   // Driver/server messages can contain credentials or callback URLs. Preserve
   // the closed stage, AX counts and screenshots, never raw source/arguments.
