@@ -357,6 +357,13 @@ test('pre-launch Metro probe: records tunnel and device-side /status, prints the
   assert.match(r.stderr, /NATIVE_ANDROID_PRELAUNCH: device_status_body: packager-status:running/);
 });
 
+test('pre-launch Metro probe times with the monotonic clock, never the wall clock', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const block = s.slice(s.indexOf('stage=pre-launch-metro-probe'), s.indexOf('stage=first-launch'));
+  assert.match(block, /\/proc\/uptime/);
+  assert.doesNotMatch(block, /date \+/, 'wall clock can step backwards (CI recorded -355 ms)');
+});
+
 test('pre-launch Metro probe never gates: a failing adb is recorded and the run continues', () => {
   const r = runPrelaunch('echo "error: closed" >&2; exit 1');
   assert.equal(r.status, 0, r.stderr);

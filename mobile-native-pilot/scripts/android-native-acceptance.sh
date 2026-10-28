@@ -82,9 +82,10 @@ function assert_native_marker() {
 stage=pre-launch-metro-probe
 {
   echo "reverse_list: $(adb reverse --list 2>&1 | tr '\n' ' ' || true)"
-  probe_start=$(date +%s%3N)
+  # Monotonic (uptime), not wall clock: CI's wall clock stepped back mid-probe (-355 ms).
+  probe_start=$(awk '{ printf "%d", $1 * 1000 }' /proc/uptime)
   probe_out=$(adb shell 'printf "GET /status HTTP/1.0\r\n\r\n" | toybox nc -w 5 127.0.0.1 8081' 2>&1 || true)
-  echo "device_status_ms=$(( $(date +%s%3N) - probe_start ))"
+  echo "device_status_ms=$(( $(awk '{ printf "%d", $1 * 1000 }' /proc/uptime) - probe_start ))"
   echo "device_status_body: $(printf '%s' "$probe_out" | tail -n 1)"
 } > native-evidence/pre-launch-metro.txt 2>&1 || true
 acceptance_print_tail native-evidence/pre-launch-metro.txt android PRELAUNCH 5
