@@ -20,6 +20,12 @@ import { uploadRoot } from '../lib/runtimePaths';
 import { envSafeInt } from '../lib/envNumbers';
 import { RL_GLOBAL_MAX_DEFAULT } from '../lib/rateLimitDefaults';
 import { BRIDGE_VERSION } from '../lib/version';
+import { loadNativeAuthConfig } from '../lib/nativeAuth';
+
+function nativeAuthFormActionSources(): string[] {
+  const config = loadNativeAuthConfig();
+  return config.enabled ? [...config.formActionSources] : [];
+}
 
 export interface AppBundle {
   app: Application;
@@ -125,7 +131,9 @@ export function createApp(): AppBundle {
           frameSrc:      ["'none'"],
           objectSrc:     ["'none'"],
           baseUri:       ["'self'"],
-          formAction:    ["'self'"],
+          // The native sign-in consent form redirects to the app's configured
+          // redirect address; browsers apply form-action to that redirect.
+          formAction:    ["'self'", ...nativeAuthFormActionSources()],
           workerSrc:     ["'self'", 'blob:'],
           scriptSrcElem: ["'self'", ...sentryCdnHosts, (_req, res) => `'nonce-${(res as Response).locals.cspNonce || ''}'`],
         },
@@ -303,8 +311,17 @@ export function createApp(): AppBundle {
   // could hide API 404s) so the one-time session handoff can be consumed.
   // `/reset-password` is the target of the password-reset email (lib/mailer.ts). It used to
   // fall through to the API 404 JSON, so every reset link was dead (Final21 UX U-01).
-  app.get(['/', '/index.html', '/sso-callback', '/reset-password'], (req: Request, res: Response) => {
+  // `/native-auth` is opened by the Android/iOS app in the system browser; the
+  // shell signs the person in and asks for consent (docs/NATIVE_AUTH.md).
+  app.get(['/', '/index.html', '/sso-callback', '/reset-password', '/native-auth'], (req: Request, res: Response) => {
     if (!fs.existsSync(indexPath)) return res.status(404).end();
+    if (req.path.replace(/\/+$/, '') === '/native-auth') {
+      // A no-referrer document makes a browser form POST send Origin: null.
+      // Preserve strict CORS/CSRF checks with a same-origin-only document
+      // policy. The client removes the query before sign-in/consent; no
+      // cross-origin referrer is sent, and the callback keeps no-referrer.
+      res.setHeader('Referrer-Policy', 'same-origin');
+    }
     let html = fs.readFileSync(indexPath, 'utf-8');
     html = html.replace(/<script(?![^>]*\bnonce=)([^>]*)>/gi, `<script nonce="${res.locals.cspNonce}"$1>`);
 

@@ -26,6 +26,7 @@ import {
   stepUpProofsLocked,
 } from '../lib/stepUp';
 import logger from '../lib/logger';
+import type { AuthenticationDestination } from '../lib/authenticationDestination';
 
 // ── TOTP Implementasyonu (bağımlılıksız) ────────────────────
 function base32Decode(str: string): Buffer {
@@ -327,7 +328,8 @@ router.post('/verify', authMiddleware, limits.twoFactor(), requireStepUp('two_fa
  *                 token: { type: string }
  *       401: { description: Geçersiz kod }
  */
-router.post('/check', limits.twoFactor(), async (req, res) => {
+export function twoFactorLoginHandlers(destination?: AuthenticationDestination): express.RequestHandler[] {
+  return [limits.twoFactor(), async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const { tempToken, code } = body;
   if (typeof tempToken !== 'string' || tempToken.length < 32 || tempToken.length > 128
@@ -381,6 +383,7 @@ router.post('/check', limits.twoFactor(), async (req, res) => {
   }
 
   await Users.setStatus(user._id, 'online');
+  if (destination) return destination.authenticated(req, res, user);
   const token = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
   setRefreshCookie(res, refreshToken);
@@ -394,7 +397,9 @@ router.post('/check', limits.twoFactor(), async (req, res) => {
     stepUp: mintSignInGrants(user, usedBackup ? 'backup_code' : 'totp'),
     ...(usedBackup ? { usedBackup: true, remaining } : {}),
   });
-});
+  }];
+}
+router.post('/check', ...twoFactorLoginHandlers());
 
 // POST /api/2fa/step-up — P7 B2: prove the second factor again for one scope
 /**
@@ -669,3 +674,4 @@ module.exports.__backupCodeMatchesForTest   = backupCodeMatches;
 module.exports.__readBackupCodesForTest     = readBackupCodes;
 module.exports.__totpNowForTest             = totpNow;
 module.exports.__matchingTotpStepForTest    = matchingTotpStep;
+module.exports.twoFactorLoginHandlers = twoFactorLoginHandlers;

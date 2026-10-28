@@ -13,6 +13,9 @@ process.env.JWT_SECRET      = 'test-jwt-secret-long-enough-32chars!!';
 process.env.REFRESH_SECRET  = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV        = 'test';
 process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
+// Exercise the enabled native-router assembly even outside the backend CI job.
+process.env.BASE_URL = 'https://127.0.0.1:8443';
+process.env.NATIVE_AUTH_REDIRECT_URIS = 'com.bridge.nativepilot:/oauth';
 
 import request from 'supertest';
 import type { Request, Response, NextFunction } from 'express';
@@ -90,7 +93,7 @@ const stubRouterWithExport = () => {
   return { __esModule: true, default: router, router, getMemberPerms: async () => 0 };
 };
 
-jest.mock('../routes/auth',              () => stubRouterWithExport());
+jest.mock('../routes/auth',              () => ({ ...stubRouterWithExport(), passwordLoginHandlers: () => [] }));
 jest.mock('../routes/servers',           stubRouter);
 jest.mock('../routes/messages',          stubRouter);
 jest.mock('../routes/upload',            stubRouter);
@@ -131,7 +134,7 @@ jest.mock('../routes/discover', () => ({
 jest.mock('../routes/ai',                stubRouter);
 jest.mock('../routes/activity',          () => stubRouterWithExport());
 jest.mock('../routes/federation/index',  stubRouter);
-jest.mock('../routes/twoFactor',         stubRouter);
+jest.mock('../routes/twoFactor',         () => ({ ...stubRouterWithExport(), twoFactorLoginHandlers: () => [] }));
 jest.mock('../routes/webauthn',          stubRouter);
 jest.mock('../routes/email',             stubRouter);
 jest.mock('../routes/admin',             stubRouter);
@@ -187,6 +190,36 @@ describe('createApp() entegrasyon', () => {
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toMatch(/^text\/html/);
       expect(res.headers['cache-control']).toContain('no-store');
+    });
+
+    it('serves the SPA shell at the native sign-in entry the app opens in the system browser', async () => {
+      const res = await request(app).get('/native-auth?state=x');
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/^text\/html/);
+      expect(res.headers['cache-control']).toContain('no-store');
+      expect(res.headers['referrer-policy']).toBe('same-origin');
+    });
+
+    it('keeps the ordinary document no-referrer policy unchanged', async () => {
+      const res = await request(app).get('/');
+      expect(res.status).toBe(200);
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+    });
+
+    it('mounts isolated native switching separately and refuses an invalid transaction before serving a login', async () => {
+      const res = await request(app).get('/native-auth/switch?state=x');
+      expect(res.status).toBe(400);
+      expect(res.headers['content-type']).toMatch(/^text\/plain/);
+      expect(res.headers['cache-control']).toContain('no-store');
+      expect(res.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('still refuses a null Origin before native consent, even with same-origin fetch metadata', async () => {
+      const res = await request(app).post('/api/refresh/native-authorize')
+        .set('Origin', 'null').set('Sec-Fetch-Site', 'same-origin').type('form').send({});
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: 'Origin not allowed' });
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
     });
 
     it('JSON body parse eder', async () => {

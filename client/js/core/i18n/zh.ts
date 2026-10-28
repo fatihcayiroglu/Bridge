@@ -2450,6 +2450,9 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "没有已安装的机器人或 Webhook",
   "automation_link_exemption_save_failed": "无法保存集成豁免。",
   "automation_link_exemption_saved": "集成豁免已保存。",
+  "native_auth_consent_title": "登录 Bridge 应用？",
+  "native_auth_consent_message": "仅当你在此设备上的 Bridge 应用中发起登录时才继续。应用将以 {name} 身份登录。",
+  "native_auth_consent_continue": "在应用中继续",
 };
 
 export default translations;

@@ -2450,6 +2450,9 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "설치된 봇이나 웹훅이 없습니다",
   "automation_link_exemption_save_failed": "통합 예외를 저장하지 못했습니다.",
   "automation_link_exemption_saved": "통합 예외가 저장되었습니다.",
+  "native_auth_consent_title": "Bridge 앱에 로그인할까요?",
+  "native_auth_consent_message": "이 기기의 Bridge 앱에서 로그인을 시작한 경우에만 계속하세요. 앱은 {name}(으)로 로그인됩니다.",
+  "native_auth_consent_continue": "앱에서 계속",
 };
 
 export default translations;

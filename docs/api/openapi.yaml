@@ -276,6 +276,534 @@ paths:
                     description: Yeni JWT access token
         '401':
           description: Geçersiz veya süresi dolmuş refresh token
+  /refresh/native-authorize:
+    post:
+      tags:
+      - Auth
+      summary: Native sign-in consent (browser form POST, code + PKCE)
+      description: 'Top-level form POST from the Bridge web page, authenticated only by the
+        httpOnly `bridge_refresh` cookie. Answers with a 303 redirect to the exact
+        allowlisted app address (NATIVE_AUTH_REDIRECT_URIS) carrying a single-use, 60 s
+        authorization code and the echoed state. Never returns the code in a body. See
+        docs/NATIVE_AUTH.md.'
+      operationId: nativeAuthorize
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [redirect_uri, code_challenge, code_challenge_method, state]
+              properties:
+                redirect_uri: { type: string }
+                code_challenge: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+                code_challenge_method: { type: string, enum: [S256] }
+                state: { type: string, pattern: '^[A-Za-z0-9_-]{16,128}$' }
+      responses:
+        '303':
+          description: Redirect to the app with code and state
+        '400':
+          description: Unknown redirect address or malformed request (never redirects)
+        '401':
+          description: No valid browser session
+        '403':
+          description: Not a same-origin submission
+        '503':
+          description: Native sign-in not configured or store unavailable
+  /native-auth/switch:
+    servers:
+      - url: /
+    get:
+      tags:
+        - Auth
+      operationId: nativeSwitchBegin
+      summary: Begin isolated native account switching without restoring the existing browser account
+      description: >-
+        HTTPS-only top-level browser entry. Creates a five-minute server-owned transaction and a
+        unique path-bound HttpOnly/Secure/SameSite=Strict cookie. Existing browser sessions cannot
+        satisfy freshness and are unchanged. Password plus required TOTP/backup authentication is
+        supported; isolated WebAuthn/SSO continuation is not yet implemented.
+      security: []
+      parameters:
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Exact registered native redirect URI.
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{43}$
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - S256
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{16,128}$
+      responses:
+        '200':
+          description: >-
+            No-store HTML document for the bound transaction; no ordinary browser token or refresh
+            cookie is issued.
+          content:
+            text/html:
+              schema:
+                type: string
+          headers:
+            Set-Cookie:
+              description: >-
+                Only __Secure-bridge_native_switch, scoped to /native-auth/switch/{id}; not a web
+                login cookie.
+              schema:
+                type: string
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+  /native-auth/switch/{id}/login:
+    servers:
+      - url: /
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Opaque server-created transaction id, bound to its separate cookie, CSRF proof and
+          five-minute absolute expiry.
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+    get:
+      tags:
+        - Auth
+      operationId: nativeSwitchLoginPage
+      summary: Read the bound fresh-login form
+      security:
+        - nativeSwitchCookie: []
+      responses:
+        '200':
+          description: >-
+            No-store HTML document for the bound transaction; no ordinary browser token or refresh
+            cookie is issued.
+          content:
+            text/html:
+              schema:
+                type: string
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+    post:
+      tags:
+        - Auth
+      operationId: nativeSwitchLogin
+      summary: Verify the password through the shared normal authentication policy
+      security:
+        - nativeSwitchCookie: []
+      parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: Exact configured Bridge HTTPS origin. Sec-Fetch-Site, when supplied, must be same-origin.
+          schema:
+            type: string
+            format: uri
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - flow_csrf
+                - username
+                - password
+              properties:
+                flow_csrf:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{43}$
+                  description: >-
+                    CSRF proof from this transaction's server-rendered form; never a native auth
+                    credential.
+                username:
+                  type: string
+                  maxLength: 32
+                password:
+                  type: string
+                  maxLength: 128
+                captchaToken:
+                  type: string
+                  description: >-
+                    Configured CAPTCHA proof; standard h-captcha-response and cf-turnstile-response
+                    form fields are also accepted by the existing middleware.
+      responses:
+        '303':
+          description: >-
+            303 to the next bound native-login stage; for final authorize/cancel, an empty-body
+            redirect to the exact registered app URI. Final redirects use no-referrer. No code is
+            exposed to page JavaScript.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri-reference
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+  /native-auth/switch/{id}/factor:
+    servers:
+      - url: /
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Opaque server-created transaction id, bound to its separate cookie, CSRF proof and
+          five-minute absolute expiry.
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+    get:
+      tags:
+        - Auth
+      operationId: nativeSwitchFactorPage
+      summary: Read the required TOTP or backup-code form
+      security:
+        - nativeSwitchCookie: []
+      responses:
+        '200':
+          description: >-
+            No-store HTML document for the bound transaction; no ordinary browser token or refresh
+            cookie is issued.
+          content:
+            text/html:
+              schema:
+                type: string
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+    post:
+      tags:
+        - Auth
+      operationId: nativeSwitchFactor
+      summary: Verify the required factor against the server-bound challenge
+      security:
+        - nativeSwitchCookie: []
+      parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: Exact configured Bridge HTTPS origin. Sec-Fetch-Site, when supplied, must be same-origin.
+          schema:
+            type: string
+            format: uri
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - flow_csrf
+                - code
+              properties:
+                flow_csrf:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{43}$
+                  description: >-
+                    CSRF proof from this transaction's server-rendered form; never a native auth
+                    credential.
+                code:
+                  type: string
+                  maxLength: 128
+                  description: >-
+                    TOTP or backup code checked by the shared one-use factor verifier. The opaque
+                    challenge stays server-side; submitted challenge replacements are ignored.
+      responses:
+        '303':
+          description: >-
+            303 to the next bound native-login stage; for final authorize/cancel, an empty-body
+            redirect to the exact registered app URI. Final redirects use no-referrer. No code is
+            exposed to page JavaScript.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri-reference
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+  /native-auth/switch/{id}/consent:
+    servers:
+      - url: /
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Opaque server-created transaction id, bound to its separate cookie, CSRF proof and
+          five-minute absolute expiry.
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+    get:
+      tags:
+        - Auth
+      operationId: nativeSwitchConsentPage
+      summary: Read explicit consent naming the freshly verified account
+      security:
+        - nativeSwitchCookie: []
+      responses:
+        '200':
+          description: >-
+            No-store HTML document for the bound transaction; no ordinary browser token or refresh
+            cookie is issued.
+          content:
+            text/html:
+              schema:
+                type: string
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+  /native-auth/switch/{id}/authorize:
+    servers:
+      - url: /
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Opaque server-created transaction id, bound to its separate cookie, CSRF proof and
+          five-minute absolute expiry.
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+    post:
+      tags:
+        - Auth
+      operationId: nativeSwitchAuthorize
+      summary: Consume consent once and redirect with the bound PKCE code and state
+      security:
+        - nativeSwitchCookie: []
+      parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: Exact configured Bridge HTTPS origin. Sec-Fetch-Site, when supplied, must be same-origin.
+          schema:
+            type: string
+            format: uri
+      description: >-
+        Atomically consumes the authenticated phase, rechecks tokenVersion, and issues the existing
+        one-time native PKCE code. Concurrent replays have one winner. Submitted redirect, state and
+        challenge replacements are ignored. Clears only this native transaction cookie.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - flow_csrf
+              properties:
+                flow_csrf:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{43}$
+                  description: >-
+                    CSRF proof from this transaction's server-rendered form; never a native auth
+                    credential.
+      responses:
+        '303':
+          description: >-
+            303 to the next bound native-login stage; for final authorize/cancel, an empty-body
+            redirect to the exact registered app URI. Final redirects use no-referrer. No code is
+            exposed to page JavaScript.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri-reference
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+  /native-auth/switch/{id}/cancel:
+    servers:
+      - url: /
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Opaque server-created transaction id, bound to its separate cookie, CSRF proof and
+          five-minute absolute expiry.
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+    post:
+      tags:
+        - Auth
+      operationId: nativeSwitchCancel
+      summary: Consume and cancel the transaction while preserving ordinary browser sessions
+      security:
+        - nativeSwitchCookie: []
+      parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: Exact configured Bridge HTTPS origin. Sec-Fetch-Site, when supplied, must be same-origin.
+          schema:
+            type: string
+            format: uri
+      description: >-
+        Atomically consumes the current phase and redirects to the bound native URI with
+        error=access_denied and the original state. No code is issued. Clears only this native
+        transaction cookie.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - flow_csrf
+              properties:
+                flow_csrf:
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]{43}$
+                  description: >-
+                    CSRF proof from this transaction's server-rendered form; never a native auth
+                    credential.
+      responses:
+        '303':
+          description: >-
+            303 to the next bound native-login stage; for final authorize/cancel, an empty-body
+            redirect to the exact registered app URI. Final redirects use no-referrer. No code is
+            exposed to page JavaScript.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri-reference
+        default:
+          description: >-
+            Refused or unavailable: 400 malformed input or policy challenge; 401 invalid credentials
+            or revoked identity; 403 origin/CSRF/email policy; 410 absent, expired or consumed
+            transaction; 413 oversized form; 429 rate limit; 503 disabled native auth, non-HTTPS
+            origin or authoritative-store uncertainty. No authorization code or ordinary web session
+            is returned.
+  /native-auth/token:
+    post:
+      tags:
+      - Auth
+      summary: Exchange a native authorization code (PKCE S256) for tokens
+      operationId: nativeAuthToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant_type, code, code_verifier, redirect_uri]
+              properties:
+                grant_type: { type: string, enum: [authorization_code] }
+                code: { type: string }
+                code_verifier: { type: string, minLength: 43, maxLength: 128 }
+                redirect_uri: { type: string }
+      responses:
+        '200':
+          description: Access token, rotating refresh token and the account (no cookies, no-store)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token_type: { type: string, enum: [Bearer] }
+                  access_token: { type: string }
+                  expires_in: { type: integer }
+                  refresh_token: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '400':
+          description: invalid_request or invalid_grant (the code is consumed by any attempt)
+        '503':
+          description: temporarily_unavailable
+  /native-auth/refresh:
+    post:
+      tags:
+      - Auth
+      summary: Rotate a native refresh token
+      description: Same rotation and reuse detection as /refresh, but the successor is returned
+        in the body and cookies are neither read nor set.
+      operationId: nativeAuthRefresh
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string, maxLength: 512 }
+      responses:
+        '200':
+          description: New access token and the rotated refresh token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token_type: { type: string, enum: [Bearer] }
+                  access_token: { type: string }
+                  expires_in: { type: integer }
+                  refresh_token: { type: string }
+        '400':
+          description: invalid_request
+        '401':
+          description: invalid_grant with reason reuse | expired | revoked | not_found | user_not_found
+        '503':
+          description: temporarily_unavailable (the token may or may not have been consumed)
   /logout:
     post:
       tags:
@@ -10870,6 +11398,14 @@ paths:
       operationId: get_federation_fetch_remote
 components:
   securitySchemes:
+    nativeSwitchCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-bridge_native_switch
+      description: >-
+        Separate short-lived native transaction cookie. Cookie, phase and five-minute lifetime are
+        verified on every read; mutations additionally require the bound form CSRF proof and exact HTTPS
+        Origin. Ordinary web sessions and bearer tokens cannot authenticate this flow.
     bearerAuth:
       type: http
       scheme: bearer

@@ -1,0 +1,75 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createEncryptedOutboxJournal } from '../src/encrypted-outbox-journal.mjs';
+import { sqliteTestPort } from './sqlite-test-port.mjs';
+const keyHex = 'a'.repeat(64);
+const row = { id: 'stable-ack', serverId: 's1', channelId: 'c1', content: 'fixture only' };
+const file = () => join(mkdtempSync(join(tmpdir(), 'bridge-journal-')), 'test.db');
+test('missing SQLCipher fails closed; invalid keys cannot enter PRAGMA text', async () => {
+  const db = sqliteTestPort(file(), false);
+  await assert.rejects(createEncryptedOutboxJournal({ db, keyHex }), /SQLCIPHER_REQUIRED/);
+  await assert.rejects(createEncryptedOutboxJournal({ db, keyHex: "' injected" }), /INVALID_DATABASE_KEY/);
+  await db.closeAsync();
+});
+test('SQLite journal serializes duplicate append and rejects changed payload for the same ackId', async () => {
+  const journal = await createEncryptedOutboxJournal({ db: sqliteTestPort(file()), keyHex });
+  await Promise.all([journal.append(row), journal.append(row)]);
+  assert.equal((await journal.list()).length, 1);
+  await assert.rejects(journal.append({ ...row, content: 'different' }), /IDEMPOTENCY_CONFLICT/);
+  await assert.rejects(journal.mark(row.id, 'confirmed', 'fake'), /INVALID_TRANSITION/);
+  await journal.mark(row.id, 'sending');
+  await assert.rejects(journal.remove(row.id), /OUTCOME_UNRESOLVED/);
+  await journal.mark(row.id, 'confirmed', 'real-server-id');
+  await journal.close();
+});
+test('process exit after committed sending state recovers the original ackId as unconfirmed (SQLite semantics)', async () => {
+  const path = file(), script = `${path}.mjs`;
+  writeFileSync(script, `import {createEncryptedOutboxJournal} from ${JSON.stringify(new URL('../src/encrypted-outbox-journal.mjs', import.meta.url).href)};
+    import {sqliteTestPort} from ${JSON.stringify(new URL('./sqlite-test-port.mjs', import.meta.url).href)};
+    const j=await createEncryptedOutboxJournal({db:sqliteTestPort(${JSON.stringify(path)}),keyHex:${JSON.stringify(keyHex)}});
+    await j.append(${JSON.stringify(row)});await j.mark('stable-ack','sending');process.exit(0);`);
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 5000 });
+  assert.equal(child.status, 0, child.stderr);
+  const restored = await createEncryptedOutboxJournal({ db: sqliteTestPort(path), keyHex });
+  const rows = await restored.list();
+  assert.equal(rows.length, 1); assert.equal(rows[0].id, row.id); assert.equal(rows[0].status, 'unconfirmed');
+  await restored.mark(row.id, 'queued'); await restored.mark(row.id, 'sending'); await restored.mark(row.id, 'confirmed', 'canonical');
+  await restored.close();
+});
+test('account databases isolate identical ackIds and preserve confirmations across reopening', async () => {
+  const aPath = file(), bPath = file();
+  const a = await createEncryptedOutboxJournal({ db: sqliteTestPort(aPath), keyHex });
+  const b = await createEncryptedOutboxJournal({ db: sqliteTestPort(bPath), keyHex });
+  await a.append(row); await b.append({ ...row, content: 'account B' });
+  await a.mark(row.id, 'sending'); await a.mark(row.id, 'confirmed', 'server-A');
+  assert.equal((await b.list())[0].content, 'account B'); await a.close(); await b.close();
+  const again = await createEncryptedOutboxJournal({ db: sqliteTestPort(aPath), keyHex });
+  assert.equal((await again.list())[0].messageId, 'server-A'); await again.close();
+});
+test('capacity compaction removes only oldest server-confirmed receipts and never uncertain messages', async () => {
+  const path = file(), journal = await createEncryptedOutboxJournal({ db: sqliteTestPort(path), keyHex });
+  for (let i = 0; i < 100; i++) {
+    const id = `ack-${i}`;
+    await journal.append({ ...row, id });
+    if (i === 4) { await journal.mark(id, 'sending'); await journal.mark(id, 'unconfirmed'); }
+    else if (i !== 9) { await journal.mark(id, 'sending'); await journal.mark(id, 'confirmed', `server-${i}`); }
+  }
+  await assert.rejects(journal.append({ ...row, id: 'ack-new' }), /OUTBOX_FULL/);
+  const removed = await journal.pruneConfirmed(25);
+  assert.deepEqual(removed, Array.from({ length: 100 }, (_, i) => i).filter(i => i !== 4 && i !== 9).slice(0, 25).map(i => `ack-${i}`));
+  assert.equal((await journal.list()).length, 75);
+  assert.equal((await journal.list()).find(value => value.id === 'ack-4').status, 'unconfirmed');
+  assert.equal((await journal.list()).find(value => value.id === 'ack-9').status, 'queued');
+  await journal.append({ ...row, id: 'ack-new' });
+  await journal.close();
+  const restored = await createEncryptedOutboxJournal({ db: sqliteTestPort(path), keyHex });
+  assert.equal((await restored.list()).length, 76);
+  assert.equal((await restored.list()).find(value => value.id === 'ack-4').status, 'unconfirmed');
+  assert.deepEqual(await restored.pruneConfirmed(0), []);
+  await restored.close();
+});

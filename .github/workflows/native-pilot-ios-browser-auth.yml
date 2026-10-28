@@ -1,0 +1,172 @@
+name: Native iOS system browser PKCE acceptance
+on:
+  pull_request:
+    paths: ['mobile-native-pilot/**', 'server/**', 'e2e/ios/**', '.github/workflows/native-pilot-ios-browser-auth.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ios-system-browser:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      NODE_ENV: development
+      HOST: 127.0.0.1
+      PORT: '3001'
+      BASE_URL: https://127.0.0.1:8443
+      ALLOWED_ORIGINS: https://127.0.0.1:8443
+      BRIDGE_IT_ORIGIN: https://127.0.0.1:8443
+      NATIVE_AUTH_REDIRECT_URIS: com.bridge.nativepilot:/oauth
+      EXPO_PUBLIC_BRIDGE_ORIGIN: https://127.0.0.1:8443
+      EXPO_PUBLIC_NATIVE_SELF_TEST: '0'
+      CI: '1'
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      # First run 40672704969 stalled at 24% of the 10.4 MB release archive,
+      # then curl failed (56). RN's supported setting selects Maven Central's
+      # other official TLS endpoint, retaining vendor checksum validation.
+      ENTERPRISE_REPOSITORY: https://repo.maven.apache.org/maven2
+      MAX_REG_PER_HOUR: '1000'
+      RL_REGISTER_MAX: '1000'
+      RL_LOGIN_MAX: '1000'
+      RL_REFRESH_MAX: '1000'
+      FEDERATION_ENABLED: 'false'
+      AI_PROVIDER: none
+      MOBILE_AUTH_EVIDENCE: ${{ github.workspace }}/mobile-auth-evidence
+      BRIDGE_IT_PROXY_EVIDENCE: ${{ github.workspace }}/mobile-auth-evidence/proxy.log
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Exact dependencies and existing WebDriver contracts
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
+        run: |
+          mkdir -p mobile-auth-evidence
+          git rev-parse HEAD > mobile-auth-evidence/head.txt
+          node --input-type=module -e 'import fs from "node:fs";fs.writeFileSync("mobile-auth-evidence/ios-browser-auth.json",JSON.stringify({category:"AUTOMATED / IOS SIMULATOR / DEBUG",status:"NOT EXECUTED",stage:"prerequisites",cases:[],notExecuted:["IOS_SYSTEM_BROWSER_CANCEL","IOS_AUTHENTICATE_RESTART_ROTATE","IOS_SWITCH_ISOLATE_REVOKE_RESTART"],skipped:0},null,2))'
+          node --test e2e/ios/webdriver-http.test.js
+          npm ci --no-fund
+          npm ci --prefix server --no-fund
+          npm ci --prefix mobile-native-pilot --no-fund
+          npm ci --prefix e2e/ios --no-fund
+          npm audit --audit-level=high
+          npm audit --prefix server --audit-level=high
+          npm audit --prefix mobile-native-pilot --audit-level=low
+          npm audit --prefix e2e/ios --audit-level=low
+      - name: New disposable PostgreSQL16 and Redis services
+        run: |
+          brew list --versions postgresql@16 || brew install postgresql@16
+          brew list --versions redis || brew install redis
+          task_pg_bin="$(brew --prefix postgresql@16)/bin"
+          task_redis_bin="$(brew --prefix redis)/bin"
+          task_pg_dir="$RUNNER_TEMP/bridge-mobile-pg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          task_redis_dir="$RUNNER_TEMP/bridge-mobile-redis-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$task_pg_dir"
+          test ! -e "$task_redis_dir"
+          umask 077
+          task_password=$(openssl rand -hex 24)
+          echo "::add-mask::$task_password"
+          printf '%s\n' "$task_password" > "$RUNNER_TEMP/bridge-mobile-pg-password"
+          "$task_pg_bin/initdb" -D "$task_pg_dir" -U bridge_mobile --auth-local=scram-sha-256 --auth-host=scram-sha-256 --pwfile="$RUNNER_TEMP/bridge-mobile-pg-password"
+          "$task_pg_bin/pg_ctl" -D "$task_pg_dir" -l "$RUNNER_TEMP/bridge-mobile-pg.log" -o '-h 127.0.0.1 -p 55432' -w start
+          PGPASSWORD="$task_password" "$task_pg_bin/createdb" -h 127.0.0.1 -p 55432 -U bridge_mobile bridge_mobile_native
+          PGPASSWORD="$task_password" "$task_pg_bin/psql" -h 127.0.0.1 -p 55432 -U bridge_mobile -d bridge_mobile_native -Atc 'SHOW server_version_num' > mobile-auth-evidence/postgres-version.txt
+          grep -Eq '^16[0-9]{4}$' mobile-auth-evidence/postgres-version.txt
+          echo "DATABASE_URL=postgresql://bridge_mobile:$task_password@127.0.0.1:55432/bridge_mobile_native" >> "$GITHUB_ENV"
+          echo "MOBILE_PG_DIR=$task_pg_dir" >> "$GITHUB_ENV"
+          mkdir -p "$task_redis_dir"
+          "$task_redis_bin/redis-server" --bind 127.0.0.1 --port 16379 --dir "$task_redis_dir" --save '' --appendonly no --daemonize yes --pidfile "$RUNNER_TEMP/bridge-mobile-redis.pid"
+          "$task_redis_bin/redis-cli" -h 127.0.0.1 -p 16379 ping > mobile-auth-evidence/redis-ping.txt
+          grep -qx PONG mobile-auth-evidence/redis-ping.txt
+          echo 'REDIS_URL=redis://127.0.0.1:16379/0' >> "$GITHUB_ENV"
+      - name: Ephemeral TLS and authentication secrets
+        run: |
+          umask 077
+          for key in JWT_SECRET REFRESH_SECRET BRIDGE_MOBILE_PASSWORD; do
+            value=$(openssl rand -hex 24)
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=Bridge mobile disposable CA' -keyout "$RUNNER_TEMP/mobile-ca.key" -out "$RUNNER_TEMP/mobile-ca.crt" 2>/dev/null
+          openssl req -newkey rsa:2048 -nodes -subj '/CN=127.0.0.1' -keyout "$RUNNER_TEMP/mobile-server.key" -out "$RUNNER_TEMP/mobile-server.csr" 2>/dev/null
+          printf 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "$RUNNER_TEMP/mobile-ext.cnf"
+          openssl x509 -req -in "$RUNNER_TEMP/mobile-server.csr" -CA "$RUNNER_TEMP/mobile-ca.crt" -CAkey "$RUNNER_TEMP/mobile-ca.key" -CAcreateserial -days 1 -extfile "$RUNNER_TEMP/mobile-ext.cnf" -out "$RUNNER_TEMP/mobile-server.crt" 2>/dev/null
+          echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/mobile-ca.crt" >> "$GITHUB_ENV"
+          echo "IT_TLS_KEY=$RUNNER_TEMP/mobile-server.key" >> "$GITHUB_ENV"
+          echo "IT_TLS_CERT=$RUNNER_TEMP/mobile-server.crt" >> "$GITHUB_ENV"
+      - name: Build and start the actual Bridge HTTPS backend
+        run: |
+          npm run build --prefix server
+          npm run build
+          node server/dist/db/postgres/index.js > mobile-auth-evidence/schema.log 2>&1
+          (cd server && node dist/index.js) > "$RUNNER_TEMP/mobile-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/mobile-server.pid"
+          node mobile-native-pilot/scripts/integration-https-proxy.mjs > mobile-auth-evidence/proxy.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/mobile-proxy.pid"
+          for i in $(seq 1 60); do curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > mobile-auth-evidence/health.json && break; sleep 1; done
+          curl --cacert "$NODE_EXTRA_CA_CERTS" -fsS "$BRIDGE_IT_ORIGIN/api/health" > mobile-auth-evidence/health.json
+      - name: Integrity-pinned React Native prebuilt artifacts (SHA-512, bounded, fail-closed)
+        working-directory: mobile-native-pilot
+        run: node scripts/prefetch-ios-prebuilt.mjs
+      - name: Build the real normal-screen iOS app
+        working-directory: mobile-native-pilot
+        run: |
+          set -o pipefail
+          test -d /Applications/Xcode_26.3.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          xcodebuild -version > ../mobile-auth-evidence/xcode-version.txt
+          swift --version > ../mobile-auth-evidence/swift-version.txt
+          npx expo prebuild --platform ios --no-install
+          (cd ios && pod install) 2>&1 | tee ../mobile-auth-evidence/pods.log
+          grep -q ASWebAuthenticationSession node_modules/expo-web-browser/ios/WebAuthSession.swift
+          workspace=$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)
+          xcodebuild -workspace "$workspace" -list -json > "$RUNNER_TEMP/mobile-schemes.json"
+          scheme=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(s for s in d["workspace"]["schemes"] if s.startswith("Bridge")))' "$RUNNER_TEMP/mobile-schemes.json")
+          xcodebuild -workspace "$workspace" -scheme "$scheme" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/bridge-system-auth-ios" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build 2>&1 | tee ../mobile-auth-evidence/ios-build.log
+          app=$(find "$RUNNER_TEMP/bridge-system-auth-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$app"
+          codesign --verify --strict "$app"
+          echo "IOS_APP_PATH=$app" >> "$GITHUB_ENV"
+      - name: Boot isolated simulator and trust only the generated test CA
+        run: |
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/mobile-simulators.json"
+          udid=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))' "$RUNNER_TEMP/mobile-simulators.json")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl keychain "$udid" add-root-cert "$NODE_EXTRA_CA_CERTS"
+          xcrun simctl install "$udid" "$IOS_APP_PATH"
+          echo "IOS_SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          (cd mobile-native-pilot && npx expo start --localhost --port 8081) > "$RUNNER_TEMP/mobile-metro.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/mobile-metro.pid"
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8081/status && break; sleep 1; done
+          curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
+      - name: Prebuild WebDriverAgent (own bounded step; compile time is not test time)
+        timeout-minutes: 25
+        run: bash mobile-native-pilot/scripts/prebuild-wda.sh
+      - name: Actual system-browser sign-in, OS callback, protected restore and revocation
+        run: bash mobile-native-pilot/scripts/run-ios-browser-auth.sh
+      - name: Stop only owned test services
+        if: always()
+        run: |
+          for file in "$RUNNER_TEMP/mobile-server.pid" "$RUNNER_TEMP/mobile-proxy.pid" "$RUNNER_TEMP/mobile-metro.pid" "$RUNNER_TEMP/bridge-mobile-redis.pid"; do
+            if test -f "$file"; then kill "$(cat "$file")" 2>/dev/null || true; fi
+          done
+          if test -n "${MOBILE_PG_DIR:-}" && test -f "$MOBILE_PG_DIR/postmaster.pid"; then
+            "$(brew --prefix postgresql@16)/bin/pg_ctl" -D "$MOBILE_PG_DIR" -w stop
+          fi
+      - name: Key evidence in the job log (readable from the end of the log)
+        if: always()
+        run: node mobile-native-pilot/scripts/ios-evidence-summary.mjs mobile-auth-evidence || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-system-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: mobile-auth-evidence/
+          if-no-files-found: error
+          retention-days: 7

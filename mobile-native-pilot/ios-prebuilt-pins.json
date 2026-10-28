@@ -1,0 +1,37 @@
+{
+  "reactNativeVersion": "0.86.0",
+  "hermesVersion": "250829098.0.14",
+  "provenance": "SHA-512 values are the .sha512 files published beside each artifact on Maven Central (fetched over TLS from repo.maven.apache.org on 2026-10-28). The artifact bytes were NOT independently hashed when pinned; the first CI run that downloads them is the first byte-level check, and a mismatch fails closed. Hermes digests were fetched the same way from repo1.maven.org on 2026-10-28 (bytes likewise not independently hashed).",
+  "artifacts": {
+    "reactnative-core-0.86.0-debug.tar.gz": {
+      "defaultBase": "https://repo.maven.apache.org/maven2",
+      "path": "com/facebook/react/react-native-artifacts/0.86.0/react-native-artifacts-0.86.0-reactnative-core-debug.tar.gz",
+      "sha512": "d8d085def01fda5a1b60b6aaa56330d291265c282d561c8ba03e69d5ccec5d70acf48b99f4e669e52b5bc7f9c59786f888460e2e4a24ba1e68ac3b67070f1ed6"
+    },
+    "reactnative-core-0.86.0-release.tar.gz": {
+      "defaultBase": "https://repo.maven.apache.org/maven2",
+      "path": "com/facebook/react/react-native-artifacts/0.86.0/react-native-artifacts-0.86.0-reactnative-core-release.tar.gz",
+      "sha512": "61c14f4b72282af190ea09f19e32bc5031926d86be859bf9ebb7a8bed11fc54d17e9a55e2bf25472b2482265232e00620f404ae0997360316b081fbddd429f23"
+    },
+    "reactnative-dependencies-0.86.0-debug.tar.gz": {
+      "defaultBase": "https://repo.maven.apache.org/maven2",
+      "path": "com/facebook/react/react-native-artifacts/0.86.0/react-native-artifacts-0.86.0-reactnative-dependencies-debug.tar.gz",
+      "sha512": "8a1c1d4c75d450178869d41615b85fcfb0be5965783f56ca4eeffd15b1a851a58646ba24ddb8138c16925efbdc53a25a7fa5740a928ed02c6c569cce0fa5dcfa"
+    },
+    "reactnative-dependencies-0.86.0-release.tar.gz": {
+      "defaultBase": "https://repo.maven.apache.org/maven2",
+      "path": "com/facebook/react/react-native-artifacts/0.86.0/react-native-artifacts-0.86.0-reactnative-dependencies-release.tar.gz",
+      "sha512": "0a4503d29fe4e3d548113a2adec1a9c625a8956a53d01080ede99ad70bcf7ac58f59c9f8350860aa552ef8c8d35d8134d6065f007a194154c4e88ce97fe383bb"
+    },
+    "hermes-ios-250829098.0.14-debug.tar.gz": {
+      "defaultBase": "https://repo1.maven.org/maven2",
+      "path": "com/facebook/hermes/hermes-ios/250829098.0.14/hermes-ios-250829098.0.14-hermes-ios-debug.tar.gz",
+      "sha512": "5d07d99ed5f98957b2e0494b93496f7de6117868908b8649074fe17acb575135f574ccff9f79dfdbdf4006004c500b155f62fcf657a09967407ef20efac4f444"
+    },
+    "hermes-ios-250829098.0.14-release.tar.gz": {
+      "defaultBase": "https://repo1.maven.org/maven2",
+      "path": "com/facebook/hermes/hermes-ios/250829098.0.14/hermes-ios-250829098.0.14-hermes-ios-release.tar.gz",
+      "sha512": "60b3d64135e082279e809aa532dcb05d469cc735d21fdeb68a5e0e8e4fac12d1ea3554afd21f2b43055daaf229ef553ac182509edf166e53416a89c25a8c891c"
+    }
+  }
+}
