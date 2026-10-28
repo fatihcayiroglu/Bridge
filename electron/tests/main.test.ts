@@ -23,7 +23,7 @@ afterAll(() => { for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, f
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-async function loadMain(options: { packaged?: boolean; serverOrigin?: string | null; argv?: string[] } = {}): Promise<Loaded> {
+async function loadMain(options: { packaged?: boolean; serverOrigin?: string | null; argv?: string[]; displaySize?: { width: number; height: number } } = {}): Promise<Loaded> {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-desktop-test-'));
   tempDirs.push(userData);
   if (options.serverOrigin) {
@@ -36,6 +36,7 @@ async function loadMain(options: { packaged?: boolean; serverOrigin?: string | n
     jest.isolateModules(() => {
       const electron = require('electron');
       electron.app.getPath.mockImplementation(() => userData);
+      electron.screen.getPrimaryDisplay.mockReturnValue({ workAreaSize: options.displaySize ?? { width: 1920, height: 1040 }, scaleFactor: 1 });
       electron.app.isPackaged = options.packaged ?? false;
       const main = require('../main');
       loaded = { electron, main, userData };
@@ -114,6 +115,32 @@ describe('first run — connect to a server', () => {
     expect(JSON.parse(fs.readFileSync(path.join(userData, 'desktop-settings.json'), 'utf8'))).toEqual({ serverOrigin: 'https://chat.example.com' });
     expect(mainWindowOf(electron).loadURL).toHaveBeenCalledWith('https://chat.example.com');
     expect(connect.close).toHaveBeenCalled();
+  });
+});
+
+describe('adaptive native window startup', () => {
+  it('keeps the real connect window fully within a small laptop work area', async () => {
+    const { electron } = await loadMain({ displaySize: { width: 480, height: 420 } });
+    expect(connectWindowOf(electron).options).toMatchObject({
+      width: 480, height: 420, resizable: false, maximizable: false,
+    });
+    expect(electron.screen.getPrimaryDisplay).toHaveBeenCalled();
+  });
+
+  it('fits the actual main window to 720p work area without off-screen minimum bounds', async () => {
+    const { electron } = await loadMain({ serverOrigin: 'https://chat.example.com',
+      displaySize: { width: 1024, height: 680 } });
+    expect(mainWindowOf(electron).options).toMatchObject({
+      width: 1024, height: 680, minWidth: 900, minHeight: 600,
+    });
+  });
+
+  it('retains comfortable defaults on 4K displays without double DPI scaling', async () => {
+    const { electron } = await loadMain({ serverOrigin: 'https://chat.example.com',
+      displaySize: { width: 3840, height: 2160 } });
+    expect(mainWindowOf(electron).options).toMatchObject({
+      width: 1280, height: 800, minWidth: 900, minHeight: 600,
+    });
   });
 });
 

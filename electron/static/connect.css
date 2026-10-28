@@ -17,6 +17,10 @@ html, body { height: 100%; margin: 0; }
 body {
   display: grid;
   place-items: center;
+  min-height: 100%;
+  height: auto;
+  padding: 16px;
+  overflow: auto;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
