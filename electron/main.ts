@@ -13,7 +13,7 @@
 
 import {
   app, BrowserWindow, dialog, shell, Menu, Tray,
-  Notification, nativeImage, session, ipcMain, net,
+  Notification, nativeImage, session, ipcMain, net, screen,
 } from 'electron';
 import {
   checkForBridgeUpdates,
@@ -27,6 +27,7 @@ import { getAppOrigin, isAllowedExternalUrl, isSameAppOrigin, setAppOrigin } fro
 import { nativeText, normalizeNativeLocale, type NativeTextKey } from './nativeLocale';
 import { ipcSenderUrl, isTrustedIpcSender } from './ipcSecurity';
 import { normalizeServerUrl, readDesktopSettings, writeDesktopSettings, type ServerUrlRejection } from './desktopSettings';
+import { fitInitialWindowToDisplay } from './windowSizing';
 
 let mainWindow: BrowserWindow | null = null;
 let connectWindow: BrowserWindow | null = null;
@@ -280,8 +281,7 @@ function openConnectWindow(): void {
     return;
   }
   connectWindow = new BrowserWindow({
-    width: 520,
-    height: 600,
+    ...fitInitialWindowToDisplay(screen.getPrimaryDisplay().workAreaSize, { width: 520, height: 600 }),
     resizable: false,
     maximizable: false,
     title: 'Bridge',
@@ -343,10 +343,8 @@ function installSessionPolicies(): void {
 
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
+    ...fitInitialWindowToDisplay(screen.getPrimaryDisplay().workAreaSize,
+      { width: 1280, height: 800, minWidth: 900, minHeight: 600 }),
     title: 'Bridge',
     backgroundColor: '#0c0e1a',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
