@@ -2,7 +2,7 @@ import type { PkceAttempt } from './pkce.mjs';
 
 export type BrowserSignInCode =
   | 'INVALID_ORIGIN' | 'INVALID_ADAPTER' | 'BROWSER_FAILED' | 'SUPERSEDED'
-  | 'CANCELLED' | 'BAD_CALLBACK' | 'STATE_MISMATCH' | 'DENIED';
+  | 'CANCELLED' | 'BAD_CALLBACK' | 'STATE_MISMATCH' | 'DENIED' | 'PKCE_FAILED';
 
 export declare class BrowserSignInError extends Error {
   readonly code: BrowserSignInCode;

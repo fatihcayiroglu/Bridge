@@ -241,6 +241,12 @@ export function createSessionCoordinator({ credentials, authApi, createReadApi }
     const previousUser = userId;
     const mine = begin(PHASES.RESTORING); // not usable until it is persisted
     emit();
+    // Subscribers may synchronously sign out or start another account. Their
+    // storage operation is already queued; do not enqueue an older write after it.
+    if (!current(mine)) {
+      discard(issued.refreshToken);
+      throw new SessionError('SUPERSEDED');
+    }
     try {
       await credentials.writeToken(issued.refreshToken);
     } catch {

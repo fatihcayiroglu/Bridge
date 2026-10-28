@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import crypto from 'node:crypto';
 import { createPkceAttempt } from '../src/pkce.mjs';
 import { createBrowserSignIn } from '../src/browser-sign-in.mjs';
+import { createBrowserSessionSignIn } from '../src/browser-session.mjs';
 import { createNativeAuthApi } from '../src/native-auth-api.mjs';
 import { createSessionCoordinator } from '../src/session-coordinator.mjs';
 import { createNativeCredentialPort } from '../src/native-credential-port.mjs';
@@ -122,9 +123,11 @@ function app(store = memoryStore()) {
 }
 
 async function signIn(profile, a = app()) {
-  const callback = await browserFor(profile).start();
-  const issued = await a.authApi.exchangeCode(callback);
-  await a.coordinator.signIn(issued);
+  let callback, issued;
+  await createBrowserSessionSignIn({ coordinator: a.coordinator,
+    browser: { start: async () => { callback = await browserFor(profile).start(); return callback; } },
+    authApi: { ...a.authApi, exchangeCode: async input => { issued = await a.authApi.exchangeCode(input); return issued; } },
+  })();
   return { ...a, issued, callback };
 }
 
@@ -149,6 +152,44 @@ test('sign-in: consent → exchange → session; the server names the same accou
   assert.equal(s.coordinator.getSession().token, s.issued.accessToken);
   assert.match(s.issued.refreshToken, /^[0-9a-f]{96}$/);
 });
+
+for (const transition of ['sign-out', 'account-switch']) {
+  test(`late code-exchange response after ${transition}: never stored, orphan revoked on real backend`, async () => {
+    const a = await browserRegister(transition === 'sign-out' ? 'lateout' : 'lateacct');
+    const b = transition === 'account-switch' ? await browserRegister('lateother') : null;
+    const s = app();
+    let release, notify, rejectReceived, stale;
+    const held = new Promise(resolve => { release = resolve; });
+    const received = new Promise((resolve, reject) => { notify = resolve; rejectReceived = reject; });
+    const pending = createBrowserSessionSignIn({ coordinator: s.coordinator, browser: browserFor(a),
+      authApi: { ...s.authApi, exchangeCode: async callback => {
+        try { stale = await s.authApi.exchangeCode(callback); }
+        catch (error) { rejectReceived(error); throw error; }
+        notify();
+        await held;
+        return stale;
+      } },
+    })();
+    const outcome = pending.then(value => ({ value }), error => ({ error }));
+    await received;
+    let currentToken;
+    try {
+      if (b) { await signIn(b, s); currentToken = s.store.stored(); }
+      else await s.coordinator.signOut();
+    } finally { release(); }
+    const result = await outcome;
+    assert.equal(result.error?.code, 'SUPERSEDED');
+    assert.equal(s.store.stored(), b ? currentToken : null);
+    assert.equal(s.coordinator.getState().userId, b ? b.userId : null);
+    // This reaches the real server: the discarded session must be unusable.
+    await assert.rejects(s.authApi.refresh(stale.refreshToken), error => error.code === 'INVALID_GRANT');
+    if (b) {
+      assert.equal((await s.read.getMe()).id, b.userId);
+      assert.ok(await s.coordinator.refreshAfterUnauthorized(s.coordinator.getSession()));
+      assert.equal((await s.read.getMe()).id, b.userId, 'orphan revocation must not revoke B');
+    } else assert.equal(s.coordinator.getSession(), null);
+  });
+}
 
 test('rotation on real PostgreSQL: refresh rotates, the old token is reuse and ends the whole session', async () => {
   const p = await browserRegister('rot');

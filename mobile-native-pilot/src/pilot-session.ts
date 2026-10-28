@@ -7,6 +7,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { io } from 'socket.io-client';
 import { createBridgeReadApi, type BridgeReadApi } from './bridge-read-api.mjs';
 import { createBrowserSignIn } from './browser-sign-in.mjs';
+import { createBrowserSessionSignIn } from './browser-session.mjs';
 import { createBridgeRealtime, type BridgeRealtime } from './bridge-realtime.mjs';
 import { createNativeAuthApi } from './native-auth-api.mjs';
 import { createPkceAttempt } from './pkce.mjs';
@@ -54,11 +55,7 @@ export function createPilotSession(origin: string, redirectUri: string): PilotSe
   const read = createBridgeReadApi({ origin, getSession: () => coordinator.getSession() });
   const realtime = createBridgeRealtime({ origin, coordinator, connect: (url, options) => io(url, options) });
 
-  async function signInWithBrowser(): Promise<SessionState> {
-    const callback = await browser.start();
-    const issued = await authApi.exchangeCode(callback);
-    return coordinator.signIn(issued);
-  }
+  const signInWithBrowser = createBrowserSessionSignIn({ browser, authApi, coordinator });
   const outbox = createPersistentOutbox({ coordinator, realtime, createId: () => Crypto.randomUUID(), openJournal: accountId => openNativeOutboxJournal(accountId, origin) });
   return { coordinator, signInWithBrowser, read, realtime, outbox };
 }
