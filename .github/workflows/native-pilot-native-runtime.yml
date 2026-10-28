@@ -57,9 +57,15 @@ jobs:
           "$task_aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > ../native-evidence/apk-badging.txt
       - name: Enable runner KVM
         run: sudo chmod 666 /dev/kvm
-      - name: Preserve available SDK package inventory
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list --channel=3 > native-evidence/sdk-inventory.txt'
+      - name: Preserve SDK package inventories (stable channel, and all channels)
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list > native-evidence/sdk-inventory-stable.txt
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list --channel=3 > native-evidence/sdk-inventory.txt
+      - name: Required emulator SDK packages (NOT EXECUTED when absent)
+        id: sdk
+        run: node scripts/native-version-evidence.mjs sdk-check '${{ matrix.api }}'
       - name: Boot real app, native secure storage and encrypted crash recovery
+        if: steps.sdk.outputs.available == 'true'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api }}
@@ -69,6 +75,13 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: bash mobile-native-pilot/scripts/android-version-acceptance.sh '${{ matrix.api }}'
+      # Never green: a gate that could not run has not passed. Red here means NOT EXECUTED
+      # (required SDK unavailable), not a product failure; compatibility.json says so.
+      - name: Gate not satisfied - API ${{ matrix.api }} NOT EXECUTED (required SDK unavailable)
+        if: steps.sdk.outputs.available == 'false'
+        run: |
+          echo "NATIVE_ANDROID_API${{ matrix.api }}_NOT_EXECUTED: the required emulator SDK packages are not offered; no emulator, app or test ran."
+          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
