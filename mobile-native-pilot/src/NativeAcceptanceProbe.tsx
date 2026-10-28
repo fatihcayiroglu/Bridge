@@ -1,15 +1,23 @@
 // Explicit debug-only native acceptance route. Never uses a real account/token.
 import React, { useEffect, useState } from 'react';
-import { SafeAreaView, Text } from 'react-native';
+import { NativeModules, Platform, SafeAreaView, Text } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
 import { openNativeOutboxJournal } from './native-outbox-journal';
+import { requireMetroLoopbackSource } from './native-metro-source.mjs';
 
 export default function NativeAcceptanceProbe() {
   const [result, setResult] = useState('NATIVE_ACCEPTANCE_RUNNING');
   useEffect(() => {
     let stage = 'secure-store-availability';
     void (async () => {
+      let routeMarker = '';
+      if (Platform.OS === 'android' && process.env.EXPO_PUBLIC_REQUIRE_METRO_LOOPBACK === '1') {
+        stage = 'metro-route-source';
+        const source = NativeModules.SourceCode;
+        requireMetroLoopbackSource(source?.getConstants?.()?.scriptURL ?? source?.scriptURL);
+        routeMarker = ' NATIVE_METRO_LOOPBACK_PASS';
+      }
       const key = 'bridge.nativepilot.acceptance.ack.v1';
       const options = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
       if (!await SecureStore.isAvailableAsync()) throw new Error('SECURE_STORE_REQUIRED');
@@ -57,7 +65,7 @@ export default function NativeAcceptanceProbe() {
             surviving.find(row => row.id === receiptId(9))?.status !== 'queued' ||
             surviving.find(row => row.id === 'native-after-compaction')?.status !== 'queued') throw new Error('NATIVE_RECEIPT_COMPACTION_PERSISTENCE_FAILED');
         const marker = prior ? 'NATIVE_RECEIPT_COMPACTION_RESTORE_PASS' : 'NATIVE_RECEIPT_COMPACTION_PASS';
-        setResult(prior ? `NATIVE_SECURE_STORE_RESTORE_PASS NATIVE_SQLCIPHER_RECOVERY_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}` : `NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}`);
+        setResult((prior ? `NATIVE_SECURE_STORE_RESTORE_PASS NATIVE_SQLCIPHER_RECOVERY_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}` : `NATIVE_SECURE_STORE_ROUNDTRIP_PASS NATIVE_SQLCIPHER_WRITE_PASS NATIVE_ACCOUNT_ISOLATION_PASS ${marker}`) + routeMarker);
       } finally { await a.close(); await b.close(); await receipts.close(); }
     })().catch((error: unknown) => {
       // This debug-only route uses fixture accounts only. Keep the original
