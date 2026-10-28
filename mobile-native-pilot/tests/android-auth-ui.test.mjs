@@ -111,3 +111,11 @@ test('the failure report lists clickable nodes of the failing screen and the CA 
   const r=failureReport({facts:{caFileRetaps:3},nodes:[cn('[0,0][9,9]',{clickable:'true'}),cn('[1,1][2,2]'),cn('[3,3][4,4]',{clickable:'true'}),cn('[5,5][6,6]')]});
   assert.equal(r.clickables.length,2);assert.deepEqual(r.clickables.map(c=>c.bounds),['[0,0][9,9]','[3,3][4,4]']);assert.equal(r.caFileRetaps,3);
 });
+// Run 40701820173: the CA certificate tap did not navigate (screen stayed on "Install a certificate").
+test('the Settings certificate hop repeats its tap until the next screen shows, bounded by until()',()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/const hop=\(label,next,nextOptions=\{\}\)=>until\(async\(\)=>\{const n=await ui\(\);if\(namedNode\(n,next,SETTINGS_HOSTS,nextOptions\)\)return true;\s*const control=namedNode\(n,label,SETTINGS_HOSTS\);if\(control\)\{facts\.settingsHopTaps=\(facts\.settingsHopTaps\?\?0\)\+1;tap\(control\);\}return false;\}/);
+  assert.match(s,/await findSetting\('Install a certificate'\);await hop\('CA certificate','Install anyway',\{ignoreCase:true\}\);/);
+  assert.ok(!/await findSetting\('CA certificate'\)/.test(s),'a single unverified tap is not enough');
+  assert.match(s,/await click\('Install anyway',\['com\.android\.settings'\],\{ignoreCase:true\}\)/,'the existing click of the warning button is kept');
+});

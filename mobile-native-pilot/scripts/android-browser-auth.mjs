@@ -104,7 +104,13 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
     shell('input','swipe','500','1600','500','600','400');}throw Error('SETTINGS_CONTROL_UNAVAILABLE');}
   // Normal Settings UI, not a privileged CA-install API, root write or TLS bypass.
   await findSetting('More security & privacy');await findSetting('Encryption & credentials');
-  await findSetting('Install a certificate');await findSetting('CA certificate');await click('Install anyway',['com.android.settings'],{ignoreCase:true});
+  // A tap is only a hop once the NEXT screen shows: run 40701820173 stayed on the "Install a certificate" list after the
+  // "CA certificate" tap (ten foreign ANR dialogs were answered in that run, so a tap can be swallowed). Repeat the tap
+  // while the current screen still shows the label and the next one has not appeared; the 60 s deadline bounds it.
+  const hop=(label,next,nextOptions={})=>until(async()=>{const n=await ui();if(namedNode(n,next,SETTINGS_HOSTS,nextOptions))return true;
+    const control=namedNode(n,label,SETTINGS_HOSTS);if(control){facts.settingsHopTaps=(facts.settingsHopTaps??0)+1;tap(control);}return false;},'settings-hop:'+label.toLowerCase().replace(/\W+/g,'-'));
+  await findSetting('Install a certificate');await hop('CA certificate','Install anyway',{ignoreCase:true});
+  await click('Install anyway',['com.android.settings'],{ignoreCase:true});
   await until(async()=>{const n=await ui(),field=findPinField(n);
     if(field){tap(field);shell('input','text',pin);shell('input','keyevent','66');return true;}
     return n.some(x=>x.package==='com.google.android.documentsui' || x.package==='com.android.documentsui');},'settings-confirmation');

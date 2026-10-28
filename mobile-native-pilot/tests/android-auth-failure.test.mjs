@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,ambiguousMatches:[],anrDialogsAnswered:[]});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,settingsHopTaps:0,ambiguousMatches:[],anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -207,7 +207,10 @@ test('negative controls: still package-scoped, enabled-only, and ambiguity stays
 test('every other control keeps exact matching: only the certificate warning button opts in', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.equal((src.match(/ignoreCase:true/g) ?? []).length, 1);
+  // The warning button is reached by the verified hop (as the next screen's marker) and then clicked: two uses, both for it.
+  const optIns = src.split('\n').filter((line) => line.includes('ignoreCase:true'));
+  assert.equal((src.match(/ignoreCase:true/g) ?? []).length, 2);
+  assert.ok(optIns.every((line) => line.includes("'Install anyway'")), optIns.join('\n'));
   assert.equal(namedNode([node('Sign Out', 'com.bridge.nativepilot')], 'Sign out', ['com.bridge.nativepilot']), null);
 });
 

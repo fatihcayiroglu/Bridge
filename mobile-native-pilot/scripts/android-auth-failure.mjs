@@ -56,6 +56,7 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     anrEvidence: (facts.anrEvidence ?? []).slice(0, 12),
     clickables: nodes.filter((node) => node.clickable === 'true').slice(0, 16).map((node) => ({ class: redact(node.class ?? '', 60, secrets), package: node.package, bounds: node.bounds })),
     caFileRetaps: facts.caFileRetaps ?? 0,
+    settingsHopTaps: facts.settingsHopTaps ?? 0,
     ambiguousMatches: (facts.ambiguousMatches ?? []).slice(0, 6),
     anrDialogsAnswered: (facts.anrDialogs ?? []).map((name) => redact(name, 40, secrets)).slice(0, 10),
   };
