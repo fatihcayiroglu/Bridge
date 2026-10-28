@@ -119,3 +119,20 @@ test('a pin whose source path escapes the repository, or whose base is not HTTPS
   const p = pinsFor(); p.artifacts['../evil-1.2.3.tar.gz'] = p.artifacts[n]; delete p.artifacts[n];
   assert.throws(() => validatePins(p, '1.2.3'), /PIN_NAME_INVALID/);
 });
+
+test('EVERY workflow that runs `pod install` runs the pinned prefetch first (a pin that a job does not use protects nothing)', async () => {
+  const { readdirSync } = await import('node:fs');
+  const dir = new URL('../../.github/workflows/', import.meta.url);
+  const offenders = [];
+  let seen = 0;
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.yml'))) {
+    const wf = readFileSync(new URL(f, dir), 'utf8');
+    const pod = wf.indexOf('pod install');
+    if (pod < 0) continue;
+    seen += 1;
+    const pre = wf.indexOf('node scripts/prefetch-ios-prebuilt.mjs');
+    if (pre < 0 || pre > pod) offenders.push(f);
+  }
+  assert.ok(seen >= 2, 'both iOS workflows are covered by this check');
+  assert.deepEqual(offenders, []);
+});
