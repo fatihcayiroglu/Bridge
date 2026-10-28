@@ -28,7 +28,7 @@ function stubs({ seat }) {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'wl-stub-'));
   fs.writeFileSync(path.join(bin, 'weston'), '#!/bin/sh\necho "weston 13.0.0"\n', { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'wayland-info'),
-    `#!/bin/sh\necho "interface: 'wl_compositor', version: 6, name: 1"\necho "interface: 'xdg_wm_base', version: 5, name: 2"\n${seat ? `echo "interface: 'wl_seat', version: 8, name: 3"\n` : ''}`, { mode: 0o755 });
+    `#!/bin/sh\nprintf "interface: 'wl_compositor',\\tversion:  6,\\tname:  1\\n"\nprintf "interface: 'xdg_wm_base',   version:  5, name:  2\\n"\n${seat ? `printf "interface: 'wl_seat',\\tversion:  8,\\tname:  3\\n"\n` : ''}`, { mode: 0o755 });
   return bin;
 }
 
@@ -36,7 +36,9 @@ test('reports a missing wl_seat as ABSENT and a present one as present', () => {
   const absent = run('print_compositor_facts', {}, stubs({ seat: false }));
   assert.equal(absent.status, 0, absent.stderr);
   assert.match(absent.stdout, /WAYLAND_DIAG wl_seat=ABSENT/);
-  assert.match(absent.stdout, /globals=wl_compositor@6 xdg_wm_base@5/);
+  assert.match(absent.stdout, /globals=wl_compositor xdg_wm_base/);
+  assert.match(absent.stdout, /wayland-info exit=0 lines=2/);
+  assert.match(absent.stdout, /wayland-info head:\ninterface: 'wl_compositor'/);
   const present = run('print_compositor_facts', {}, stubs({ seat: true }));
   assert.match(present.stdout, /WAYLAND_DIAG wl_seat=present/);
   assert.doesNotMatch(present.stdout, /ABSENT/);
@@ -77,4 +79,15 @@ test('acceptance checks and constraints are unchanged', () => {
 
 test('the workflow installs the tool the diagnostics use', () => {
   assert.match(workflow, /apt-get install -y --no-install-recommends weston wayland-utils/);
+});
+
+test('a failing wayland-info is reported with its exit status and does not abort the smoke under set -e', () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'wl-stub-'));
+  fs.writeFileSync(path.join(bin, 'weston'), '#!/bin/sh\necho "weston 14.0.2"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'wayland-info'), '#!/bin/sh\necho "failed to connect" >&2\nexit 3\n', { mode: 0o755 });
+  const out = run('print_compositor_facts; echo AFTER', {}, bin);
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /wayland-info exit=3 lines=1/);
+  assert.match(out.stdout, /wl_seat=ABSENT/);
+  assert.match(out.stdout, /AFTER/);
 });

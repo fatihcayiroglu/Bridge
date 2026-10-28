@@ -29,11 +29,15 @@ print_compositor_facts() {
   echo "WAYLAND_DIAG weston=$(weston --version 2>&1 | head -1 | tr -cd '[:print:]' | cut -c1-60)"
   if command -v wayland-info >/dev/null 2>&1; then
     # Captured once: `grep -q` on a pipe would SIGPIPE wayland-info and, under pipefail, report a present seat as absent.
-    local info
-    info="$(wayland-info 2>/dev/null || true)"
-    # Global interface names and versions only (no client data exists yet).
-    echo "WAYLAND_DIAG globals=$(grep -oE "interface: '[a-z_0-9]+', version: [0-9]+" <<<"${info}" | sed -E "s/interface: '([a-z_0-9]+)', version: ([0-9]+)/\1@\2/" | sort -u | tr '\n' ' ' | cut -c1-600)"
-    if grep -q "interface: 'wl_seat'" <<<"${info}"; then echo "WAYLAND_DIAG wl_seat=present"; else echo "WAYLAND_DIAG wl_seat=ABSENT"; fi
+    # Run 40779869140 printed an empty global list from a too-strict pattern, so the raw head is printed as well.
+    local info status=0
+    info="$(wayland-info 2>&1)" || status=$?
+    echo "WAYLAND_DIAG wayland-info exit=${status} lines=$(printf '%s\n' "${info}" | grep -c . || true)"
+    # Interface names only; tolerate any spacing or tabs between the fields.
+    echo "WAYLAND_DIAG globals=$(grep -oE "interface:[[:space:]]*'[a-z_0-9]+'" <<<"${info}" | sed -E "s/interface:[[:space:]]*'([a-z_0-9]+)'/\1/" | sort -u | tr '\n' ' ' | cut -c1-600)"
+    if grep -qE "interface:[[:space:]]*'wl_seat'" <<<"${info}"; then echo "WAYLAND_DIAG wl_seat=present"; else echo "WAYLAND_DIAG wl_seat=ABSENT"; fi
+    echo "WAYLAND_DIAG wayland-info head:"
+    printf '%s\n' "${info}" | head -40 | tr -cd '[:print:]\n\t' | cut -c1-140
   else
     echo "WAYLAND_DIAG wayland-info=not-installed"
   fi
