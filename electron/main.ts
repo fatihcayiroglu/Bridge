@@ -344,6 +344,8 @@ function installSessionPolicies(): void {
   // Prefer the platform picker. Some Linux/Windows builds need a fallback:
   // NEVER silently select sources[0] or grant cross-origin/iframe requests.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    // Electron runtime accepts null to reject capture; v42's TS callback
+    // signature omits null, despite the documented API contract.
     const isTrusted = (): boolean =>
       Boolean(mainWindow && !mainWindow.isDestroyed() &&
         request.userGesture &&
@@ -351,7 +353,7 @@ function installSessionPolicies(): void {
         isSameAppOrigin(request.securityOrigin) &&
         isSameAppOrigin(mainWindow.webContents.getURL()));
 
-    if (!isTrusted()) { callback(null); return; }
+    if (!isTrusted()) { callback(null as never); return; }
 
     void (async () => {
       try {
@@ -364,7 +366,7 @@ function installSessionPolicies(): void {
         })).filter((source) => typeof source.id === 'string' && source.id.length > 0 &&
           typeof source.name === 'string').slice(0, 12);
 
-        if (!isTrusted() || sources.length === 0) { callback(null); return; }
+        if (!isTrusted() || sources.length === 0) { callback(null as never); return; }
 
         const result = await dialog.showMessageBox(mainWindow!, {
           type: 'question',
@@ -380,13 +382,13 @@ function installSessionPolicies(): void {
         // An origin/window may change while the native prompt is open.
         if (!isTrusted() || !Number.isInteger(result.response) ||
             result.response <= 0 || result.response > sources.length) {
-          callback(null); return;
+          callback(null as never); return;
         }
         callback({ video: sources[result.response - 1] });
       } catch {
         // Any cancelled PipeWire portal, denied OS permission or picker error
         // must reject getDisplayMedia. Never fall back to an unchosen source.
-        callback(null);
+        callback(null as never);
       }
     })();
   }, { useSystemPicker: true });
