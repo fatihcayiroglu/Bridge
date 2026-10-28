@@ -43,13 +43,13 @@ test('no value, username or password text ever appears in the evidence', () => {
 
 test('the iOS driver records the evidence on failure from the page source, not from argument values', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /facts\.failureUi\.login = loginEvidence\(s, activeUsername\)/);
 });
 
 test('the evidence is printed to the job log (artifacts are not downloadable) from the closed shape only', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, secretGeometry: facts\.secretGeometry \?\? null \}\)\}`\)/);
+  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
 });
 
 import { assertUsernameIntact } from '../scripts/ios-login-evidence.mjs';
@@ -66,13 +66,13 @@ test('the username field must hold exactly the username after typing; the failur
 
 test('the iOS driver re-finds the password field after the username keyboard, taps it like a finger, then types and checks', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);[\s\S]*?const freshSecrets = await elements\('class name', 'XCUIElementTypeSecureTextField'\);\s*assert\.ok\(freshSecrets\.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED'\);/);
-  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/value`, \{ text: password \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
+  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);[\s\S]*?await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/value`, \{ text: password \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
   assert.ok(!/key\(secrets\[0\]\)\}\/value/.test(s), 'the stale element reference is never typed into');
 });
 
-import { fieldGeometry, centerOf, tapActions } from '../scripts/ios-login-evidence.mjs';
+import { fieldGeometry, centerOf, tapActions, focusSnapshot } from '../scripts/ios-login-evidence.mjs';
 test('geometry helpers produce plain numbers, a centre, and a single touch tap', () => {
   assert.deepEqual(fieldGeometry({ x: 10.4, y: 20.6, width: 100, height: 40, label: 'secret' }), { x: 10, y: 21, width: 100, height: 40 });
   assert.deepEqual(fieldGeometry(undefined), { x: null, y: null, width: null, height: null });
@@ -89,4 +89,19 @@ test('geometry helpers produce plain numbers, a centre, and a single touch tap',
 test('the printed login evidence carries the field geometry and nothing else free-form', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /login: facts\.failureUi\.login, secretGeometry: facts\.secretGeometry \?\? null/);
+});
+
+test('the page-source focus flag is read as true, false or unknown, never as free text', () => {
+  const field = (type, attrs) => `<XCUIElementType${type} ${Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(' ')}/>`;
+  const src = `<A>${field('TextField', { visible: 'true', y: '1', value: 'u', focused: 'false' })}${field('SecureTextField', { visible: 'true', y: '2', value: '', focused: 'true' })}</A>`;
+  assert.deepEqual(focusSnapshot(loginEvidence(src, 'u')), { text: [false], secure: [true] });
+  const none = `<A>${field('TextField', { visible: 'true', y: '1', value: 'u' })}${field('SecureTextField', { visible: 'true', y: '2', value: '' })}</A>`;
+  assert.deepEqual(focusSnapshot(loginEvidence(none, 'u')), { text: [null], secure: [null] });
+  assert.deepEqual(focusSnapshot(undefined), { text: [], secure: [] });
+  assert.deepEqual(focusSnapshot({ textFields: [{ focused: 'yes' }] }), { text: [null], secure: [] });
+});
+
+test('the driver taps natively, then records the focus snapshot before typing the password', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/value`, \{ text: password \}\);/);
 });

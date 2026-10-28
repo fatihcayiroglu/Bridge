@@ -7,6 +7,8 @@ const LABELS = ['Sign In', 'Create Account', 'All fields are required', 'Continu
 const attrsOf = (tag) => Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, v]));
 const decode = (s) => s.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&apos;/g, "'");
 const nodes = (source) => [...String(source).matchAll(/<(XCUIElementType\w+)\b([^>]*)>/g)].map(([, type, attrs]) => ({ type, ...attrsOf(attrs) }));
+// Whether the page source reports keyboard focus for a node: true, false, or null when the attribute is absent.
+const flag = (v) => (v === 'true' ? true : v === 'false' ? false : null);
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 export function loginEvidence(source, username) {
   const all = nodes(source);
@@ -17,8 +19,8 @@ export function loginEvidence(source, username) {
     labelsPresent: LABELS.filter((label) => named(label).length > 0),
     signInControls: named('Sign In').slice(0, 6).map((n) => ({ type: n.type.replace('XCUIElementType', ''), y: num(n.y), height: num(n.height), visible: n.visible === 'true' })),
     textFields: text.slice(0, 4).map((n) => ({ visible: n.visible === 'true', y: num(n.y), valueIsUsername: typeof username === 'string' && username.length > 0 && decode(n.value ?? '') === username,
-      valueContainsUsername: typeof username === 'string' && username.length > 0 && decode(n.value ?? '').includes(username), valueLength: (n.value ?? '').length })),
-    secureFields: secure.slice(0, 4).map((n) => ({ visible: n.visible === 'true', y: num(n.y), valueLength: (n.value ?? '').length })),
+      valueContainsUsername: typeof username === 'string' && username.length > 0 && decode(n.value ?? '').includes(username), valueLength: (n.value ?? '').length, focused: flag(n.focused) })),
+    secureFields: secure.slice(0, 4).map((n) => ({ visible: n.visible === 'true', y: num(n.y), valueLength: (n.value ?? '').length, focused: flag(n.focused) })),
   };
 }
 
@@ -46,4 +48,10 @@ export function centerOf(rect) {
 export function tapActions(point) {
   return { actions: [{ type: 'pointer', id: 'finger1', parameters: { pointerType: 'touch' }, actions: [
     { type: 'pointerMove', duration: 0, x: point.x, y: point.y }, { type: 'pointerDown', button: 0 }, { type: 'pause', duration: 120 }, { type: 'pointerUp', button: 0 }] }] };
+}
+
+// Which field reports focus, as booleans only (null = the page source carries no focus attribute).
+export function focusSnapshot(evidence) {
+  const flags = (fields) => (fields ?? []).slice(0, 4).map((field) => (typeof field.focused === 'boolean' ? field.focused : null));
+  return { text: flags(evidence?.textFields), secure: flags(evidence?.secureFields) };
 }

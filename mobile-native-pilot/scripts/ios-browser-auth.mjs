@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions } from './ios-login-evidence.mjs';
+import { loginEvidence, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -131,6 +131,10 @@ async function signIn(user, expectedPid) {
   facts.secretGeometry = { beforeUsername: secretBefore, afterUsername: fieldGeometry(secretRect) };
   await command('POST', '/actions', tapActions(centerOf(secretRect)));
   await command('POST', `/element/${key(freshSecrets[0])}/click`, {});
+  // A native coordinate tap as well, then record which field the page source says holds focus before typing
+  // (run 40717519808: the password still landed in the username field after the touch action above).
+  await native('tap', centerOf(secretRect));
+  facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
   await command('POST', `/element/${key(freshSecrets[0])}/value`, { text: password });
   assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
   await clickSignInSubmit(secrets[0]);
@@ -236,7 +240,7 @@ try {
       alerts: (s.match(/XCUIElementTypeAlert\b/g) || []).length };
       // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
       facts.failureUi.login = loginEvidence(s, activeUsername);
-      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, secretGeometry: facts.secretGeometry ?? null })}`);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
       await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;
