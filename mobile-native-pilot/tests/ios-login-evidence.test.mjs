@@ -49,7 +49,7 @@ test('the iOS driver records the evidence on failure from the page source, not f
 
 test('the evidence is printed to the job log (artifacts are not downloadable) from the closed shape only', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, lastNative: facts\.lastNative \?\? null, lastRoute: facts\.lastRoute \?\? null, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
+  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
 });
 
 import { assertUsernameIntact } from '../scripts/ios-login-evidence.mjs';
@@ -88,7 +88,7 @@ test('geometry helpers produce plain numbers, a centre, and a single touch tap',
 
 test('the printed login evidence carries the field geometry and nothing else free-form', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, lastNative: facts\.lastNative \?\? null, lastRoute: facts\.lastRoute \?\? null, secretGeometry: facts\.secretGeometry \?\? null/);
+  assert.match(s, /login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null, secretGeometry: facts\.secretGeometry \?\? null/);
 });
 
 test('the page-source focus flag is read as true, false or unknown, never as free text', () => {
@@ -151,5 +151,13 @@ test('the driver records the last route and the last mobile command, and prints 
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /facts\.lastRoute = routeShape\(method, route\)/);
   assert.match(s, /facts\.lastNative = `mobile: \$\{name\}`/);
-  assert.match(s, /driverFailure: facts\.driverFailure \?\? null, lastNative: facts\.lastNative \?\? null, lastRoute: facts\.lastRoute \?\? null/);
+  assert.match(s, /driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null/);
+});
+
+test('the failing step is captured before the failure handler runs its own driver commands', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  const catchStart = s.indexOf('} catch (error) {');
+  const capture = s.indexOf('facts.failedAt = { native: facts.lastNative ?? null, route: facts.lastRoute ?? null };', catchStart);
+  const firstHandlerCommand = s.indexOf("await native('activeAppInfo')", catchStart);
+  assert.ok(capture > catchStart && firstHandlerCommand > capture, 'failedAt is recorded before the first handler command');
 });

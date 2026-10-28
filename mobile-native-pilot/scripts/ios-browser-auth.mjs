@@ -240,6 +240,9 @@ try {
   });
   facts.status = 'PASS'; facts.stage = 'complete';
 } catch (error) {
+  // Taken BEFORE the evidence calls below, which are driver commands too (run 40782641256 printed the handler's own
+  // activeAppInfo and /source as the "last" command and so hid the step that failed).
+  facts.failedAt = { native: facts.lastNative ?? null, route: facts.lastRoute ?? null };
   facts.failure = /^[A-Z_]+(?::[a-z-]+)?$/.test(error?.message ?? '') ? error.message : 'DRIVER_OR_SERVICE_FAILED';
   if (error?.message?.startsWith('WebDriver ')) facts.driverFailure = error.message;
   // Driver/server messages can contain credentials or callback URLs. Preserve
@@ -252,7 +255,7 @@ try {
       // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
       facts.failureUi.login = loginEvidence(s, activeUsername);
       facts.failureUi.survey = uiSurvey(s);
-      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, driverFailure: facts.driverFailure ?? null, lastNative: facts.lastNative ?? null, lastRoute: facts.lastRoute ?? null, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, driverFailure: facts.driverFailure ?? null, failedAt: facts.failedAt ?? null, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
       await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;
