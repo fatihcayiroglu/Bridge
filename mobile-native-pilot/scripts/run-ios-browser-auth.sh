@@ -10,7 +10,6 @@ env -u BRIDGE_MOBILE_PASSWORD -u JWT_SECRET -u REFRESH_SECRET -u DATABASE_URL -u
 task_appium_pid=$!
 cleanup() {
   local task_status=$?
-  kill "$task_appium_pid" 2>/dev/null || true
   # Raw WDA traffic and command arguments are never uploaded.
   if test "$task_status" -ne 0; then
     printf 'APPIUM_JOURNEY_EXIT=%s\n' "$task_status" > "$MOBILE_AUTH_EVIDENCE/driver-exit.txt"
@@ -18,8 +17,11 @@ cleanup() {
     # traffic can contain them and must NEVER be copied into an artifact.
     if node --input-type=module -e 'import fs from "node:fs";const r=JSON.parse(fs.readFileSync(process.env.MOBILE_AUTH_EVIDENCE+"/ios-browser-auth.json"));process.exit(r.stage==="native-xcuitest-session"&&r.cases.length===0?0:1)'; then
       test ! -f "$task_appium_debug" || cp "$task_appium_debug" "$MOBILE_AUTH_EVIDENCE/appium-before-input.log"
+      # Bounded, redacted console excerpt BEFORE Appium/WDA are stopped, so the live processes are visible.
+      node mobile-native-pilot/scripts/ios-wda-diagnostics.mjs "$task_appium_debug" || true
     fi
   fi
+  kill "$task_appium_pid" 2>/dev/null || true
   return "$task_status"
 }
 trap cleanup EXIT
