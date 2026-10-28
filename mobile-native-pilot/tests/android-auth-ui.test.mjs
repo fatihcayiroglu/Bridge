@@ -163,3 +163,13 @@ test('a PIN prompt at any Settings hop is answered, bounded, and counted',async(
   assert.equal(findPinField([field]),field);
   assert.equal(findPinField([{...field,package:'com.evil'}]),null);
 });
+
+// Run 40708169639: caFileRetaps was 21 and the picker never accepted the file from the Recent grid.
+test('after two ineffective file taps the CA picker is steered to the Downloads root once, and the failure report keeps node state',async()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/const downloads=namedNode\(now,'Downloads',documents\);\s*if\(file && \(facts\.caFileRetaps\?\?0\)===2 && !facts\.caDownloadsTaps && downloads\)\{facts\.caDownloadsTaps=1;tap\(downloads\);return false;\}/);
+  const {failureReport}=await import('../scripts/android-auth-failure.mjs');
+  const r=failureReport({facts:{caDownloadsTaps:1},nodes:[{class:'a.B',package:'docs',clickable:'true',selected:'true',focused:'true',bounds:'[0,0][1,1]'},{class:'a.C',package:'docs',clickable:'true',bounds:'[2,2][3,3]'}]});
+  assert.equal(r.caDownloadsTaps,1);
+  assert.deepEqual(r.clickables.map(c=>c.state),[['selected','focused'],[]]);
+});

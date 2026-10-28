@@ -131,6 +131,10 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   await until(async()=>{if(activity().startsWith('com.android.settings/'))return true;
     const now=await ui(),file=namedNode(now,'bridge-disposable-ca.crt',documents);
     // Even retaps press the label, odd ones the smallest clickable container around it (the card), so one wrong target cannot repeat.
+    // Run 40708169639: 21 alternating taps on the label and its card never left the Recent grid. After two such taps open
+    // the Downloads root once (the drawer entry is on screen) and pick the file from that list, as the earlier path did.
+    const downloads=namedNode(now,'Downloads',documents);
+    if(file && (facts.caFileRetaps??0)===2 && !facts.caDownloadsTaps && downloads){facts.caDownloadsTaps=1;tap(downloads);return false;}
     if(file){facts.caFileRetaps=(facts.caFileRetaps??0)+1;tap(facts.caFileRetaps%2===0?(smallestClickableContaining(now,file)??file):file);}return false;},'ca-install-return');facts.testCaInstalledViaSettings=true;
   facts.stage='chrome-first-run';shell('am','start','-n',chrome+'/com.google.android.apps.chrome.Main');
   await until(async()=>{const n=await ui();for(const label of ['Accept & continue','Use without an account','No thanks','Got it']){const control=namedNode(n,label,[chrome]);if(control){tap(control);return false;}}
