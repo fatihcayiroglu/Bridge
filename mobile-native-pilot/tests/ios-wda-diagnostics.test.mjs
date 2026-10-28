@@ -48,7 +48,7 @@ import { prefetchSummary, journeySummary, podCacheLines } from '../scripts/ios-e
 test('the summary prints allow-listed facts only (no fixture names, ids, tokens or driver traffic)', () => {
   const j = journeySummary({ status: 'FAIL', stage: 'native-xcuitest-session', runtimeVersion: '26.2', cases: [], notExecuted: ['a', 'b', 'c'],
     userA: 'mob_A_deadbeef', token: 'x'.repeat(64), fixtureId: 'u-123' });
-  assert.deepEqual(j, { status: 'FAIL', stage: 'native-xcuitest-session', runtimeVersion: '26.2', passed: 0, failed: 0, notExecuted: 3 });
+  assert.deepEqual(j, { status: 'FAIL', stage: 'native-xcuitest-session', runtimeVersion: '26.2', cases: [], passed: 0, failed: 0, notExecuted: 3 });
   assert.ok(!JSON.stringify(j).match(/mob_A|deadbeef|u-123|xxxx/));
   const p = prefetchSummary({ status: 'PASS', artifacts: [{ name: 'core-debug', source: 'download', expectedSha512: 'abc', attempts: [{ n: 1, exit: 0, seconds: 97.2, bytes: 94100000, result: 'VERIFIED', stderr: 'secret?' }] }] });
   assert.deepEqual(p.artifacts[0].attempts[0], { n: 1, exit: 0, seconds: 97.2, bytes: 94100000, result: 'VERIFIED' });
@@ -64,4 +64,15 @@ test('the workflow prints the summary as an always() step and never fails the jo
   assert.ok(at > 0);
   const block = wf.slice(wf.lastIndexOf('- name:', at), wf.indexOf('actions/upload-artifact', at));
   assert.match(block, /if: always\(\)/); assert.match(block, /\|\| true/);
+});
+
+test('a failed case run reports case ids/statuses, the closed failure code, UI counts and bundle, but never the raw driver message', () => {
+  const j = journeySummary({ status: 'FAIL', stage: 'IOS_AUTHENTICATE_RESTART_ROTATE', failure: 'POSTGRES_ROTATION_REQUIRED',
+    cases: [{ id: 'IOS_SYSTEM_BROWSER_CANCEL', status: 'PASS', secret: 'nope' }, { id: 'IOS_AUTHENTICATE_RESTART_ROTATE', status: 'FAIL' }], notExecuted: ['IOS_SWITCH'],
+    driverFailure: 'WebDriver 500: http://127.0.0.1/cb?code=SECRETCODE&password=hunter2', failureUi: { webViews: 1, textFields: 0, secureFields: 0, alerts: 0, html: '<x>' },
+    failureApplication: { bundleId: 'com.bridge.nativepilot', pid: 4242 } });
+  assert.deepEqual(j.cases, [{ id: 'IOS_SYSTEM_BROWSER_CANCEL', status: 'PASS' }, { id: 'IOS_AUTHENTICATE_RESTART_ROTATE', status: 'FAIL' }]);
+  assert.equal(j.failure, 'POSTGRES_ROTATION_REQUIRED'); assert.deepEqual(j.failureUi, { webViews: 1, textFields: 0, secureFields: 0, alerts: 0 });
+  assert.equal(j.foregroundBundle, 'com.bridge.nativepilot'); assert.equal(j.passed, 1); assert.equal(j.failed, 1); assert.equal(j.notExecuted, 1);
+  assert.ok(!JSON.stringify(j).match(/SECRETCODE|hunter2|WebDriver 500|4242|nope|<x>/));
 });

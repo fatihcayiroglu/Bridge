@@ -10,8 +10,14 @@ export function prefetchSummary(report) {
   return { status: report?.status ?? null, failed: report?.failed ?? null, reason: report?.reason ?? null,
     artifacts: (report?.artifacts ?? []).map((a) => ({ name: a.name, source: a.source, attempts: (a.attempts ?? []).map((t) => ({ n: t.n, exit: t.exit, seconds: t.seconds, bytes: t.bytes, result: t.result })) })) };
 }
+// `driverFailure` / raw driver or server messages are deliberately NOT printed: they can carry credentials or
+// callback URLs. Only the closed failure code, element counts and the foreground bundle id are safe.
 export function journeySummary(r) {
+  const ui = r?.failureUi && typeof r.failureUi === 'object' ? pick(r.failureUi, ['webViews', 'textFields', 'secureFields', 'alerts']) : undefined;
   return { ...pick(r, ['status', 'stage', 'runtimeVersion', 'driverDeadlineMs', 'failure', 'physicalDevice']),
+    cases: (r?.cases ?? []).map((c) => pick(c, ['id', 'status'])),
+    ...(ui ? { failureUi: ui } : {}),
+    ...(typeof r?.failureApplication?.bundleId === 'string' ? { foregroundBundle: r.failureApplication.bundleId.slice(0, 80) } : {}),
     passed: (r?.cases ?? []).filter((c) => c.status === 'PASS').length, failed: (r?.cases ?? []).filter((c) => c.status === 'FAIL').length,
     notExecuted: Array.isArray(r?.notExecuted) ? r.notExecuted.length : null };
 }
