@@ -21,6 +21,10 @@ jobs:
       EXPO_PUBLIC_NATIVE_SELF_TEST: '0'
       CI: '1'
       NODE_OPTIONS: --dns-result-order=ipv4first
+      # First run 40672704969 stalled at 24% of the 10.4 MB release archive,
+      # then curl failed (56). RN's supported setting selects Maven Central's
+      # other official TLS endpoint, retaining vendor checksum validation.
+      ENTERPRISE_REPOSITORY: https://repo.maven.apache.org/maven2
       MAX_REG_PER_HOUR: '1000'
       RL_REGISTER_MAX: '1000'
       RL_LOGIN_MAX: '1000'

@@ -46,6 +46,32 @@ Tooling is reused byte-for-byte from #481's existing implementation at
 merge or change #481. Native acceptance still requires this increment's own
 exact-head execution.
 
+## First prerequisite failure and transport mitigation
+
+Head `9401c466b7dff2310b3182c5a5c64668690921a9`, run **40672704969**:
+real dependencies/audits, disposable PostgreSQL 16/Redis and backend HTTPS startup
+passed, but CocoaPods could not finish the RN 0.86.0 dependencies release archive.
+The transfer stopped at 2,499 KiB of 10.4 MB and eventually returned curl 56
+(`Recv failure: Operation timed out`). All three native-auth cases remained
+**NOT EXECUTED**, zero test skips. Later dependent Actions steps were skipped
+because their prerequisite failed; that is not native test success.
+
+The original artifact `ios-system-browser-40672704969-1` is retained, including
+pods.log and the NOT EXECUTED verdict. Existing JS162, backend18, server18,
+Chromium3 and native storage workflows passed independently on that head.
+
+The workflow now uses RN's supported `ENTERPRISE_REPOSITORY` setting with
+`https://repo.maven.apache.org/maven2`, Maven Central's other
+[official TLS endpoint](https://central.sonatype.org/faq/ssl/).
+No vendor download/checksum logic, TLS validation, app source or timeout is
+weakened. A local controlled download from both official hosts returned the same
+10,419,650 bytes and published SHA-512
+`0a4503d29fe4e3d548113a2adec1a9c625a8956a53d01080ede99ad70bcf7ac58f59c9f8350860aa552ef8c8d35d8134d6065f007a194154c4e88ce97fe383bb`.
+Both local transfers succeeded in about 3.9 seconds; that does **not** reproduce
+or prove a fix for the failing runner/network route. This is a transport
+mitigation pending a new exact-head native run, not closure of an intermittent
+network failure and not a blind rerun of the original head.
+
 ## Remaining acceptance and owner-controlled prerequisites
 
 - This is a debug simulator journey, not physical-device, release-signing,
