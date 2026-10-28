@@ -84,3 +84,9 @@ test('the Android harness gates every typed field on observed focus and checks t
   assert.match(s,/username-still-intact/);
   assert.ok(!/tap\(secrets\[0\]\)/.test(s));
 });
+// Run 40697876546: stuck in the documents picker with the CA file listed after a single tap.
+test('the CA install waits for Settings by re-finding and re-tapping the listed file, bounded by until()',()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/if\(activity\(\)\.startsWith\('com\.android\.settings\/'\)\)return true;\s*const file=namedNode\(await ui\(\),'bridge-disposable-ca\.crt',documents\);if\(file\)\{facts\.caFileRetaps=\(facts\.caFileRetaps\?\?0\)\+1;tap\(file\);\}return false;\},'ca-install-return'\)/);
+  assert.ok(!/await until\(async\(\)=>activity\(\)\.startsWith\('com\.android\.settings\/'\),'ca-install-return'\)/.test(s),'a passive wait is not enough');
+});

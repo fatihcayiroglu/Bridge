@@ -112,7 +112,11 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   await until(async()=>{const n=await ui(),file=namedNode(n,'bridge-disposable-ca.crt',documents);if(file){tap(file);return true;}
     const downloads=namedNode(n,'Downloads',documents);if(downloads){tap(downloads);return false;}
     const roots=namedNode(n,'Show roots',documents);if(roots)tap(roots);return false;},'test-ca-file-selection');
-  await until(async()=>activity().startsWith('com.android.settings/'),'ca-install-return');facts.testCaInstalledViaSettings=true;
+  // One tap on the file is not proof the picker accepted it: run 40697876546 stayed in PickActivity with the file still
+  // listed. While the picker is still foreground, find the file again in a fresh dump and tap it again (each pass costs
+  // a full UI dump, and the 60 s deadline still bounds the wait). Selecting the same file twice is idempotent.
+  await until(async()=>{if(activity().startsWith('com.android.settings/'))return true;
+    const file=namedNode(await ui(),'bridge-disposable-ca.crt',documents);if(file){facts.caFileRetaps=(facts.caFileRetaps??0)+1;tap(file);}return false;},'ca-install-return');facts.testCaInstalledViaSettings=true;
   facts.stage='chrome-first-run';shell('am','start','-n',chrome+'/com.google.android.apps.chrome.Main');
   await until(async()=>{const n=await ui();for(const label of ['Accept & continue','Use without an account','No thanks','Got it']){const control=namedNode(n,label,[chrome]);if(control){tap(control);return false;}}
     return n.some(x=>x.package===chrome && /url_bar|search_box_text/.test(x['resource-id']));},'chrome-ready');
