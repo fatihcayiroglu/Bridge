@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -75,7 +75,7 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   const pin=process.env.BRIDGE_EMULATOR_PIN;assert.match(pin,/^\d{6}$/);shell('locksettings','set-pin',pin);
   adb(['push',process.env.NODE_EXTRA_CA_CERTS,'/sdcard/Download/bridge-disposable-ca.crt']);
   shell('am','start','-a','android.settings.SECURITY_SETTINGS');
-  async function findSetting(label){for(let i=0;i<7;i++){const n=namedNode(await ui(),label,['com.android.settings']);if(n){tap(n);return;}
+  async function findSetting(label){for(let i=0;i<7;i++){const n=namedNode(await ui(),label,SETTINGS_HOSTS);if(n){tap(n);return;}
     shell('input','swipe','500','1600','500','600','400');}throw Error('SETTINGS_CONTROL_UNAVAILABLE');}
   // Normal Settings UI, not a privileged CA-install API, root write or TLS bypass.
   await findSetting('More security & privacy');await findSetting('Encryption & credentials');

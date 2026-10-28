@@ -84,3 +84,29 @@ test('unknown errors keep only a redacted, bounded name and message; known codes
   assert.ok(!redact(unsafe.message,160,[PASSWORD,PIN]).includes(PIN));
   assert.ok(!redact(unsafe.message,160,[PASSWORD,PIN]).includes(PASSWORD));
 });
+
+// ---- Safety Center hosts the first Settings hop on API 35 (first failure: run 40678995495) ----
+import { namedNode, SETTINGS_HOSTS } from '../scripts/android-auth-ui.mjs';
+const node = (text, pkg) => ({ text, package: pkg, enabled: 'true', bounds: '[0,0][10,10]' });
+// The screen the failing run actually showed (visibleText of NATIVE_ANDROID_AUTH_FAILURE).
+const safetyCenter = ['Security & privacy', 'App security', 'Device unlock', 'Privacy', 'More security & privacy'].map(t => node(t, 'com.google.android.permissioncontroller'));
+
+test('reproduces the first failure: restricting to com.android.settings cannot see the Safety Center control', () => {
+  assert.equal(namedNode(safetyCenter, 'More security & privacy', ['com.android.settings']), null);
+});
+test('the Settings navigation accepts the OS packages that host it, and finds the control', () => {
+  assert.equal(namedNode(safetyCenter, 'More security & privacy', SETTINGS_HOSTS).text, 'More security & privacy');
+  assert.ok(namedNode([node('Encryption & credentials', 'com.android.settings')], 'Encryption & credentials', SETTINGS_HOSTS));
+});
+test('negative control: the same label from any non-OS package is never matched', () => {
+  for (const pkg of ['com.bridge.nativepilot', 'com.evil.overlay', 'com.android.chrome'])
+    assert.equal(namedNode([node('More security & privacy', pkg)], 'More security & privacy', SETTINGS_HOSTS), null, pkg);
+  assert.deepEqual(SETTINGS_HOSTS.filter(p => !/^com\.(android|google\.android\.permissioncontroller|android\.permissioncontroller)/.test(p)), []);
+});
+test('ambiguity is still fatal and "Install anyway" stays restricted to com.android.settings', async () => {
+  assert.throws(() => namedNode([node('X', 'com.android.settings'), node('X', 'com.google.android.permissioncontroller')], 'X', SETTINGS_HOSTS), /AMBIGUOUS_NATIVE_CONTROL/);
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(src, /click\('Install anyway',\['com\.android\.settings'\]\)/);
+  assert.match(src, /namedNode\(await ui\(\),label,SETTINGS_HOSTS\)/);
+});

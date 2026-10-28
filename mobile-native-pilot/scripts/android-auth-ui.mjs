@@ -9,6 +9,9 @@ export function nodesOf(xml) {
   return [...xml.matchAll(/<node\b([^>]+)>/g)].map(([,attrs]) => Object.fromEntries(
     [...attrs.matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,value])=>[key,decode(value)])));
 }
+// System packages that host the Settings navigation. On API 35 `android.settings.SECURITY_SETTINGS` opens Safety
+// Center, owned by the permission controller, not com.android.settings (run 40678995495). Only OS packages.
+export const SETTINGS_HOSTS=['com.android.settings','com.google.android.permissioncontroller','com.android.permissioncontroller'];
 export function namedNode(nodes, label, packages) {
   const matches=nodes.filter(n=>packages.includes(n.package) && n.enabled==='true'
     && (n.text===label || n['content-desc']===label));
