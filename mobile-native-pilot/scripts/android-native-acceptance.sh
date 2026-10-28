@@ -11,7 +11,11 @@ metro_pid=$!
 function cleanup() {
   local status=$?
   acceptance_record_failure "$status" native-evidence android
-  adb logcat -d > native-evidence/android-logcat.txt 2>&1 || true
+  # Keep the first final capture, including a partial/empty failed capture.
+  # Cleanup must not erase evidence or silently retry the failed logcat read.
+  if [[ ! -e native-evidence/android-logcat.txt ]]; then
+    adb logcat -d > native-evidence/android-logcat.txt 2> native-evidence/logcat-cleanup-stderr.txt || true
+  fi
   (( status == 0 )) || acceptance_print_runtime_errors android < native-evidence/android-logcat.txt
   (( status == 0 )) || acceptance_print_anr_reports android < native-evidence/android-logcat.txt
   if (( status != 0 )) && [[ -f native-evidence/pre-test-logcat.txt ]]; then
@@ -135,7 +139,7 @@ stage=final-logcat
 # but now says why: exit code, stderr, bytes read, logd state, buffer sizes.
 logcat_status=0
 adb logcat -d > native-evidence/android-logcat.txt 2> native-evidence/logcat-stderr.txt || logcat_status=$?
-if (( logcat_status != 0 )); then
+if (( logcat_status != 0 )) || [[ ! -s native-evidence/android-logcat.txt ]]; then
   {
     echo "exit=$logcat_status bytes=$(wc -c < native-evidence/android-logcat.txt)"
     echo "stderr: $(tr '\n' ' ' < native-evidence/logcat-stderr.txt)"
@@ -144,6 +148,7 @@ if (( logcat_status != 0 )); then
   } > native-evidence/logcat-failure.txt 2>&1 || true
   acceptance_print_tail native-evidence/logcat-failure.txt android LOGCAT 8
   acceptance_detail="logcat-capture-failed:exit=$logcat_status"
+  [[ -s native-evidence/android-logcat.txt ]] || acceptance_detail="$acceptance_detail:empty"
   false
 fi
 # Independent of any dialog: the pilot must not have had an ANR at all during the run
