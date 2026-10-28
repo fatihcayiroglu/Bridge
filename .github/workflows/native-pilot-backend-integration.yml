@@ -5,6 +5,8 @@ on:
     paths:
       - 'mobile-native-pilot/**'
       - 'server/**'
+      - 'e2e/native-auth/**'
+      - 'e2e/playwright.native-auth.config.mjs'
       - '.github/workflows/native-pilot-backend-integration.yml'
   workflow_dispatch:
 
@@ -24,6 +26,7 @@ jobs:
       BRIDGE_IT_ORIGIN: https://127.0.0.1:8443
       NATIVE_AUTH_REDIRECT_URIS: com.bridge.nativepilot:/oauth
       BRIDGE_IT_REDIRECT: com.bridge.nativepilot:/oauth
+      BRIDGE_IT_PROXY_EVIDENCE: ${{ github.workspace }}/integration-evidence/proxy.log
       DATABASE_URL: postgresql://bridge_it:disposable_ci_only@127.0.0.1:5432/bridge_native_it
       REDIS_URL: redis://127.0.0.1:6379/0
       # Only test-volume quotas change; PKCE, cookie, CSRF, JWT, 2FA and reuse
@@ -76,11 +79,38 @@ jobs:
           npm ci --no-fund
           npm ci --prefix server --no-fund
           npm ci --prefix mobile-native-pilot --no-fund
+          npm ci --prefix e2e --no-fund
           npm audit --audit-level=high
           npm audit --prefix server --audit-level=high
           npm audit --prefix mobile-native-pilot --audit-level=low
-      - name: Build actual backend
-        run: npm run build --prefix server
+          npm audit --prefix e2e --audit-level=low
+      - name: Build actual backend and browser client
+        run: |
+          npm run build --prefix server
+          npm run build
+      - name: Refresh-cookie security regression contracts
+        working-directory: server
+        run: |
+          npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts tests/app-integration.test.ts --json --outputFile ../integration-evidence/server-cookie-contracts.json
+          node -e 'const r=require("../integration-evidence/server-cookie-contracts.json");if(!r.success || !r.numTotalTests || r.numPassedTests!==r.numTotalTests || r.numFailedTests || r.numPendingTests || r.numTodoTests)throw Error("SERVER_CONTRACTS_INCOMPLETE");console.log(JSON.stringify({tests:r.numTotalTests,pass:r.numPassedTests,failed:r.numFailedTests,skipped:r.numPendingTests,todo:r.numTodoTests}))'
+      - name: Install real Chromium and certificate management tools
+        run: |
+          (cd e2e && npx playwright install --with-deps chromium)
+          sudo apt-get install -y --no-install-recommends libnss3-tools
+      - name: Permit sandbox user namespaces for the exact test Chromium binary
+        run: |
+          # First run: Ubuntu AppArmor denied the browser's namespace sandbox.
+          # Keep the global restriction and Chromium sandbox enabled; allow
+          # only the installed test executable, without wildcard attachments.
+          task_chromium=$(cd e2e && node --input-type=module -e 'import {chromium} from "@playwright/test"; console.log(chromium.executablePath())')
+          test -x "$task_chromium"
+          [[ "$task_chromium" =~ ^[A-Za-z0-9_./-]+$ ]]
+          task_userns_before=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile bridge-ci-chromium "%s" flags=(unconfined) {\n  userns,\n}\n' "$task_chromium" > "$RUNNER_TEMP/bridge-ci-chromium.apparmor"
+          sudo install -o root -g root -m 0644 "$RUNNER_TEMP/bridge-ci-chromium.apparmor" /etc/apparmor.d/bridge-ci-chromium
+          sudo apparmor_parser -r /etc/apparmor.d/bridge-ci-chromium
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "$task_userns_before"
+          echo 'CHROMIUM_SANDBOX_EXACT_BINARY_ALLOWLIST_READY'
       - name: Create ephemeral secrets and a trusted local TLS certificate
         shell: bash
         run: |
@@ -97,6 +127,24 @@ jobs:
           echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/it-ca.crt" >> "$GITHUB_ENV"
           echo "IT_TLS_KEY=$RUNNER_TEMP/it-server.key" >> "$GITHUB_ENV"
           echo "IT_TLS_CERT=$RUNNER_TEMP/it-server.crt" >> "$GITHUB_ENV"
+          value=$(openssl rand -hex 24)
+          echo "::add-mask::$value"
+          echo "BRIDGE_BROWSER_IT_PASSWORD=$value" >> "$GITHUB_ENV"
+          # A separate UNTRUSTED server is a real TLS refusal control. It is
+          # never imported into the trust store and never receives credentials.
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=Bridge untrusted TLS control' -addext 'subjectAltName=IP:127.0.0.1' -keyout "$RUNNER_TEMP/it-untrusted.key" -out "$RUNNER_TEMP/it-untrusted.crt" 2>/dev/null
+          echo "IT_UNTRUSTED_KEY=$RUNNER_TEMP/it-untrusted.key" >> "$GITHUB_ENV"
+          echo "IT_UNTRUSTED_CERT=$RUNNER_TEMP/it-untrusted.crt" >> "$GITHUB_ENV"
+      - name: Trust only the per-run CA in a new disposable-runner NSS database
+        run: |
+          # Chromium M146+ default. Never replace an existing trust database.
+          test ! -e "$HOME/.pki/nssdb"
+          task_ca_db="$HOME/.local/share/pki/nssdb"
+          test ! -e "$task_ca_db"
+          mkdir -p "$task_ca_db"
+          certutil -N --empty-password -d "sql:$task_ca_db"
+          certutil -A -d "sql:$task_ca_db" -n 'Bridge disposable integration CA' -t 'C,,' -i "$NODE_EXTRA_CA_CERTS"
+          certutil -L -d "sql:$task_ca_db"
       - name: Initialize only disposable database and start real HTTPS backend
         run: |
           node server/dist/db/postgres/index.js > integration-evidence/schema.log 2>&1
@@ -125,6 +173,19 @@ jobs:
           grep -qx 1 integration-evidence/lost-ack-db-count.txt
           docker exec '${{ job.services.postgres.id }}' psql -U bridge_it -d bridge_native_it -Atc 'SELECT count(*) FROM (SELECT "userId", "ackId" FROM messages WHERE "ackId" IS NOT NULL GROUP BY "userId", "ackId" HAVING count(*) > 1) AS duplicates' | tee integration-evidence/duplicate-db-count.txt
           grep -qx 0 integration-evidence/duplicate-db-count.txt
+      - name: Actual browser login and consent with strict TLS (zero retries)
+        working-directory: e2e
+        run: |
+          set -o pipefail
+          npx playwright test --config playwright.native-auth.config.mjs --retries=0 2>&1 | tee ../integration-evidence/browser-ui.log
+      - name: Require every browser case, with no skipped or flaky results
+        run: |
+          node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            const report=JSON.parse(readFileSync("integration-evidence/browser-results.json","utf8"));
+            const s=report.stats;
+            if(!s || s.expected!==3 || s.unexpected!==0 || s.skipped!==0 || s.flaky!==0 || report.errors?.length) throw Error("BROWSER_ACCEPTANCE_INCOMPLETE");
+            console.log(JSON.stringify({tests:3,pass:s.expected,failed:s.unexpected,skipped:s.skipped,flaky:s.flaky}));'
       - name: Stop owned processes
         if: always()
         run: |

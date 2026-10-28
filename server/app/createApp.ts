@@ -315,6 +315,13 @@ export function createApp(): AppBundle {
   // shell signs the person in and asks for consent (docs/NATIVE_AUTH.md).
   app.get(['/', '/index.html', '/sso-callback', '/reset-password', '/native-auth'], (req: Request, res: Response) => {
     if (!fs.existsSync(indexPath)) return res.status(404).end();
+    if (req.path.replace(/\/+$/, '') === '/native-auth') {
+      // A no-referrer document makes a browser form POST send Origin: null.
+      // Preserve strict CORS/CSRF checks with a same-origin-only document
+      // policy. The client removes the query before sign-in/consent; no
+      // cross-origin referrer is sent, and the callback keeps no-referrer.
+      res.setHeader('Referrer-Policy', 'same-origin');
+    }
     let html = fs.readFileSync(indexPath, 'utf-8');
     html = html.replace(/<script(?![^>]*\bnonce=)([^>]*)>/gi, `<script nonce="${res.locals.cspNonce}"$1>`);
 

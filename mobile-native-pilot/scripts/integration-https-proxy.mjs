@@ -5,6 +5,14 @@ import net from 'node:net';
 import { readFileSync } from 'node:fs';
 
 const server = https.createServer({ key: readFileSync(process.env.IT_TLS_KEY), cert: readFileSync(process.env.IT_TLS_CERT) }, (req, res) => {
+  if (req.method === 'POST' && req.url?.split('?')[0] === '/api/refresh/native-authorize') {
+    // Closed, CI-only wire evidence: never log cookie, URL, body, code or state.
+    const origin = req.headers.origin === 'https://127.0.0.1:8443' ? 'expected'
+      : req.headers.origin === 'null' ? 'null' : req.headers.origin ? 'other' : 'absent';
+    const site = req.headers['sec-fetch-site'];
+    const fetchSite = ['same-origin', 'same-site', 'cross-site', 'none'].includes(site) ? site : site ? 'other' : 'absent';
+    console.log('NATIVE_CONSENT_BOUNDARY ' + JSON.stringify({ origin, fetchSite }));
+  }
   const upstream = http.request({ host: '127.0.0.1', port: 3001, method: req.method, path: req.url,
     headers: { ...req.headers, 'x-forwarded-proto': 'https' } }, reply => {
     res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);

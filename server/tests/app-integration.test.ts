@@ -194,6 +194,21 @@ describe('createApp() entegrasyon', () => {
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toMatch(/^text\/html/);
       expect(res.headers['cache-control']).toContain('no-store');
+      expect(res.headers['referrer-policy']).toBe('same-origin');
+    });
+
+    it('keeps the ordinary document no-referrer policy unchanged', async () => {
+      const res = await request(app).get('/');
+      expect(res.status).toBe(200);
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+    });
+
+    it('still refuses a null Origin before native consent, even with same-origin fetch metadata', async () => {
+      const res = await request(app).post('/api/refresh/native-authorize')
+        .set('Origin', 'null').set('Sec-Fetch-Site', 'same-origin').type('form').send({});
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: 'Origin not allowed' });
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
     });
 
     it('JSON body parse eder', async () => {
