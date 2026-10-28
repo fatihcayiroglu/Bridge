@@ -21,6 +21,9 @@ test('three platforms execute same Svelte/React Electron PCM contract without re
 test('actual received PCM is analyzed, not inferred solely from RTP packet counters', () => {
   assert.match(runtime, /createMediaStreamSource/);
   assert.match(runtime, /getFloatTimeDomainData/);
+  assert.match(runtime, /sourceRms: Number\(sourceRms\.toFixed\(5\)\)/);
+  assert.match(runtime, /receivedRms: Number\(receivedRms\.toFixed\(5\)\)/);
+  assert.match(runtime, /silentOutput\.gain\.value = 0\.001/);
   assert.match(runtime, /__audioQualityMath\.measure/);
   assert.match(runtime, /RTCPeerConnection/);
   assert.match(runtime, /getStats\(\)/);

@@ -59,14 +59,18 @@
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
     const output = audioContext.createMediaStreamDestination();
+    const sourceAnalyser = audioContext.createAnalyser();
+    sourceAnalyser.fftSize = 2048;
     oscillator.frequency.value = 440;
     gain.gain.value = 0.06;
     oscillator.connect(gain);
-    gain.connect(output);
+    gain.connect(sourceAnalyser);
+    sourceAnalyser.connect(output);
     const track = output.stream.getAudioTracks()[0];
     if (!track) throw new Error('AUDIO_SOURCE_TRACK_MISSING');
     const group = { mode, count: configs[mode], audioContext, oscillator,
-      track, pairs: [], analyser: null, started: false };
+      track, pairs: [], analyser: null, receiverTrack: null,
+      sourceAnalyser, started: false };
     try {
       for (let i = 0; i < group.count; i++) {
         const left = new RTCPeerConnection({ iceServers: [] });
@@ -81,11 +85,14 @@
             analyser.fftSize = 2048;
             analyser.smoothingTimeConstant = 0;
             const silentOutput = audioContext.createGain();
-            silentOutput.gain.value = 0;
+            // A fully zero-gain output can be pruned by browser audio
+            // optimizations. Keep an effectively inaudible nonzero sink.
+            silentOutput.gain.value = 0.001;
             source.connect(analyser);
             analyser.connect(silentOutput);
             silentOutput.connect(audioContext.destination);
             group.analyser = analyser;
+            group.receiverTrack = event.track;
           };
         }
         left.addTrack(track, output.stream);
@@ -95,13 +102,29 @@
       oscillator.start();
       group.started = true;
       await Promise.all(group.pairs.map(negotiate));
-      await until(async () => {
-        const stats = await rtp(group);
-        if (stats.packets < group.count * 15 || !group.analyser) return false;
-        const data = new Float32Array(2048);
-        group.analyser.getFloatTimeDomainData(data);
-        return window.__audioQualityMath.measure(data, audioContext.sampleRate).rms > 0.003;
-      }, 'AUDIO_DECODED_PCM_NOT_AVAILABLE');
+      let lastSnapshot = {};
+      try {
+        await until(async () => {
+          const stats = await rtp(group);
+          const sourceData = new Float32Array(2048);
+          group.sourceAnalyser.getFloatTimeDomainData(sourceData);
+          const sourceRms = window.__audioQualityMath.measure(sourceData, audioContext.sampleRate).rms;
+          const receivedData = new Float32Array(2048);
+          if (group.analyser) group.analyser.getFloatTimeDomainData(receivedData);
+          const receivedRms = window.__audioQualityMath.measure(receivedData, audioContext.sampleRate).rms;
+          lastSnapshot = { packets: stats.packets, sourceRms: Number(sourceRms.toFixed(5)),
+            receivedRms: Number(receivedRms.toFixed(5)), analyserReady: !!group.analyser,
+            receiverState: group.receiverTrack?.readyState ?? 'absent',
+            receiverMuted: group.receiverTrack?.muted ?? null,
+            sourceState: track.readyState, audioContextState: audioContext.state };
+          return stats.packets >= group.count * 15 && receivedRms > 0.003;
+        }, 'AUDIO_DECODED_PCM_NOT_AVAILABLE');
+      } catch (error) {
+        if (error.message === 'AUDIO_DECODED_PCM_NOT_AVAILABLE') {
+          throw new Error('AUDIO_DECODED_PCM_NOT_AVAILABLE ' + JSON.stringify(lastSnapshot));
+        }
+        throw error;
+      }
       active = group;
       return { mode, peerLinks: group.count, source: 'local-synthetic-440Hz' };
     } catch (error) {
