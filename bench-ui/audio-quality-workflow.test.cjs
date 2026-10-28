@@ -24,6 +24,9 @@ test('actual received PCM is analyzed, not inferred solely from RTP packet count
   assert.match(runtime, /sourceRms: Number\(sourceRms\.toFixed\(5\)\)/);
   assert.match(runtime, /receivedRms: Number\(receivedRms\.toFixed\(5\)\)/);
   assert.match(runtime, /silentOutput\.gain\.value = 0\.001/);
+  assert.match(runtime, /const receiveContext = new AudioContext/);
+  assert.match(runtime, /receiveContext\.createMediaStreamSource/);
+  assert.match(runtime, /audioElement\.play\(\)/);
   assert.match(runtime, /__audioQualityMath\.measure/);
   assert.match(runtime, /RTCPeerConnection/);
   assert.match(runtime, /getStats\(\)/);

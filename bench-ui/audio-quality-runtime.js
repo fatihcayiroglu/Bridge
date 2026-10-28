@@ -47,6 +47,12 @@
     if (group.started) group.oscillator.stop();
     group.track.stop();
     group.pairs.forEach(({ left, right }) => { left.close(); right.close(); });
+    if (group.audioElement) {
+      group.audioElement.pause();
+      group.audioElement.srcObject = null;
+      group.audioElement.remove();
+    }
+    if (group.receiveContext.state !== 'closed') await group.receiveContext.close();
     if (group.audioContext.state !== 'closed') await group.audioContext.close();
   }
   async function prepare(mode) {
@@ -56,6 +62,7 @@
     }
     await window.__bench.reset(0);
     const audioContext = new AudioContext({ sampleRate: 48000 });
+    const receiveContext = new AudioContext({ sampleRate: 48000 });
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
     const output = audioContext.createMediaStreamDestination();
@@ -68,9 +75,9 @@
     sourceAnalyser.connect(output);
     const track = output.stream.getAudioTracks()[0];
     if (!track) throw new Error('AUDIO_SOURCE_TRACK_MISSING');
-    const group = { mode, count: configs[mode], audioContext, oscillator,
+    const group = { mode, count: configs[mode], audioContext, receiveContext, oscillator,
       track, pairs: [], analyser: null, receiverTrack: null,
-      sourceAnalyser, started: false };
+      sourceAnalyser, audioElement: null, playError: null, started: false };
     try {
       for (let i = 0; i < group.count; i++) {
         const left = new RTCPeerConnection({ iceServers: [] });
@@ -80,17 +87,27 @@
         if (i === 0) {
           right.ontrack = event => {
             if (event.track.kind !== 'audio') return;
-            const source = audioContext.createMediaStreamSource(new MediaStream([event.track]));
-            const analyser = audioContext.createAnalyser();
+            const remoteStream = event.streams[0] ?? new MediaStream([event.track]);
+            const audioElement = document.createElement('audio');
+            audioElement.autoplay = true;
+            audioElement.volume = 0.0001;
+            audioElement.srcObject = remoteStream;
+            document.body.appendChild(audioElement);
+            group.audioElement = audioElement;
+            void audioElement.play().catch(error => {
+              group.playError = error?.name ?? 'play-error';
+            });
+            const source = receiveContext.createMediaStreamSource(remoteStream);
+            const analyser = receiveContext.createAnalyser();
             analyser.fftSize = 2048;
             analyser.smoothingTimeConstant = 0;
-            const silentOutput = audioContext.createGain();
+            const silentOutput = receiveContext.createGain();
             // A fully zero-gain output can be pruned by browser audio
             // optimizations. Keep an effectively inaudible nonzero sink.
             silentOutput.gain.value = 0.001;
             source.connect(analyser);
             analyser.connect(silentOutput);
-            silentOutput.connect(audioContext.destination);
+            silentOutput.connect(receiveContext.destination);
             group.analyser = analyser;
             group.receiverTrack = event.track;
           };
@@ -98,7 +115,10 @@
         left.addTrack(track, output.stream);
       }
       await audioContext.resume();
-      if (audioContext.state !== 'running') throw new Error('AUDIO_CONTEXT_NOT_RUNNING');
+      await receiveContext.resume();
+      if (audioContext.state !== 'running' || receiveContext.state !== 'running') {
+        throw new Error('AUDIO_CONTEXT_NOT_RUNNING');
+      }
       oscillator.start();
       group.started = true;
       await Promise.all(group.pairs.map(negotiate));
@@ -111,12 +131,16 @@
           const sourceRms = window.__audioQualityMath.measure(sourceData, audioContext.sampleRate).rms;
           const receivedData = new Float32Array(2048);
           if (group.analyser) group.analyser.getFloatTimeDomainData(receivedData);
-          const receivedRms = window.__audioQualityMath.measure(receivedData, audioContext.sampleRate).rms;
+          const receivedRms = window.__audioQualityMath.measure(receivedData, receiveContext.sampleRate).rms;
           lastSnapshot = { packets: stats.packets, sourceRms: Number(sourceRms.toFixed(5)),
             receivedRms: Number(receivedRms.toFixed(5)), analyserReady: !!group.analyser,
             receiverState: group.receiverTrack?.readyState ?? 'absent',
             receiverMuted: group.receiverTrack?.muted ?? null,
-            sourceState: track.readyState, audioContextState: audioContext.state };
+            sourceState: track.readyState, audioContextState: audioContext.state,
+            receiveContextState: receiveContext.state,
+            audioPlaying: group.audioElement ? !group.audioElement.paused : false,
+            audioReadyState: group.audioElement?.readyState ?? null,
+            audioPlayError: group.playError };
           return stats.packets >= group.count * 15 && receivedRms > 0.003;
         }, 'AUDIO_DECODED_PCM_NOT_AVAILABLE');
       } catch (error) {
@@ -145,7 +169,7 @@
         await pause(100);
         const pcm = new Float32Array(2048);
         group.analyser.getFloatTimeDomainData(pcm);
-        windows.push({ ...window.__audioQualityMath.measure(pcm, group.audioContext.sampleRate),
+        windows.push({ ...window.__audioQualityMath.measure(pcm, group.receiveContext.sampleRate),
           time: performance.now() });
       }
     })();
