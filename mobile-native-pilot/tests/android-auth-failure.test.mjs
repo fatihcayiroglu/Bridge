@@ -147,6 +147,8 @@ test('every answered dialog is visible in the failure report; the failure handle
 import { dumpSucceeded, MAX_UI_DUMP_ATTEMPTS } from '../scripts/android-auth-ui.mjs';
 test('only the tool\'s own confirmation counts as a successful dump, never an empty exit-0 output', () => {
   assert.equal(dumpSucceeded('UI hierarchy dumped to: /sdcard/bridge-auth-ui.xml\n'), true);
+  // The exact text observed on the emulator (run 40683551643): the tool misspells "hierarchy".
+  assert.equal(dumpSucceeded('UI hierchary dumped to: /sdcard/bridge-auth-ui.xml'), true);
   for (const bad of ['', undefined, 'ERROR: could not get idle state.', 'UI hierarchy']) assert.equal(dumpSucceeded(bad), false, String(bad));
 });
 test('dump failures are retried a bounded number of times, recorded, removed-before-read, and end fail-closed', async () => {
@@ -154,7 +156,8 @@ test('dump failures are retried a bounded number of times, recorded, removed-bef
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
   assert.equal(MAX_UI_DUMP_ATTEMPTS, 5);
   assert.match(src, /shell\('rm','-f','\/sdcard\/bridge-auth-ui\.xml'\)/, 'a stale dump must never be read');
-  assert.match(src, /facts\.uiDumpFailures\.push\(\{attempt,output:redact\(output,120,secrets\(\)\)\}\)/);
+  assert.match(src, /facts\.uiDumpFailures\.push\(\{attempt,output:redact\(output,120,secrets\(\)\),file:present\}\)/);
+  assert.match(src, /test -s \/sdcard\/bridge-auth-ui\.xml/, 'the file must exist and be non-empty before it is read');
   assert.match(src, /attempt>=MAX_UI_DUMP_ATTEMPTS\)throw Error\('UI_DUMP_UNAVAILABLE'\)/);
   assert.deepEqual(failureReport({ facts: { uiDumpFailures: [{ attempt: 1, output: 'ERROR: could not get idle state.' }] } }).uiDumpFailures, [{ attempt: 1, output: 'ERROR: could not get idle state.' }]);
 });

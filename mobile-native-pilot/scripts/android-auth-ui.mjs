@@ -44,4 +44,5 @@ export function anrVerdict(dialog, protectedNames, handled=0) {
 // `uiautomator dump` can exit 0 without writing the file (e.g. no idle state on a screen that is still
 // loading; run 40682196007). Success is the tool's own confirmation, never the exit code alone.
 export const MAX_UI_DUMP_ATTEMPTS=5;
-export const dumpSucceeded=output=>/UI hierarchy dumped to: \S+/.test(String(output ?? ''));
+// The tool's own message misspells the word ("UI hierchary dumped to:", observed in run 40683551643); both spellings count.
+export const dumpSucceeded=output=>/UI hier(?:archy|chary) dumped to: \S+/.test(String(output ?? ''));

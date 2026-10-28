@@ -29,8 +29,10 @@ const shell=(...args)=>adb(['shell',...args]);
 async function dumpUi() {
   for(let attempt=1;;attempt++){shell('rm','-f','/sdcard/bridge-auth-ui.xml');
     const output=shell('uiautomator','dump','/sdcard/bridge-auth-ui.xml');
-    if(dumpSucceeded(output))return nodesOf(shell('cat','/sdcard/bridge-auth-ui.xml'));
-    facts.uiDumpFailures.push({attempt,output:redact(output,120,secrets())});
+    // The tool's message alone is not enough: the file itself must exist and be non-empty before it is read.
+    const present=dumpSucceeded(output)?shell('sh','-c','test -s /sdcard/bridge-auth-ui.xml && echo present || echo absent').trim():'no-confirmation';
+    if(present==='present')return nodesOf(shell('cat','/sdcard/bridge-auth-ui.xml'));
+    facts.uiDumpFailures.push({attempt,output:redact(output,120,secrets()),file:present});
     if(attempt>=MAX_UI_DUMP_ATTEMPTS)throw Error('UI_DUMP_UNAVAILABLE');await pause(1000);}}
 async function ui(answerAnr=true) {
   for(;;){const nodes=await dumpUi();
