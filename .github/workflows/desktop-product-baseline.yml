@@ -5,6 +5,7 @@ on:
     paths:
       - 'e2e/tests/desktop-responsive-viewport.spec.ts'
       - 'e2e/tests/desktop-cdp-runtime.spec.ts'
+      - 'e2e/tests/desktop-bounded-soak.spec.ts'
       - 'scripts/verify-desktop-product-probe.test.cjs'
       - '.github/workflows/desktop-product-baseline.yml'
   workflow_dispatch:
@@ -20,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [startup-interactions, responsive-a11y, authenticated-upload, real-webrtc]
+        suite: [startup-interactions, responsive-a11y, authenticated-upload, real-webrtc, bounded-soak]
     env:
       DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
       JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
@@ -91,6 +92,9 @@ jobs:
               ;;
             real-webrtc)
               npx playwright test tests/voice-media.spec.ts tests/media-automation.spec.ts --project=voice-media --retries=0 --workers=1 --reporter=list
+              ;;
+            bounded-soak)
+              npx playwright test tests/desktop-bounded-soak.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list
               ;;
             *) echo 'UNKNOWN_BRIDGE_PRODUCT_SUITE' >&2; exit 1 ;;
           esac
