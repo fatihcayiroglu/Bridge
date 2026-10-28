@@ -24,6 +24,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY scripts ./scripts
 COPY server/package*.json ./server/
+COPY vendor/deepmerge ./vendor/deepmerge
 
 # Root devDeps (esbuild + client build için)
 RUN npm ci --ignore-scripts=false
@@ -44,6 +45,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native modülleri için
 COPY scripts ./scripts
 COPY server/package*.json ./server/
+COPY vendor/deepmerge ./vendor/deepmerge
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
 
 # ── Stage 3: Minimal runtime image ─────────────────────────────

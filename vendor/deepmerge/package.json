@@ -1,0 +1,8 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.1-bridge.1",
+  "description": "Reviewed Bridge patch for GHSA-gcqx-w48m-w2h4; source reused from PR #536",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "license": "MIT"
+}

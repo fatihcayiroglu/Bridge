@@ -31,7 +31,7 @@
     "build:budget": "node scripts/check-bundle-budget.js",
     "build:ci": "node scripts/build.js && node scripts/check-bundle-budget.js",
     "test": "npm run test:release-integrity && cd server && npm test",
-    "test:release-integrity": "node --test scripts/release-integrity.test.js scripts/product-surface-contract.test.js scripts/final23-adversarial-contract.test.js scripts/backup-tools.test.js scripts/require-no-skipped-tests.test.js scripts/provision-portable-source-key.test.js scripts/portable-trust-registry.test.js scripts/check-svelte-boundary.test.js server/scripts/p7-partition-assessment.test.cjs scripts/medialab/lib/analysis.test.mjs",
+    "test:release-integrity": "node --test scripts/release-integrity.test.js scripts/product-surface-contract.test.js scripts/final23-adversarial-contract.test.js scripts/backup-tools.test.js scripts/require-no-skipped-tests.test.js scripts/provision-portable-source-key.test.js scripts/portable-trust-registry.test.js scripts/check-svelte-boundary.test.js server/scripts/p7-partition-assessment.test.cjs scripts/medialab/lib/analysis.test.mjs scripts/deepmerge-security.test.mjs",
     "lint": "cd server && npm run lint",
     "lint:client": "cd client && npx eslint js",
     "typecheck:server": "npx tsc -p server/tsconfig.json --noEmit",
@@ -159,7 +159,8 @@
     "svelte-eslint-parser": "^1.8.0",
     "typescript": "^6.0.3",
     "vite": "^8.1.6",
-    "vitest": "^4.1.12"
+    "vitest": "^4.1.12",
+    "deepmerge": "file:vendor/deepmerge"
   },
   "author": "Bridge Team",
   "license": "MIT",
@@ -192,8 +193,9 @@
     },
     "body-parser": "2.4.0",
     "socket.io-parser": "4.2.7",
-    "qs": "6.16.0",
+    "qs": "6.17.0",
     "browserslist": "4.28.8",
-    "fast-uri": "3.1.9"
+    "fast-uri": "3.1.9",
+    "deepmerge": "$deepmerge"
   }
 }

@@ -105,7 +105,8 @@
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "deepmerge": "file:../vendor/deepmerge"
   },
   "jest": {
     "preset": "ts-jest",
@@ -368,8 +369,9 @@
     "nanoid": "3.3.18",
     "postcss": "8.5.26",
     "socket.io-parser": "4.2.7",
-    "qs": "6.16.0",
+    "qs": "6.17.0",
     "browserslist": "4.28.9",
-    "baseline-browser-mapping": "2.11.21"
+    "baseline-browser-mapping": "2.11.21",
+    "deepmerge": "$deepmerge"
   }
 }
