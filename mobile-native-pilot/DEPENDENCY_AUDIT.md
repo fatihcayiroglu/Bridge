@@ -6,7 +6,20 @@ at the SDK 57 versions. Installed by `npm ci` in CI. This covers only this isola
 pilot. No production dependency of the web, server, Electron or Capacitor apps
 is changed.
 
-`npm audit --audit-level=high` gates CI. Current result: **0 vulnerabilities**.
+`npm audit --audit-level=high` gates the marker workflow and `npm audit --audit-level=low` the native
+workflow. Current result: **0 vulnerabilities** at `low`.
+
+## Resolved: GHSA-gcqx-w48m-w2h4 (deepmerge)
+
+| | |
+|---|---|
+| Advisory | [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4): `mergeObject()` does not validate keys; prototype poisoning of returned objects (CWE-1321, low, CVSS 4.0 2.7). Reviewed in the advisory database on 2026-10-27; it then failed the native workflow's `npm audit --audit-level=low` step (run 40601573623) |
+| Path | expo → @expo/config 57.0.10 → deepmerge 4.3.1 (affected: >= 4.2.0, <= 4.3.1). **No patched release exists**; @expo/config 57.x and 58.x still declare `deepmerge ^4.3.1`. npm's suggestion is a downgrade to expo 51 |
+| Reproduced in 4.3.1 | A source with an own `"__proto__"` key merged into a **null-prototype** target replaces the result's prototype. Plain targets were already protected; the global `Object.prototype` is never modified |
+| Exposure before the fix | Build/CLI time only (`@expo/config` merging the project's own config). Not in the app bundle: the Android export source map lists no deepmerge or @expo/config module |
+| Fix | `vendor/deepmerge`: upstream 4.3.1 `dist/cjs.js` plus one guard (the key `__proto__` is never written to a result), pinned with `dependencies.deepmerge = file:vendor/deepmerge` and `overrides.deepmerge = $deepmerge` |
+| Evidence | `tests/deepmerge-vendor.test.mjs`: the attack is blocked (and the same test FAILS against pristine 4.3.1), ordinary merge behaviour matches 4.3.1, and `@expo/config` resolves the vendored file. `npm ci` + `npm audit --audit-level=low`: 0 vulnerabilities; `tsc`, `expo export` and `expo prebuild` succeed |
+| Removal | Delete `vendor/deepmerge` and both entries once a fixed deepmerge release exists or @expo/config drops it |
 
 ## Resolved: GHSA-mrhx-c7xc-m3w5 (zod)
 
