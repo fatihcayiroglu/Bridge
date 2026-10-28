@@ -26,13 +26,17 @@ jobs:
           npm ci --no-audit --no-fund
           npm ci --prefix electron --no-audit --no-fund
           npm ci --prefix bench-ui --no-audit --no-fund
+      - name: Install and verify pinned Electron runtime
+        run: |
+          node electron/node_modules/electron/install.js
+          test -x electron/node_modules/electron/dist/electron
       - name: Install X virtual framebuffer
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb xauth
       - name: Validate report contract and build equal UI fixtures
         run: |
-          node --test bench-ui/verify-report.test.cjs
+          node --test bench-ui/*.test.cjs
           node bench-ui/build-assets.mjs
       - name: Run real Electron UI benchmark (not product acceptance)
         shell: bash
