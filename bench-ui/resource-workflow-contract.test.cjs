@@ -23,6 +23,8 @@ test('CPU and RAM come from measured Electron renderer process IDs, not hardcode
   assert.match(runner, /const metricsAfter = app\.getAppMetrics\(\)/);
   assert.match(runner, /workingSetSize/);
   assert.match(runner, /RESOURCE_OS_CPU_OR_RAM_NOT_MEASURED/);
+  assert.match(runner, /round === 0 \? \{\} : cpuAndMemory/);
+  assert.match(runner, /if \(round >= WARMUPS\) samples\[name\]\.push\(sample\)/);
   assert.doesNotMatch(runner, /cpu\.percentCPU\b/);
 });
 test('media uses actual RTP and presented HTML video frames with no fake metrics', () => {

@@ -63,7 +63,13 @@ function cpuAndMemory(win, beforeMetrics, afterMetrics) {
   const workingSetKB = after?.memory?.workingSetSize;
   if (!Number.isFinite(cpuPercent) || cpuPercent < 0 ||
       !Number.isFinite(workingSetKB) || workingSetKB <= 0) {
-    throw new Error('RESOURCE_OS_CPU_OR_RAM_NOT_MEASURED');
+    throw new Error('RESOURCE_OS_CPU_OR_RAM_NOT_MEASURED ' + JSON.stringify({
+      rendererFoundBefore: !!before,
+      rendererFoundAfter: !!after,
+      cpuPercentValid: Number.isFinite(cpuPercent) && cpuPercent >= 0,
+      workingSetValid: Number.isFinite(workingSetKB) && workingSetKB > 0,
+      processKinds: afterMetrics.map(x => x.type),
+    }));
   }
   const cumulativeBefore = before?.cpu?.cumulativeCPUUsage;
   const cumulativeAfter = after?.cpu?.cumulativeCPUUsage;
@@ -106,7 +112,10 @@ async function measure(name, mode, round) {
       uiWorkMs: Number(result.uiWorkMs.toFixed(3)),
       rendererTaskSeconds: Number(taskSeconds.toFixed(6)),
       audio: result.audio, video: result.video,
-      ...cpuAndMemory(win, metricsBefore, metricsAfter),
+      // The first round is explicitly a warmup, not one of the five accepted
+      // samples. Some Windows hosts initially report no renderer CPU/RAM.
+      // All FIVE recorded rounds still require genuine process metrics.
+      ...(round === 0 ? {} : cpuAndMemory(win, metricsBefore, metricsAfter)),
     };
   } finally {
     await win.webContents.executeJavaScript('window.__resourceBench.teardown()');

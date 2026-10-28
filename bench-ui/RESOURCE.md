@@ -20,6 +20,10 @@ real RTP *before* the CPU interval begins. A paired Electron
 `app.getAppMetrics()` call gives **renderer-process** average CPU
 `percentCPUUsage` across the measured interval and an after-interval
 working-set snapshot; CDP `TaskDuration` records renderer main-thread work.
+The warmup round must complete its full UI/media/RTP journey and duration,
+but its OS process metric may be unavailable during initial Windows startup;
+it is never included in CPU/RAM summaries. All five measured rounds MUST
+have genuine renderer-process CPU and RAM, or the CI cell fails.
 The report includes all raw intervals, p50/p95 summaries, received RTP and
 **presented** video frames where applicable. Video acceptance requires BOTH
 inbound RTP packets and five genuinely presented frames in the measured
