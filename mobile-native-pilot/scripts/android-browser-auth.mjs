@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -68,9 +68,15 @@ async function browserReady(){await until(async()=>{const a=activity();if(!a.sta
   const n=await ui();assert.ok(!n.some(x=>/Your connection is not private|NET::ERR_CERT/.test(x.text)),'TRUSTED_BROWSER_TLS_REQUIRED');
   return n.filter(x=>x.package===chrome && x.class==='android.widget.EditText').length>=2;},'custom-tabs-login');
   assert.match(activity(),/CustomTabActivity/,'REAL_CHROME_CUSTOM_TAB_REQUIRED');facts.customTabsObserved=true;}
-async function signIn(u,previousPid){await browserReady();const n=(await ui()).filter(x=>x.package===chrome && x.class==='android.widget.EditText');
-  const names=n.filter(x=>x.password==='false'),secrets=n.filter(x=>x.password==='true');assert.ok(names.length===1 && secrets.length===1,'REAL_LOGIN_FIELDS_REQUIRED');
-  tap(names[0]);shell('input','text',u.username);tap(secrets[0]);shell('input','text',password);
+async function signIn(u,previousPid){await browserReady();
+  // Every field is re-read after the previous input and must report focus before it receives text; a tap on stale
+  // bounds once sent the password into the username field (run 40695774846).
+  const fieldFocused=async(which)=>{tap(loginFields(await ui(),[chrome])[which]);
+    await until(async()=>isFocused(loginFields(await ui(),[chrome])[which]),which+'-field-focus');};
+  await fieldFocused('name');shell('input','text',u.username);
+  await until(async()=>usernameIntact(await ui(),[chrome],u.username),'username-entered');
+  await fieldFocused('secret');shell('input','text',password);
+  await until(async()=>usernameIntact(await ui(),[chrome],u.username),'username-still-intact');
   // Back dismisses only an actually shown IME; otherwise it would cancel CCT.
   if(/mInputShown=true/.test(shell('dumpsys','input_method')))shell('input','keyevent','4');
   tap(await until(async()=>{const now=await ui(),field=now.find(x=>x.package===chrome && x.class==='android.widget.EditText' && x.password==='true');

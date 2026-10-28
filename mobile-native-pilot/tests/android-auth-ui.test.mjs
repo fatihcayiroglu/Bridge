@@ -60,3 +60,27 @@ test('the Android harness submits through signInSubmit, not a label click on Sig
   assert.match(s,/signInSubmit\(now,'Sign In',\[chrome\],field\)/);
   assert.ok(!/click\('Sign In'/.test(s));
 });
+// Run 40695774846: the password reached the username field ("and_A_..[secret]") and the page said "All fields are required".
+import {loginFields,isFocused,usernameIntact} from '../scripts/android-auth-ui.mjs';
+const edit=(password,text,focused='false')=>({class:'android.widget.EditText',package:'chrome',password,text,focused,bounds:'[0,0][9,9]'});
+test('login fields are split by the password attribute and need exactly one of each',()=>{
+  const name=edit('false','alice'),secret=edit('true','');
+  assert.deepEqual(loginFields([name,secret,{...edit('false','x'),package:'other'}],['chrome']),{name,secret});
+  assert.throws(()=>loginFields([name],['chrome']),/REAL_LOGIN_FIELDS_REQUIRED/);
+  assert.throws(()=>loginFields([name,edit('false','b'),secret],['chrome']),/REAL_LOGIN_FIELDS_REQUIRED/);
+});
+test('focus is read from the field, and a username with the password appended is detected',()=>{
+  assert.equal(isFocused(edit('true','', 'true')),true);
+  assert.equal(isFocused(edit('true','', 'false')),false);
+  assert.equal(isFocused(undefined),false);
+  assert.equal(usernameIntact([edit('false','alice'),edit('true','')],['chrome'],'alice'),true);
+  assert.equal(usernameIntact([edit('false','alicePASSWORD'),edit('true','')],['chrome'],'alice'),false);
+});
+test('the Android harness gates every typed field on observed focus and checks the username afterwards',()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/isFocused\(loginFields\(await ui\(\),\[chrome\]\)\[which\]\)/);
+  assert.match(s,/await fieldFocused\('name'\);shell\('input','text',u\.username\)/);
+  assert.match(s,/await fieldFocused\('secret'\);shell\('input','text',password\)/);
+  assert.match(s,/username-still-intact/);
+  assert.ok(!/tap\(secrets\[0\]\)/.test(s));
+});

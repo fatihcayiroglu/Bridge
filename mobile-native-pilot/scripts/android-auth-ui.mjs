@@ -98,3 +98,19 @@ export function signInSubmit(nodes, label, packages, passwordField) {
   assert.ok(below.length<=1,'AMBIGUOUS_SIGN_IN_SUBMIT');
   return below[0] ?? null;
 }
+
+// Text fields of one package, split by the `password` attribute. Run 40695774846 typed the password into the
+// username field (its visible text was the username followed by the redacted secret, then the page said "All
+// fields are required"): the password field's bounds were stale after the first keyboard, so the tap missed.
+export function loginFields(nodes, packages) {
+  const edits=nodes.filter(n=>packages.includes(n.package) && n.class==='android.widget.EditText');
+  const names=edits.filter(n=>n.password==='false'),secrets=edits.filter(n=>n.password==='true');
+  assert.ok(names.length===1 && secrets.length===1,'REAL_LOGIN_FIELDS_REQUIRED');
+  return {name:names[0],secret:secrets[0]};
+}
+// The field that must receive the next typed text: it has to report focus itself, never be assumed from a tap.
+export const isFocused=n=>n?.focused==='true';
+// After typing, the username field must hold exactly the username (so the password cannot have landed there).
+export function usernameIntact(nodes, packages, username) {
+  return loginFields(nodes,packages).name.text===username;
+}
