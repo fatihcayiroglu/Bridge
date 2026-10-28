@@ -12,7 +12,7 @@ const specimen = () => ({
     sampleSize, iterations: index === 0 ? 30 : 12, warmups: index === 0 ? 5 : 3,
     variants: Object.fromEntries(['svelte', 'react'].map(name => [name, {
       heapMB: 10,
-      timings: Object.fromEntries(['reset', 'append', 'appendBatch100', 'filter', 'draft'].map(step => [step, {
+      timings: Object.fromEntries(['reset', 'append', 'appendBatch100', 'filter', 'draftBurst8'].map(step => [step, {
         samples: index === 0 ? 30 : 12, p50Ms: 2, p95Ms: 4,
       }])),
     }])),
@@ -53,5 +53,10 @@ test('missing large-history scenario fails', () => {
 test('missing burst-append measurements fail', () => {
   const result = specimen();
   delete result.scenarios[1].variants.react.timings.appendBatch100;
+  assert.throws(() => verify(result), /Missing samples/);
+});
+test('missing eight-update draft burst fails', () => {
+  const result = specimen();
+  delete result.scenarios[1].variants.svelte.timings.draftBurst8;
   assert.throws(() => verify(result), /Missing samples/);
 });

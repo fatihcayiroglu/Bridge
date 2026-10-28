@@ -21,7 +21,10 @@ The runner fails on missing controls, wrong message counts, timeouts or
 incomplete samples. It prints `BENCHMARK_RESULT` and creates a JSON artifact.
 The scenarios are 1,000 messages (5 warmups + 30 measured rounds) and 10,000
 messages (3 warmups + 12 rounds). Each compares list construction, one append,
-100-message burst append, filter and composer draft update. Framework order
+100-message burst append, filter and an eight-update composer draft burst. The
+draft result is the sum of eight independently verified DOM commit durations,
+because some individual composer updates fall below browser timer resolution.
+Framework order
 alternates each round to reduce drift. Each duration ends at the `MutationObserver`
 notification when the expected number of DOM elements has committed. The
 two animation frames are awaited for correctness, **not included in timing**.

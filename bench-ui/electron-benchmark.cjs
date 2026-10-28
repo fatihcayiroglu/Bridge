@@ -11,7 +11,7 @@ const scenarios = [
 ];
 const names = ['svelte', 'react'];
 const windows = {};
-const operationNames = ['reset', 'append', 'appendBatch100', 'filter', 'draft'];
+const operationNames = ['reset', 'append', 'appendBatch100', 'filter', 'draftBurst8'];
 
 function percentile(values, ratio) {
   if (!values.length) throw new Error('No performance samples');
@@ -81,7 +81,11 @@ async function measure(name, operation, expectedCount, size, round) {
     '}finally{observer.disconnect()}' +
     '})()'
   );
-  if (!Number.isFinite(result.committedMs) || result.committedMs <= 0 ||
+  // A single tiny composer update can commit inside the renderer's quantized
+  // performance.now() resolution. Accept a zero *individual* reading only for
+  // the draft operation; the eight-update burst must have measurable duration.
+  if (!Number.isFinite(result.committedMs) || result.committedMs < 0 ||
+      (operation !== 'draft' && result.committedMs === 0) ||
       result.count !== expectedCount || (operation === 'draft' && result.preview !== draftText)) {
     throw new Error(name + ' ' + operation + ': invalid result ' + JSON.stringify(result) +
       ', expected ' + expectedCount + ' actual DOM nodes');
@@ -110,7 +114,7 @@ async function run() {
       ['append', sampleSize + 1],
       ['appendBatch100', sampleSize + 101],
       ['filter', sampleSize / 10 + 10],
-      ['draft', sampleSize / 10 + 10],
+      ['draftBurst8', sampleSize / 10 + 10],
     ];
     for (let i = 0; i < warmups + iterations; i++) {
       const order = i % 2 === 0 ? names : [...names].reverse();
@@ -118,7 +122,16 @@ async function run() {
         windows[name].show();
         windows[name].focus();
         for (const [operation, count] of ops) {
-          const elapsed = await measure(name, operation, count, sampleSize, i);
+          let elapsed;
+          if (operation === 'draftBurst8') {
+            elapsed = 0;
+            for (let keystroke = 0; keystroke < 8; keystroke++) {
+              elapsed += await measure(name, 'draft', count, sampleSize, i * 8 + keystroke);
+            }
+            if (elapsed <= 0) throw new Error(name + ': draft burst below clock resolution');
+          } else {
+            elapsed = await measure(name, operation, count, sampleSize, i);
+          }
           if (i >= warmups) values[name][operation].push(elapsed);
         }
       }

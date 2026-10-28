@@ -24,5 +24,8 @@ test('large history, batch update and draft preview remain part of the benchmark
   assert.match(runner, /sampleSize: 10000/);
   assert.match(runner, /appendBatch100/);
   assert.match(runner, /setDraft/);
+  assert.match(runner, /draftBurst8/);
+  assert.match(runner, /for \(let keystroke = 0; keystroke < 8; keystroke\+\+\)/);
+  assert.match(runner, /draft burst below clock resolution/);
   assert.match(runner, /MutationObserver/);
 });

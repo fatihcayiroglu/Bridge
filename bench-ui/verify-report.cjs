@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const required = ['reset', 'append', 'appendBatch100', 'filter', 'draft'];
+const required = ['reset', 'append', 'appendBatch100', 'filter', 'draftBurst8'];
 const variants = ['svelte', 'react'];
 const scenarioSpec = [
   { sampleSize: 1000, iterations: 30, warmups: 5 },
