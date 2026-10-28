@@ -71,8 +71,8 @@ describe('feature flag (default off)', () => {
 
   it('off: no snapshot is stored and the queue behaves as before (shows current text)', async () => {
     const id = await newReportedMessage();
-    const row = await mockDb.messageReports.findOne({ messageId: id });
-    expect(row.evidenceCapturedAt).toBeUndefined();
+    const row = (await mockDb.messageReports.findOne({ messageId: id }))!;
+    expect(row!.evidenceCapturedAt).toBeUndefined();
     await editChannelMessage(null, { actorId: AUTHOR, messageId: id, content: 'benign now' });
     const entry = await forMessage(id);
     expect(entry.evidence).toBeUndefined();
@@ -112,10 +112,10 @@ describe('snapshot on (REPORT_EVIDENCE_SNAPSHOT=1)', () => {
 
   it('stores author, timestamps and only the attachment name and type, never its URL', async () => {
     const id = await newReportedMessage('with file', { fileUrl: '/uploads/secret-token-url', fileName: 'a.png', fileType: 'image/png' });
-    const row = await mockDb.messageReports.findOne({ messageId: id });
+    const row = (await mockDb.messageReports.findOne({ messageId: id }))!;
     expect(row).toMatchObject({ evidenceAuthorId: AUTHOR, evidenceAuthorName: 'Author', evidenceFileName: 'a.png', evidenceFileType: 'image/png' });
     expect(JSON.stringify(row)).not.toContain('secret-token-url');
-    expect(typeof row.evidenceCapturedAt).toBe('number');
+    expect(typeof row!.evidenceCapturedAt).toBe('number');
   });
 
   it('only a moderator sees it: the reporter and the author get no queue entry', async () => {
