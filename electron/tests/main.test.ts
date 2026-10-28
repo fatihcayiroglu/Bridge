@@ -117,6 +117,90 @@ describe('first run — connect to a server', () => {
   });
 });
 
+describe('native screen share — trusted explicit selection', () => {
+  const origin = 'https://chat.example.com';
+  const screen = { id: 'screen:0:0', name: 'Entire Screen' };
+  const windowSource = { id: 'window:42:0', name: 'Document Window' };
+
+  async function ready() {
+    const { electron } = await loadMain({ serverOrigin: origin });
+    const win = mainWindowOf(electron);
+    const registration = electron.session.defaultSession.setDisplayMediaRequestHandler;
+    expect(registration).toHaveBeenCalledWith(expect.any(Function), { useSystemPicker: true });
+    const handler = registration.mock.calls[0][0];
+    const request = {
+      securityOrigin: origin,
+      userGesture: true,
+      frame: win.webContents.mainFrame,
+      audioRequested: false,
+      videoRequested: true,
+    };
+    const ask = (overrides: Record<string, unknown> = {}) =>
+      new Promise<unknown>((resolve) => handler({ ...request, ...overrides }, resolve));
+    return { electron, win, ask };
+  }
+
+  it('denies a forged origin, subframe and non-user-initiated request before source enumeration', async () => {
+    const { electron, ask } = await ready();
+    await expect(ask({ securityOrigin: 'https://evil.example' })).resolves.toBeNull();
+    await expect(ask({ frame: { id: 'foreign-frame' } })).resolves.toBeNull();
+    await expect(ask({ frame: null })).resolves.toBeNull();
+    await expect(ask({ userGesture: false })).resolves.toBeNull();
+    expect(electron.desktopCapturer.getSources).not.toHaveBeenCalled();
+    expect(electron.dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('only shares the explicit second source chosen by the user, never an automatic first source', async () => {
+    const { electron, ask } = await ready();
+    electron.desktopCapturer.getSources.mockResolvedValue([screen, windowSource]);
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 2 });
+    await expect(ask()).resolves.toEqual({ video: windowSource });
+    expect(electron.desktopCapturer.getSources).toHaveBeenCalledWith({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 0, height: 0 },
+      fetchWindowIcons: false,
+    });
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      buttons: ['Cancel', '1. Entire Screen', '2. Document Window'],
+      defaultId: 0,
+      cancelId: 0,
+    }));
+  });
+
+  it('denies cancellation, invalid picker results, empty sources and enumeration failures', async () => {
+    const { electron, ask } = await ready();
+    electron.desktopCapturer.getSources.mockResolvedValue([screen]);
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 0 });
+    await expect(ask()).resolves.toBeNull();
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 9 });
+    await expect(ask()).resolves.toBeNull();
+    electron.desktopCapturer.getSources.mockResolvedValue([]);
+    await expect(ask()).resolves.toBeNull();
+    electron.desktopCapturer.getSources.mockRejectedValue(new Error('PipeWire denied'));
+    await expect(ask()).resolves.toBeNull();
+  });
+
+  it('denies the pending request when the Bridge window navigates away before consent', async () => {
+    const { electron, win, ask } = await ready();
+    electron.desktopCapturer.getSources.mockResolvedValue([screen]);
+    electron.dialog.showMessageBox.mockImplementation(async () => {
+      win.webContents.url = 'https://evil.example';
+      return { response: 1 };
+    });
+    await expect(ask()).resolves.toBeNull();
+  });
+
+  it('does not offer a source list without the user being able to cancel', async () => {
+    const { electron, ask } = await ready();
+    electron.desktopCapturer.getSources.mockResolvedValue([screen]);
+    electron.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+    await expect(ask()).resolves.toEqual({ video: screen });
+    const options = electron.dialog.showMessageBox.mock.calls[0][1];
+    expect(options.buttons[0]).toBe('Cancel');
+    expect(options.detail).toMatch(/Cancel shares nothing/);
+  });
+});
+
 describe('returning user — the saved server', () => {
   const ORIGIN = 'https://chat.example.com';
 
