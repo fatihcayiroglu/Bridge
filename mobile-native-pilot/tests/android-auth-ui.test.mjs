@@ -119,3 +119,32 @@ test('the Settings certificate hop repeats its tap until the next screen shows, 
   assert.ok(!/await findSetting\('CA certificate'\)/.test(s),'a single unverified tap is not enough');
   assert.match(s,/await click\('Install anyway',\['com\.android\.settings'\],\{ignoreCase:true\}\)/,'the existing click of the warning button is kept');
 });
+// Run 40703767548: login form never rendered inside the Custom Tab (tabs visible, zero input fields).
+import {chromeConsoleEvidence} from '../scripts/android-auth-ui.mjs';
+const CL=[
+  '10-28 14:24:20.100  900  900 I chromium: [INFO:CONSOLE(12)] "Uncaught TypeError: x is not a function", source: https://127.0.0.1:8443/js/app.js?code=SECRETCODE (12)',
+  '10-28 14:24:21.100  900  900 W cr_X: unrelated chatter',
+  '10-28 14:24:22.100  900  900 E cr_Net: Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID https://127.0.0.1:8443/api/x?token=abcdefghijklmnopqrstuvwxyz0123456789',
+  '10-28 14:24:23.100  900  900 I ActivityManager: ERROR but not a chromium tag',
+  `10-28 14:24:24.100  900  900 E chromium: ERROR token ${'Q'.repeat(40)}`,
+];
+test('chrome console evidence keeps only chromium error lines, with URLs and tokens removed',()=>{
+  const out=chromeConsoleEvidence(CL.join('\n'));
+  assert.equal(out.length,3);
+  const all=out.join('\n');
+  assert.ok(!/https?:\/\//.test(all) && !all.includes('SECRETCODE') && !all.includes('abcdefghijklmnopqrstuvwxyz') && !all.includes('QQQQQQQQQQQQ'),all);
+  assert.ok(all.includes('<url>') && all.includes('ERR_CERT_AUTHORITY_INVALID') && all.includes('[redacted]'));
+  assert.ok(!all.includes('ActivityManager') && !all.includes('unrelated'));
+});
+test('chrome console evidence is bounded in count and width, and tolerates empty input',()=>{
+  assert.deepEqual(chromeConsoleEvidence(''),[]);assert.deepEqual(chromeConsoleEvidence(undefined),[]);
+  const many=Array.from({length:30},(_,i)=>`10-28 14:00:${String(i).padStart(2,'0')}.000 1 1 E chromium: ERROR line ${i} ${'x '.repeat(200)}`).join('\n');
+  const out=chromeConsoleEvidence(many);
+  assert.equal(out.length,12);assert.ok(out.every(l=>l.length<=160));assert.ok(out[11].includes('line 29'));
+});
+test('the harness reads Chrome console only for the login-form wait and reports it',async()=>{
+  const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
+  assert.match(s,/if\(facts\.lastWait==='custom-tabs-login'\)\{try\{const l=spawnSync\('adb',\['logcat','-d','-b','main','-t','6000'\]/);
+  const {failureReport}=await import('../scripts/android-auth-failure.mjs');
+  assert.deepEqual(failureReport({facts:{chromeConsole:['a','b']}}).chromeConsole,['a','b']);
+});

@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -148,6 +148,9 @@ try {await setupTrustAndChrome();database=new Client({connectionString:process.e
   if(!known){facts.errorKind=redact(error?.name,40,secrets());facts.errorMessage=redact(error?.message,160,secrets());}
   let n=[];try{facts.failureActivity=activity();}catch{}
   try{n=await ui(false);facts.failureUi={packages:[...new Set(n.map(x=>x.package))],editFields:n.filter(x=>x.class==='android.widget.EditText').length};}catch{}
+  // Soft, bounded read of Chrome's own console/error lines, only when the login form never rendered.
+  if(facts.lastWait==='custom-tabs-login'){try{const l=spawnSync('adb',['logcat','-d','-b','main','-t','6000'],{encoding:'utf8',timeout:20000,maxBuffer:8*1024*1024});
+    facts.chromeConsole=l.status===0?chromeConsoleEvidence(l.stdout):['logcat-unavailable exit='+String(l.status)];}catch{}}
   try{screenshot('first-failure');}catch{}
   facts.failureReport=failureReport({facts,nodes:n,secrets:secrets()});process.exitCode=1;
 }finally{facts.notExecuted=ids.filter(id=>!facts.cases.some(c=>c.id===id));fs.writeFileSync(path.join(out,'android-browser-auth.json'),JSON.stringify(facts,null,2));

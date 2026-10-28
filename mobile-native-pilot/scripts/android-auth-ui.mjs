@@ -127,3 +127,12 @@ export function smallestClickableContaining(nodes, target) {
     .sort((x,y)=>area(x.b)-area(y.b));
   return containers[0]?.n ?? null;
 }
+
+// What Chrome's WebView itself reported when the login form never rendered (run 40703767548: the page showed the
+// Sign In / Create Account tabs but no input field for 60 s). Console / error lines of the chromium tags only, with every
+// URL and long token removed, bounded in number and width. Never the page content, a URL, a code or a credential.
+const CHROME_LINE=/\b(?:chromium|cr_\w+|chromium_android)\b.*(?:CONSOLE|Uncaught|ERR_[A-Z_]+|Failed to|ERROR)/i;
+export function chromeConsoleEvidence(logText, max=12, width=160) {
+  return String(logText ?? '').split('\n').filter(l=>CHROME_LINE.test(l))
+    .map(l=>l.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi,'<url>').replace(/[A-Za-z0-9+/_=-]{24,}/g,m=>/^ERR_[A-Z_]+$/.test(m)?m:'[redacted]').replace(/\s+/g,' ').trim().slice(0,width)).slice(-max);
+}
