@@ -5,6 +5,9 @@ import net from 'node:net';
 import { readFileSync } from 'node:fs';
 
 const server = https.createServer({ key: readFileSync(process.env.IT_TLS_KEY), cert: readFileSync(process.env.IT_TLS_CERT) }, (req, res) => {
+  const route = req.url?.split('?')[0];
+  const kind = ({ '/api/native-auth/token': 'native-code', '/api/native-auth/refresh': 'native-refresh',
+    '/api/refresh/logout': 'revoke', '/api/servers': 'servers' })[route];
   if (req.method === 'POST' && req.url?.split('?')[0] === '/api/refresh/native-authorize') {
     // Closed, CI-only wire evidence: never log cookie, URL, body, code or state.
     const origin = req.headers.origin === 'https://127.0.0.1:8443' ? 'expected'
@@ -15,6 +18,8 @@ const server = https.createServer({ key: readFileSync(process.env.IT_TLS_KEY), c
   }
   const upstream = http.request({ host: '127.0.0.1', port: 3001, method: req.method, path: req.url,
     headers: { ...req.headers, 'x-forwarded-proto': 'https' } }, reply => {
+    if (kind) console.log('NATIVE_AUTH_HTTP ' + JSON.stringify({ kind, status: reply.statusCode,
+      cookiePresent: !!req.headers.cookie, bearerPresent: /^Bearer /.test(req.headers.authorization ?? '') }));
     res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
   });
   upstream.on('error', () => { res.writeHead(502); res.end(); });
