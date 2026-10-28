@@ -5,6 +5,12 @@ Sprint 108 — ADR-0008 uygulaması
 Bu belge Bridge frontend'inin katmanlarını, Svelte/vanilla TS sınırlarını ve
 yeni modül eklerken uyulacak kuralları açıklar.
 
+28 Ekim 2026 sahip kararı: Android/iOS için uzun vadeli mimari React Native / Expo.
+Bu belgenin web ve Electron katmanları korunur. Yeni Capacitor mobil özellikleri
+eklenmez; mevcut uygulama ve kullanıcı verileri doğrulanmış eşitlik ve kayıpsız
+geçiş hazır olana kadar korunur. Ayrıntılar ve zorunlu sürüm/cihaz kabul kapıları:
+[mobil mimari ve uyumluluk](P7_MOBILE_ARCHITECTURE_AND_COMPATIBILITY.md).
+
 ---
 
 ## Katman Modeli

@@ -7,7 +7,10 @@ import { performance } from 'node:perf_hooks';
 const preferences = 'shared_prefs/com.bridge.nativepilot_preferences.xml';
 const xml = '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>\n<map><string name="debug_http_host">127.0.0.1:8081</string></map>\n';
 const request = "printf 'GET /status HTTP/1.0\\r\\nHost: 127.0.0.1:8081\\r\\nConnection: close\\r\\n\\r\\n'";
-const netcat = 'toybox nc -w 5 -W 5 -q 5 127.0.0.1 8081';
+// Older Android netcat lacks -W/-q. Keep the portable connect bound, HTTP
+// Connection: close and the existing 10s whole-command deadline. No fallback
+// request, larger timeout or weaker status/body acceptance is introduced.
+const netcat = 'toybox nc -w 5 127.0.0.1 8081';
 const eofControl = `${request} | ${netcat}`;
 // Toybox shuts down the socket's write side on stdin EOF; adb then closes its
 // peer stream, so a printf-only pipe can discard the HTTP reply. Keep the input
@@ -25,6 +28,11 @@ export function configureAndroidMetroRoute({ adb = (args, options) => spawnSync(
     const result = adb(args, { input, encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024 });
     evidence.operations.push({ stage, exit: result.status ?? null, signal: result.signal ?? null,
       error: result.error?.code ?? null, bytes: Buffer.byteLength(result.stdout ?? ''), stderr_bytes: Buffer.byteLength(result.stderr ?? ''), elapsed_ms: Math.max(0, Math.round(performance.now() - start)) });
+    // These fixed localhost /status commands contain no credentials or URLs
+    // carrying auth parameters. Retain the first netcat usage/transport error.
+    if ((stage === 'eof-control' || stage === 'http-check') && (result.error || result.status !== 0)) {
+      evidence.probe_stderr = String(result.stderr ?? '').slice(0, 2048);
+    }
     if (result.error || result.status !== 0) throw new Error(`METRO_ROUTE_${stage.toUpperCase()}_FAILED`);
     return (result.stdout ?? '').replace(/\r/g, '');
   }

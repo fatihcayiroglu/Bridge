@@ -178,7 +178,10 @@ VAPID_PRIVATE_KEY=...
 - Sesli mesaj transkripsiyonu
 
 ### Platform
-- PWA, Electron masaüstü, Capacitor iOS/Android
+- PWA, Electron masaüstü, mevcut Capacitor iOS/Android; uzun vadeli mobil hedef
+  [React Native / Expo](docs/P7_MOBILE_ARCHITECTURE_AND_COMPATIBILITY.md).
+  Capacitor ve kullanıcı verileri, doğrulanmış özellik eşitliği ve kayıpsız geçiş
+  hazır olana kadar korunur; yeni Capacitor özellikleri geliştirilmez.
 - Bot API + Marketplace + SDK (örnek botlar dahil)
 - ActivityPub federasyon (Fediverse uyumlu)
 - Swagger/OpenAPI → `/api/docs`
