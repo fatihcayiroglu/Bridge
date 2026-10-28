@@ -82,3 +82,13 @@ acceptance_classify_anr_dialog() {
   read -r x1 y1 x2 y2 <<< "$bounds"
   echo "foreign $(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 )) $title"
 }
+
+# Prints the last N lines of an evidence file to the job log (artifacts cannot always be
+# downloaded). Used for the Metro log, whose bundling/serving errors would explain a
+# redbox that appears before the bundle loads. $1 = file, $2 = label, $3 = tag, $4 = lines.
+acceptance_print_tail() {
+  local file="$1" label="$2" tag="$3" lines="${4:-40}"
+  if [[ ! -f "$file" ]]; then printf 'NATIVE_%s_%s: (missing %s)\n' "${label^^}" "$tag" "$file" >&2; return 0; fi
+  { tail -n "$lines" "$file" || true; } | acceptance_redact | cut -c1-300 \
+    | sed "s/^/NATIVE_${label^^}_${tag}: /" >&2 || true
+}

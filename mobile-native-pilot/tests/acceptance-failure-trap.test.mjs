@@ -238,3 +238,22 @@ test('loop: a visible marker passes without touching anything', () => {
   assert.equal(r.taps, '');
   assert.match(r.stdout, /^count=0$/m);
 });
+
+test('file tails: last N lines, prefixed, masked; a missing file is reported, never fatal', () => {
+  const log = Array.from({ length: 50 }, (_, i) => `metro line ${i}`).concat(['Error: Unable to resolve module ./x token=abcdefghijklmnopqrstuvwxyz0123456789ABCD']).join('\n');
+  const r = runInDir('acceptance_print_tail metro.log android METRO 3; acceptance_print_tail nope.txt android LAUNCH 5; echo after', { 'metro.log': log });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout.trim(), 'after');
+  assert.deepEqual(r.stderr.trim().split('\n'), [
+    'NATIVE_ANDROID_METRO: metro line 48',
+    'NATIVE_ANDROID_METRO: metro line 49',
+    'NATIVE_ANDROID_METRO: Error: Unable to resolve module ./x token=[redacted]',
+    'NATIVE_ANDROID_LAUNCH: (missing nope.txt)',
+  ]);
+});
+
+test('on failure the Android script prints the launch timing and the Metro log tail', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const cleanup = s.slice(s.indexOf('function cleanup()'), s.indexOf('trap cleanup EXIT'));
+  assert.match(cleanup, /if \(\( status != 0 \)\); then\n\s+acceptance_print_tail native-evidence\/first-launch\.txt android LAUNCH 20\n\s+acceptance_print_tail native-evidence\/metro-android\.log android METRO 40/);
+});
