@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,settingsHopTaps:0,chromeConsole:[],ambiguousMatches:[],anrDialogsAnswered:[]});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,settingsHopTaps:0,pinEntries:0,chromeConsole:[],ambiguousMatches:[],anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -108,7 +108,7 @@ test('ambiguity is still fatal and "Install anyway" stays restricted to com.andr
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(src, /click\('Install anyway',\['com\.android\.settings'\],\{ignoreCase:true\}\)/);
-  assert.match(src, /namedNode\(await ui\(\),label,SETTINGS_HOSTS\)/);
+  assert.match(src, /const n=namedNode\(nodes,label,SETTINGS_HOSTS\);if\(n\)\{tap\(n\);return;\}/);
 });
 
 // ---- Foreign ANR dialog (first-failure #2: run 40680725164, "Pixel Launcher isn't responding") ----

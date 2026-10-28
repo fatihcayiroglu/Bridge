@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining,chromeConsoleEvidence,MAX_PIN_ENTRIES} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -100,14 +100,21 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   const pin=process.env.BRIDGE_EMULATOR_PIN;assert.match(pin,/^\d{6}$/);shell('locksettings','set-pin',pin);
   adb(['push',process.env.NODE_EXTRA_CA_CERTS,'/sdcard/Download/bridge-disposable-ca.crt']);
   shell('am','start','-a','android.settings.SECURITY_SETTINGS');
-  async function findSetting(label){for(let i=0;i<7;i++){const n=namedNode(await ui(),label,SETTINGS_HOSTS);if(n){tap(n);return;}
+  // Settings may ask for the device PIN before it opens a protected page, at any hop (run 40706223029: the PIN screen
+  // "Re-enter your PIN" was up while the harness was still looking for a menu entry, SETTINGS_CONTROL_UNAVAILABLE).
+  // Answer it with the emulator's own disposable PIN, at most MAX_PIN_ENTRIES times, then carry on.
+  const answerPin=(nodes)=>{const field=findPinField(nodes);if(!field)return false;
+    facts.pinEntries=(facts.pinEntries??0)+1;assert.ok(facts.pinEntries<=MAX_PIN_ENTRIES,'PIN_PROMPT_REPEATED');
+    tap(field);shell('input','text',pin);shell('input','keyevent','66');return true;};
+  async function findSetting(label){for(let i=0;i<7;i++){const nodes=await ui();if(answerPin(nodes)){await pause(1500);i--;continue;}
+    const n=namedNode(nodes,label,SETTINGS_HOSTS);if(n){tap(n);return;}
     shell('input','swipe','500','1600','500','600','400');}throw Error('SETTINGS_CONTROL_UNAVAILABLE');}
   // Normal Settings UI, not a privileged CA-install API, root write or TLS bypass.
   await findSetting('More security & privacy');await findSetting('Encryption & credentials');
   // A tap is only a hop once the NEXT screen shows: run 40701820173 stayed on the "Install a certificate" list after the
   // "CA certificate" tap (ten foreign ANR dialogs were answered in that run, so a tap can be swallowed). Repeat the tap
   // while the current screen still shows the label and the next one has not appeared; the 60 s deadline bounds it.
-  const hop=(label,next,nextOptions={})=>until(async()=>{const n=await ui();if(namedNode(n,next,SETTINGS_HOSTS,nextOptions))return true;
+  const hop=(label,next,nextOptions={})=>until(async()=>{const n=await ui();if(answerPin(n)){await pause(1500);return false;}if(namedNode(n,next,SETTINGS_HOSTS,nextOptions))return true;
     const control=namedNode(n,label,SETTINGS_HOSTS);if(control){facts.settingsHopTaps=(facts.settingsHopTaps??0)+1;tap(control);}return false;},'settings-hop:'+label.toLowerCase().replace(/\W+/g,'-'));
   await findSetting('Install a certificate');await hop('CA certificate','Install anyway',{ignoreCase:true});
   await click('Install anyway',['com.android.settings'],{ignoreCase:true});

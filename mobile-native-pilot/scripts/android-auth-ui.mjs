@@ -78,6 +78,7 @@ export function anrEvidence(logText, max=10, width=200) {
 // On API 35 the device-PIN prompt of the certificate install is an AuthCredentialPasswordView hosted by System UI
 // even though the activity is Settings' ConfirmDeviceCredentialActivity (run 40689648802: visible package was only
 // com.android.systemui). OS packages only; more than one candidate field is ambiguous and fatal.
+export const MAX_PIN_ENTRIES=3;
 export const PIN_HOSTS=['com.android.settings','com.android.systemui'];
 export function findPinField(nodes) {
   const fields=nodes.filter(n=>PIN_HOSTS.includes(n.package) && n.enabled==='true' && n.class==='android.widget.EditText');
