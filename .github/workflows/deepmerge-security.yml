@@ -40,6 +40,30 @@ jobs:
           npm ci --no-fund
           npm ci --prefix server --no-fund
           npm ci --prefix electron --no-fund
+      - name: Preserve original locks and propose Linux repair (NOT qualification)
+        if: failure() && matrix.node == '22.19.0'
+        run: |
+          mkdir -p lock-diagnostics
+          git rev-parse HEAD > lock-diagnostics/head.txt
+          cp package-lock.json lock-diagnostics/root-original.json
+          cp server/package-lock.json lock-diagnostics/server-original.json
+          cp electron/package-lock.json lock-diagnostics/electron-original.json
+          npm install --package-lock-only --ignore-scripts --no-fund > lock-diagnostics/root-generate.log 2>&1
+          npm install --prefix server --package-lock-only --ignore-scripts --no-fund > lock-diagnostics/server-generate.log 2>&1
+          npm install --prefix electron --package-lock-only --ignore-scripts --no-fund > lock-diagnostics/electron-generate.log 2>&1
+          cp package-lock.json lock-diagnostics/root-proposed.json
+          cp server/package-lock.json lock-diagnostics/server-proposed.json
+          cp electron/package-lock.json lock-diagnostics/electron-proposed.json
+          npm ci --dry-run --ignore-scripts --no-fund > lock-diagnostics/root-validate.log 2>&1
+          npm ci --prefix server --dry-run --ignore-scripts --no-fund > lock-diagnostics/server-validate.log 2>&1
+          npm ci --prefix electron --dry-run --ignore-scripts --no-fund > lock-diagnostics/electron-validate.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: failure() && matrix.node == '22.19.0'
+        with:
+          name: proposed-linux-locks-${{ github.run_id }}
+          path: lock-diagnostics/
+          if-no-files-found: error
+          retention-days: 7
       - name: Actual Vite and Jest resolution and exploit regression
         run: node --test scripts/deepmerge-installed.test.mjs
       - name: Unsuppressed audits including low severity
