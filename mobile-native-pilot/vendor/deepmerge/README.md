@@ -18,3 +18,7 @@ reproduces the attack, runs upstream-behaviour checks, and verifies this copy is
 
 Remove this directory and the `overrides.deepmerge` entry in `package.json` as soon as
 deepmerge publishes a fixed release (or `@expo/config` stops depending on it).
+
+Upgrade guard: `tests/deepmerge-vendor.test.mjs` fails if any package in the lockfile
+declares a deepmerge range that 4.3.1 does not satisfy (for example after an Expo upgrade
+to `^5`), because the override would otherwise force this copy on it silently.

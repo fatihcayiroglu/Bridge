@@ -72,3 +72,21 @@ test('the vendored file differs from upstream 4.3.1 only by the documented guard
   assert.equal(pkg.version, '4.3.1-bridge.1');
   assert.ok(fs.existsSync('vendor/deepmerge/license.txt'), 'MIT licence kept');
 });
+
+// The override forces 4.3.1-bridge.1 on every dependent. If an upgrade ever declares a
+// range 4.3.1 does not satisfy (e.g. ^5), npm would still force the old copy silently;
+// this fails instead, so the vendored patch is re-evaluated (or removed) at that point.
+test('every dependent still declares a deepmerge range that 4.3.1 satisfies', () => {
+  const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')).packages;
+  const ranges = Object.entries(lock)
+    .filter(([key]) => key !== '')
+    .flatMap(([key, p]) => [p.dependencies, p.peerDependencies, p.optionalDependencies]
+      .filter((deps) => deps && 'deepmerge' in deps).map((deps) => [key, deps.deepmerge]));
+  assert.ok(ranges.length > 0, 'at least @expo/config depends on deepmerge');
+  for (const [key, range] of ranges) {
+    const m = /^\^4\.(\d+)\.(\d+)$/.exec(range);
+    assert.ok(m, `${key} declares deepmerge "${range}": not a ^4.x.y range; re-evaluate vendor/deepmerge`);
+    const [minor, patch] = [Number(m[1]), Number(m[2])];
+    assert.ok(minor < 3 || (minor === 3 && patch <= 1), `${key} requires deepmerge ${range}, newer than the vendored 4.3.1`);
+  }
+});
