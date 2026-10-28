@@ -84,6 +84,9 @@ is unproven. No timeout increase or native acceptance claim follows from this.
 Subsequent runs retain verbose Appium/Xcode bootstrap diagnostics only if the
 closed result proves `stage=native-xcuitest-session` and zero cases: no UI input
 or browser login has happened. Raw later command traffic remains excluded.
+The Appium/Xcode child environment also omits backend/database/password secrets
+and the TLS private-key path before it starts, so bootstrap diagnostics cannot
+inherit those values. The separate test driver retains its fixture environment.
 This repairs an evidence gap; it does not classify a future successful rerun as
 proof that an intermittent startup failure was fixed.
 

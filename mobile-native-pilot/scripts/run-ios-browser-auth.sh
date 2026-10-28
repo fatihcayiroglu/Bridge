@@ -5,7 +5,8 @@ export APPIUM_HOME="$PWD/e2e/ios"
 e2e/ios/node_modules/.bin/appium driver list --installed
 task_appium_log="$RUNNER_TEMP/bridge-native-auth-appium.log"
 task_appium_debug="$RUNNER_TEMP/bridge-native-auth-appium-debug.log"
-e2e/ios/node_modules/.bin/appium --address 127.0.0.1 --port 4723 --use-drivers xcuitest --log-level warn:debug --log "$task_appium_debug" --log-no-colors > "$task_appium_log" 2>&1 &
+env -u BRIDGE_MOBILE_PASSWORD -u JWT_SECRET -u REFRESH_SECRET -u DATABASE_URL -u IT_TLS_KEY -u BRIDGE_EMULATOR_PIN \
+  e2e/ios/node_modules/.bin/appium --address 127.0.0.1 --port 4723 --use-drivers xcuitest --log-level warn:debug --log "$task_appium_debug" --log-no-colors > "$task_appium_log" 2>&1 &
 task_appium_pid=$!
 cleanup() {
   local task_status=$?
