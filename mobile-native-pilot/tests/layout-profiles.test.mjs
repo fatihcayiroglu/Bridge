@@ -58,3 +58,11 @@ test('CI actually runs both screen suites, captures evidence and pins its checko
   assert.equal((flow.match(/if:\s*always\(\)/g) ?? []).length, 2);
   assert.match(flow, /prefetch-ios-prebuilt\.mjs/);
 });
+
+test('emulator tools cannot consume the list of required profiles through fd 0', () => {
+  for (const platform of ['android', 'ios']) {
+    const script = readFileSync(new URL(`../scripts/${platform}-layout-smoke.sh`, import.meta.url), 'utf8');
+    assert.match(script, /read -r -u 3 id /);
+    assert.match(script, /done 3< /);
+  }
+});
