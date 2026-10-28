@@ -46,8 +46,21 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: server/package-lock.json
-      - name: Install locked server dependencies
-        run: npm ci --prefix server --ignore-scripts
+      - name: Install locked root and server dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix server --ignore-scripts
+      - name: Server production and strict test types, production build
+        working-directory: server
+        run: |
+          npm run typecheck
+          npm run typecheck:test-strict
+          npm run build
+      - name: Scheduling and authority regression suites, zero skipped tests
+        working-directory: server
+        run: |
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts --json --outputFile=d2-unit-results.json
+          node ../scripts/require-no-skipped-tests.js d2-unit-results.json --label "D2 scheduling unit regression"
       - name: Require genuine PostgreSQL 16 and Redis
         run: |
           node - <<'NODE'
@@ -84,5 +97,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: p7-scheduled-expiry-pg16-${{ github.sha }}-${{ github.run_attempt }}
-          path: server/d2-pg16-results.json
+          path: |
+            server/d2-pg16-results.json
+            server/d2-unit-results.json
           if-no-files-found: warn

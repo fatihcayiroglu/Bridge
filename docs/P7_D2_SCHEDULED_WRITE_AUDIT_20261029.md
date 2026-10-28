@@ -81,10 +81,15 @@ schema reset. Cleanup deletes only exact randomly generated fixture identifiers.
 The general Quality Gate also discovers this suite against its PostgreSQL 18
 service; that result must not be relabeled PG16.
 
-At preparation: real PostgreSQL 16 execution is **NOT EXECUTED** locally because
-PostgreSQL/Redis/container runtime are unavailable here. Record the first exact
-commit/run/job and artifact result before changing this status. Ordinary green
-unit tests do not satisfy this gate.
+First real-service CI: head `a6323aa1fdf27e950ddb590b4a31b5c4966c434c`,
+run [40788727299](https://github.com/fatihcayiroglu/Bridge/actions/runs/40788727299),
+job 123168323163: **PASS 7/7, zero skipped**, first attempt. Prerequisites measured
+PostgreSQL version 160015 and Redis PONG. Original artifact 12860597268, SHA-256
+`99a72fdcf5b342f5e3132e1d3dc6acc696023a1583addef147924dff4e008b3e`.
+The next workflow revision additionally qualifies the focused 97-test regression
+set, strict types and production build on Linux; its exact-head result must be
+recorded separately. PostgreSQL/Redis remain unavailable locally; this is hosted
+CI service evidence, not local or complete product E2E acceptance.
 
 ## Still required for D2 acceptance
 
