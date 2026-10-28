@@ -42,3 +42,11 @@ test('run 40769336956: the agent started after 227.9 s, so the deadline is 480 s
   assert.ok(deadline <= 600000, 'the deadline stays bounded');
   assert.match(s, /\} \} \}, 480000\);/);
 });
+
+test('the system browser page-load wait is 180 s (run 40777269820 showed a page still loading), bounded and applied', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  const ms = Number(/const BROWSER_PAGE_LOAD_MS = (\d+);/.exec(s)?.[1]);
+  assert.equal(ms, 180000);
+  assert.ok(ms > 60000 && ms <= 240000, 'longer than the old default, still bounded');
+  assert.match(s, /\}, 'system-authentication-browser', BROWSER_PAGE_LOAD_MS\);/);
+});

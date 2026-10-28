@@ -97,6 +97,7 @@ async function tokens(user, family) {
   const { rows } = await database.query('SELECT token, used FROM refresh_tokens WHERE "userId"=$1 AND family=$2', [user.userId, family]);
   return rows;
 }
+const BROWSER_PAGE_LOAD_MS = 180000;
 async function browserReady() {
   let promptHandled = false;
   await until(async () => {
@@ -105,7 +106,9 @@ async function browserReady() {
     const buttons = await byName('Continue');
     if (buttons.length && !promptHandled) { await command('POST', `/element/${key(buttons[0])}/click`, {}); promptHandled = true; }
     return false;
-  }, 'system-authentication-browser');
+  // Run 40777269820: the browser chrome was up with a "Stop" control (a page still loading), 0 fields after 60 s, and the
+  // same wait had passed in the run before. Give the first page load of the local server 180 s; it stays bounded.
+  }, 'system-authentication-browser', BROWSER_PAGE_LOAD_MS);
   const source = await command('GET', '/source');
   assert.ok(source.includes('XCUIElementTypeWebView'), 'SYSTEM_BROWSER_WEBVIEW_REQUIRED');
   const active = await native('activeAppInfo');
