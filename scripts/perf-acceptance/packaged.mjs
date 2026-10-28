@@ -161,13 +161,16 @@ export async function runPackaged(config) {
         });
         const loadStart = performance.now();
         await selectChannel(c.historyChannel);
-        await page.locator(`.msg-list .msg[data-id^="${c.messagePrefix}"]`).first().waitFor({ state: 'visible' });
+        await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}10000"]`).waitFor({ state: 'visible' });
         const firstPageVisibleMs = performance.now() - loadStart;
         let traversalMs = null;
         let direction = 0;
         while (performance.now() < end) {
           requireFact(!invalidResponse, 'HISTORY_RESPONSE_INVALID');
-          if (seen.size === 10000 && traversalMs === null) traversalMs = performance.now() - loadStart;
+          if (seen.size === 10000 && traversalMs === null) {
+            await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}00001"]`).waitFor({ state: 'visible' });
+            traversalMs = performance.now() - loadStart;
+          }
           await page.locator('#messages-area').evaluate((el, down) => {
             el.scrollTop = down ? el.scrollHeight : 0;
             el.dispatchEvent(new Event('scroll'));
@@ -183,6 +186,7 @@ export async function runPackaged(config) {
         requireFact(observed.frames.length >= 3 && observed.frames.every(Number.isFinite), 'SCROLL_SAMPLES_MISSING');
         return { samples: observed.frames.map(frameTimeMs => ({ frameTimeMs })), evidence: {
           firstPageVisibleMs, traversalMs, uniqueMessagesObserved: seen.size,
+          newestAndOldestVisible: true,
           longTaskDurationsMs: observed.longTasks, persistedFixtureCount: c.seededMessages,
           scrollMethod: 'actual product scroll handler; authenticated network responses; no registry calls',
         } };

@@ -4,6 +4,18 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateConfig, normalizeMetrics } from './perf-acceptance/packaged.mjs';
 import { SCENARIOS } from './perf-acceptance/scenarios.mjs';
+import { requireDisposable } from './perf-acceptance/disposable.mjs';
+
+test('fixture writer refuses non-CI, production names, remote hosts and connection query overrides', () => {
+  const env = { GITHUB_ACTIONS: 'true', BRIDGE_PERF_DISPOSABLE: '1', PG_TEST_URL: 'postgresql://fixture:fixture@127.0.0.1/bridge_perf_test' };
+  assert.equal(requireDisposable(env), env.PG_TEST_URL);
+  assert.throws(() => requireDisposable({ ...env, GITHUB_ACTIONS: 'false' }));
+  assert.throws(() => requireDisposable({ ...env, BRIDGE_PERF_DISPOSABLE: '' }));
+  for (const PG_TEST_URL of ['postgresql://localhost/production', 'postgresql://remote.test/bridge_perf_test',
+    'postgresql://localhost/bridge_perf_test?host=remote.test', 'http://localhost/bridge_perf_test', 'malformed']) {
+    assert.throws(() => requireDisposable({ ...env, PG_TEST_URL }));
+  }
+});
 
 test('missing runtime prerequisites exit NOT EXECUTED without inventing samples', () => {
   const run = spawnSync(process.execPath, [fileURLToPath(new URL('./perf-acceptance/packaged.mjs', import.meta.url))], { encoding: 'utf8' });

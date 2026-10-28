@@ -84,8 +84,23 @@ prior scenarios and raw samples are retained when a later scenario fails.
 There are no duration overrides or retry-for-green loops. The first runtime
 attempt is authoritative for its exact head; fixes require new commits.
 
-Preparation evidence: 9 local executor/report contract tests PASS, zero skipped;
+Preparation evidence: 10 local executor/report contract tests PASS, zero skipped;
 all three new executables pass Node syntax checks on Windows. Real packaged
 execution is **NOT EXECUTED** until the first hosted run is inspected. Local
 PostgreSQL/Redis/container prerequisites are unavailable. No CPU/RAM/scroll
 numbers or compatibility claim are inferred from these contract tests.
+
+First hosted attempt: `1604a53fe9503c9041200f46cb61345da5a94d96`, run
+40790339178 / job 123173710740. Locked dependencies, 9/9 contracts, actual
+Svelte/backend/DEB build PASS. The installed-app/sandbox assertion step FAIL;
+individual bare `test` commands did not identify which assertion failed. All
+runtime performance scenarios on this head are NOT EXECUTED. Preserve this
+failure. The follow-up prints sandbox owner/mode and explicitly provisions the
+root-owned installed Chromium helper as mode 4755 in the disposable runner,
+retaining both original sandbox assertions. This is **DEB plus explicit CI
+sandbox provisioning**, not proof the DEB installer itself set those permissions.
+No `--no-sandbox` or other sandbox bypass is introduced.
+
+Additional gates reject connection-string host overrides/nonempty existing
+product databases before fixture writes, and require the real newest and oldest
+history messages to become visible during traversal.

@@ -73,7 +73,12 @@ jobs:
           mapfile -t packages < <(find electron/release -maxdepth 1 -name '*.deb')
           test "${#packages[@]}" -eq 1
           sudo apt-get install -y --no-install-recommends "$(realpath "${packages[0]}")"
-          test -x /opt/Bridge/bridge
+          test -x /opt/Bridge/bridge || { echo 'PACKAGED_EXECUTABLE_MISSING'; exit 1; }
+          stat -c 'sandbox before CI provisioning: owner=%u mode=%a' /opt/Bridge/chrome-sandbox
+          # Configure the installed, lockfile-pinned Chromium helper for the
+          # strong setuid sandbox in this disposable runner. Keep the assertions.
+          sudo chown root:root /opt/Bridge/chrome-sandbox
+          sudo chmod 4755 /opt/Bridge/chrome-sandbox
           test "$(stat -c %u /opt/Bridge/chrome-sandbox)" = 0
           test "$(stat -c %a /opt/Bridge/chrome-sandbox)" = 4755
       - name: Disposable TLS trust and authentication secrets

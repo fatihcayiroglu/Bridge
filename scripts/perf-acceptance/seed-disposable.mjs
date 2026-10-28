@@ -4,23 +4,17 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { requireDisposable } from './disposable.mjs';
 const serverRequire = createRequire(new URL('../../server/package.json', import.meta.url));
 const { Pool } = serverRequire('pg');
 const bcrypt = serverRequire('bcryptjs');
-
-export function requireDisposable(env) {
-  const url = new URL(env.PG_TEST_URL);
-  if (env.GITHUB_ACTIONS !== 'true' || env.BRIDGE_PERF_DISPOSABLE !== '1' ||
-      !['localhost', '127.0.0.1'].includes(url.hostname) || !/^\/bridge_perf_[a-z0-9_]+$/.test(url.pathname)) {
-    throw Error('DISPOSABLE_CI_DATABASE_REQUIRED');
-  }
-  return url.href;
-}
 
 const pool = new Pool({ connectionString: requireDisposable(process.env) });
 try {
   const version = await pool.query('SHOW server_version_num');
   if (Math.floor(Number(version.rows[0].server_version_num) / 10000) !== 16) throw Error('PG16_REQUIRED');
+  const existing = await pool.query('SELECT (SELECT COUNT(*) FROM users)+(SELECT COUNT(*) FROM servers)+(SELECT COUNT(*) FROM channels)+(SELECT COUNT(*) FROM messages) AS count');
+  if (Number(existing.rows[0].count) !== 0) throw Error('FRESH_EMPTY_FIXTURE_DATABASE_REQUIRED');
   const stem = randomUUID();
   const user = randomUUID();
   const server = randomUUID();
