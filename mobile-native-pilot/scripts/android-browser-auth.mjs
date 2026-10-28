@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {nodesOf,namedNode,centerOf} from './android-auth-ui.mjs';
+import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
 const bundle='com.bridge.nativepilot',chrome='com.android.chrome',password=process.env.BRIDGE_MOBILE_PASSWORD;
@@ -15,8 +16,11 @@ fs.mkdirSync(out,{recursive:true});
 const facts={category:'AUTOMATED / ANDROID EMULATOR / DEBUG',status:'FAIL',stage:'prerequisites',cases:[],physicalDevice:false};
 const ids=['ANDROID_SYSTEM_BROWSER_CANCEL','ANDROID_AUTHENTICATE_RESTART_ROTATE','ANDROID_SWITCH_ISOLATE_REVOKE_RESTART'];
 let database;
+const secrets=()=>[password,process.env.BRIDGE_EMULATOR_PIN].filter(Boolean);
 function adb(args,binary=false) {
   const r=spawnSync('adb',args,{encoding:binary?undefined:'utf8',timeout:20000,maxBuffer:8*1024*1024});
+  // Only the FIRST adb failure is kept: the failure handler's own adb calls must not overwrite it.
+  if(r.error||r.status!==0)facts.firstAdbFailure??=adbFailure(args,r,secrets());
   assert.ok(!r.error && r.status===0,'ADB_COMMAND_FAILED');
   return binary?r.stdout:r.stdout.replace(/\r/g,'');
 }
@@ -102,7 +106,12 @@ try {await setupTrustAndChrome();database=new Client({connectionString:process.e
     const r=await fetch(origin+'/api/native-auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:restored.token}),signal:AbortSignal.timeout(20000)});assert.equal(r.status,401);
     const count=wire('native-refresh').length;shell('am','force-stop',bundle);shell('am','start','-n',bundle+'/.MainActivity');await until(()=>nativeScreen('Sign in with your browser'),'signed-out-restart');assert.equal(wire('native-refresh').length,count);});
   facts.status='PASS';facts.stage='complete';
-}catch(error){facts.failure=/^[A-Z_]+(?::[a-z-]+)?$/.test(error.message)?error.message:'NATIVE_OR_SERVICE_FAILED';
-  try{facts.failureActivity=activity();const n=await ui();facts.failureUi={packages:[...new Set(n.map(x=>x.package))],editFields:n.filter(x=>x.class==='android.widget.EditText').length};screenshot('first-failure');}catch{}process.exitCode=1;
+}catch(error){const known=/^[A-Z_]+(?::[a-z-]+)?$/.test(error.message);facts.failure=known?error.message:'NATIVE_OR_SERVICE_FAILED';
+  if(!known){facts.errorKind=redact(error?.name,40,secrets());facts.errorMessage=redact(error?.message,160,secrets());}
+  let n=[];try{facts.failureActivity=activity();}catch{}
+  try{n=await ui();facts.failureUi={packages:[...new Set(n.map(x=>x.package))],editFields:n.filter(x=>x.class==='android.widget.EditText').length};}catch{}
+  try{screenshot('first-failure');}catch{}
+  facts.failureReport=failureReport({facts,nodes:n,secrets:secrets()});process.exitCode=1;
 }finally{facts.notExecuted=ids.filter(id=>!facts.cases.some(c=>c.id===id));fs.writeFileSync(path.join(out,'android-browser-auth.json'),JSON.stringify(facts,null,2));
-  if(database)await database.end();console.log(JSON.stringify({status:facts.status,stage:facts.stage,passed:facts.cases.filter(c=>c.status==='PASS').length,failed:facts.cases.filter(c=>c.status==='FAIL').length,notExecuted:facts.notExecuted.length,skipped:0}));}
+  if(database)await database.end();if(facts.status!=='PASS')console.log('NATIVE_ANDROID_AUTH_FAILURE '+JSON.stringify(facts.failureReport??failureReport({facts,secrets:secrets()})));
+  console.log(JSON.stringify({status:facts.status,stage:facts.stage,passed:facts.cases.filter(c=>c.status==='PASS').length,failed:facts.cases.filter(c=>c.status==='FAIL').length,notExecuted:facts.notExecuted.length,skipped:0}));}
