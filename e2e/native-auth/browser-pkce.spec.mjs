@@ -57,6 +57,8 @@ async function loginAndConsent(page, profile, url) {
   await expect(dialog).toBeVisible();
   // A browser fixture starts empty; no cookie or stored login is injected.
   const cookie = (await page.context().cookies()).find(item => item.name === 'bridge_refresh');
+  await test.info().attach('cookie-boundary.json', { contentType: 'application/json',
+    body: JSON.stringify({ found: !!cookie, httpOnly: cookie?.httpOnly === true, secure: cookie?.secure === true }) });
   assert.ok(cookie?.httpOnly === true && cookie.secure === true, 'REFRESH_COOKIE_BOUNDARY_FAILED');
   assert.ok(!(await page.evaluate(() => document.cookie)).includes('bridge_refresh'), 'REFRESH_COOKIE_SCRIPT_EXPOSURE');
   return dialog;

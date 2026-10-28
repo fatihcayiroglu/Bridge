@@ -22,6 +22,17 @@ the CI profile permits userns only for the exact installed test executable,
 with no glob attachment. The global restriction is read before/after and must
 remain unchanged. The browser still launches with chromiumSandbox=true.
 
+The second run, 40663752770 at fac7ed7f, launched the sandboxed browser and
+passed the untrusted-certificate rejection control. Both UI cases reached the
+actual consent dialog, then failed the cookie boundary: the server set Secure
+only for NODE_ENV=production even though BASE_URL explicitly configured HTTPS.
+A direct execution of the original cookie owner confirmed secure=false under
+this exact configuration. The correction also sets Secure for an operator's
+configured HTTPS origin in development/staging, for both set and clear. It
+never trusts request forwarding headers; production stays Secure regardless,
+and local HTTP development retains its existing behavior. Four Jest contracts
+and the unchanged real-browser assertions qualify this stricter policy.
+
 Three mandatory cases, zero retries/skips:
 
 1. UI password login and explicit consent produce the real 303 callback. The

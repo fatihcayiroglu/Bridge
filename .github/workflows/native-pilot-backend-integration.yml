@@ -87,6 +87,9 @@ jobs:
         run: |
           npm run build --prefix server
           npm run build
+      - name: Refresh-cookie security regression contracts
+        working-directory: server
+        run: npx jest --runInBand --ci --runTestsByPath tests/auth-cookies.test.ts
       - name: Install real Chromium and certificate management tools
         run: |
           (cd e2e && npx playwright install --with-deps chromium)
