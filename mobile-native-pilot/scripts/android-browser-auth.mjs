@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact} from './android-auth-ui.mjs';
+import {nodesOf,namedNode,centerOf,SETTINGS_HOSTS,anrDialog,anrVerdict,dumpSucceeded,MAX_UI_DUMP_ATTEMPTS,nonEmptyFileProbe,anrEvidence,findPinField,signInSubmit,loginFields,isFocused,usernameIntact,smallestClickableContaining} from './android-auth-ui.mjs';
 import {adbFailure,failureReport,redact} from './android-auth-failure.mjs';
 const require=createRequire(import.meta.url),{Client}=require('../../server/node_modules/pg');
 const out=path.resolve(process.env.MOBILE_AUTH_EVIDENCE),origin=process.env.BRIDGE_IT_ORIGIN;
@@ -116,7 +116,9 @@ async function setupTrustAndChrome(){facts.stage='normal-settings-ca-install';
   // listed. While the picker is still foreground, find the file again in a fresh dump and tap it again (each pass costs
   // a full UI dump, and the 60 s deadline still bounds the wait). Selecting the same file twice is idempotent.
   await until(async()=>{if(activity().startsWith('com.android.settings/'))return true;
-    const file=namedNode(await ui(),'bridge-disposable-ca.crt',documents);if(file){facts.caFileRetaps=(facts.caFileRetaps??0)+1;tap(file);}return false;},'ca-install-return');facts.testCaInstalledViaSettings=true;
+    const now=await ui(),file=namedNode(now,'bridge-disposable-ca.crt',documents);
+    // Even retaps press the label, odd ones the smallest clickable container around it (the card), so one wrong target cannot repeat.
+    if(file){facts.caFileRetaps=(facts.caFileRetaps??0)+1;tap(facts.caFileRetaps%2===0?(smallestClickableContaining(now,file)??file):file);}return false;},'ca-install-return');facts.testCaInstalledViaSettings=true;
   facts.stage='chrome-first-run';shell('am','start','-n',chrome+'/com.google.android.apps.chrome.Main');
   await until(async()=>{const n=await ui();for(const label of ['Accept & continue','Use without an account','No thanks','Got it']){const control=namedNode(n,label,[chrome]);if(control){tap(control);return false;}}
     return n.some(x=>x.package===chrome && /url_bar|search_box_text/.test(x['resource-id']));},'chrome-ready');

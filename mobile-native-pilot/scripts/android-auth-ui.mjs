@@ -114,3 +114,16 @@ export const isFocused=n=>n?.focused==='true';
 export function usernameIntact(nodes, packages, username) {
   return loginFields(nodes,packages).name.text===username;
 }
+
+// The smallest clickable node (same package) whose bounds contain the target. A label's own centre can be covered
+// by, or not itself carry, the click handler (run 40699718082: the CA file stayed listed after repeated taps).
+export function smallestClickableContaining(nodes, target) {
+  const box=b=>{const m=/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(b ?? '');return m&&m.slice(1).map(Number);};
+  const t=box(target?.bounds);
+  if(!t)return null;
+  const area=b=>(b[2]-b[0])*(b[3]-b[1]);
+  const containers=nodes.filter(n=>n!==target && n.package===target.package && n.enabled==='true' && n.clickable==='true')
+    .map(n=>({n,b:box(n.bounds)})).filter(({b})=>b && b[0]<=t[0] && b[1]<=t[1] && b[2]>=t[2] && b[3]>=t[3] && area(b)>0)
+    .sort((x,y)=>area(x.b)-area(y.b));
+  return containers[0]?.n ?? null;
+}

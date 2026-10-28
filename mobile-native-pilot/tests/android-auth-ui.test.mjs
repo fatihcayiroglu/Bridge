@@ -87,6 +87,27 @@ test('the Android harness gates every typed field on observed focus and checks t
 // Run 40697876546: stuck in the documents picker with the CA file listed after a single tap.
 test('the CA install waits for Settings by re-finding and re-tapping the listed file, bounded by until()',()=>{
   const s=fs.readFileSync(new URL('../scripts/android-browser-auth.mjs',import.meta.url),'utf8');
-  assert.match(s,/if\(activity\(\)\.startsWith\('com\.android\.settings\/'\)\)return true;\s*const file=namedNode\(await ui\(\),'bridge-disposable-ca\.crt',documents\);if\(file\)\{facts\.caFileRetaps=\(facts\.caFileRetaps\?\?0\)\+1;tap\(file\);\}return false;\},'ca-install-return'\)/);
+  assert.match(s,/if\(activity\(\)\.startsWith\('com\.android\.settings\/'\)\)return true;\s*const now=await ui\(\),file=namedNode\(now,'bridge-disposable-ca\.crt',documents\);/);
+  assert.match(s,/facts\.caFileRetaps=\(facts\.caFileRetaps\?\?0\)\+1;tap\(facts\.caFileRetaps%2===0\?\(smallestClickableContaining\(now,file\)\?\?file\):file\)/);
   assert.ok(!/await until\(async\(\)=>activity\(\)\.startsWith\('com\.android\.settings\/'\),'ca-install-return'\)/.test(s),'a passive wait is not enough');
+});
+
+import {smallestClickableContaining} from '../scripts/android-auth-ui.mjs';
+const cn=(bounds,over={})=>({class:'android.view.View',package:'docs',enabled:'true',clickable:'false',bounds,...over});
+test('the smallest enabled clickable container of the same package around a label is chosen',()=>{
+  const label=cn('[20,100][200,140]',{text:'f.crt'}),card=cn('[10,50][210,200]',{clickable:'true'}),list=cn('[0,0][400,800]',{clickable:'true'});
+  assert.equal(smallestClickableContaining([list,label,card],label),card);
+  assert.equal(smallestClickableContaining([label],label),null);
+  assert.equal(smallestClickableContaining([label,{...card,package:'evil'}],label),null);
+  assert.equal(smallestClickableContaining([label,{...card,enabled:'false'}],label),null);
+  assert.equal(smallestClickableContaining([label,cn('[10,50][100,200]',{clickable:'true'})],label),null,'a clickable that does not contain the label is not a container');
+  assert.equal(smallestClickableContaining([label],{bounds:'bad'}),null);
+  const clickableLabel={...label,clickable:'true'};
+  assert.equal(smallestClickableContaining([clickableLabel],clickableLabel),null,'the target itself is never its own container');
+  assert.equal(smallestClickableContaining([clickableLabel,list],clickableLabel),list);
+});
+test('the failure report lists clickable nodes of the failing screen and the CA re-tap count',async()=>{
+  const {failureReport}=await import('../scripts/android-auth-failure.mjs');
+  const r=failureReport({facts:{caFileRetaps:3},nodes:[cn('[0,0][9,9]',{clickable:'true'}),cn('[1,1][2,2]'),cn('[3,3][4,4]',{clickable:'true'}),cn('[5,5][6,6]')]});
+  assert.equal(r.clickables.length,2);assert.deepEqual(r.clickables.map(c=>c.bounds),['[0,0][9,9]','[3,3][4,4]']);assert.equal(r.caFileRetaps,3);
 });

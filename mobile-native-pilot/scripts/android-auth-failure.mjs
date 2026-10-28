@@ -54,6 +54,8 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     firstAdbFailure: facts.firstAdbFailure ?? null,
     uiDumpFailures: (facts.uiDumpFailures ?? []).slice(0, 5),
     anrEvidence: (facts.anrEvidence ?? []).slice(0, 12),
+    clickables: nodes.filter((node) => node.clickable === 'true').slice(0, 16).map((node) => ({ class: redact(node.class ?? '', 60, secrets), package: node.package, bounds: node.bounds })),
+    caFileRetaps: facts.caFileRetaps ?? 0,
     ambiguousMatches: (facts.ambiguousMatches ?? []).slice(0, 6),
     anrDialogsAnswered: (facts.anrDialogs ?? []).map((name) => redact(name, 40, secrets)).slice(0, 10),
   };
