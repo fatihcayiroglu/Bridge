@@ -43,13 +43,13 @@ test('no value, username or password text ever appears in the evidence', () => {
 
 test('the iOS driver records the evidence on failure from the page source, not from argument values', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, uiSurvey, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, uiSurvey, routeShape, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /facts\.failureUi\.login = loginEvidence\(s, activeUsername\)/);
 });
 
 test('the evidence is printed to the job log (artifacts are not downloadable) from the closed shape only', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
+  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, lastNative: facts\.lastNative \?\? null, lastRoute: facts\.lastRoute \?\? null, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
 });
 
 import { assertUsernameIntact } from '../scripts/ios-login-evidence.mjs';
@@ -66,7 +66,7 @@ test('the username field must hold exactly the username after typing; the failur
 
 test('the iOS driver re-finds the password field after the username keyboard, taps it like a finger, then types and checks', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, uiSurvey, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, uiSurvey, routeShape, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);[\s\S]*?const freshSecrets = await elements\('class name', 'XCUIElementTypeSecureTextField'\);\s*assert\.ok\(freshSecrets\.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED'\);/);
   assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);[\s\S]*?(?:\/\/[^\n]*\s*)*await native\('keys', \{ keys: \[password\] \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
   assert.ok(!/key\(secrets\[0\]\)\}\/value/.test(s), 'the stale element reference is never typed into');
@@ -88,7 +88,7 @@ test('geometry helpers produce plain numbers, a centre, and a single touch tap',
 
 test('the printed login evidence carries the field geometry and nothing else free-form', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, secretGeometry: facts\.secretGeometry \?\? null/);
+  assert.match(s, /login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, lastNative: facts\.lastNative \?\? null, lastRoute: facts\.lastRoute \?\? null, secretGeometry: facts\.secretGeometry \?\? null/);
 });
 
 test('the page-source focus flag is read as true, false or unknown, never as free text', () => {
@@ -106,7 +106,7 @@ test('the driver taps natively, then records the focus snapshot before typing th
   assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*(?:\/\/[^\n]*\s*)*await native\('keys', \{ keys: \[password\] \}\);/);
 });
 
-import { uiSurvey } from '../scripts/ios-login-evidence.mjs';
+import { uiSurvey, routeShape } from '../scripts/ios-login-evidence.mjs';
 test('uiSurvey counts element types and reports only allow-listed names, never text or values', () => {
   const src = `<AppiumAUT>${[
     el('WebView', { visible: 'true' }), el('WebView', { visible: 'false' }),
@@ -124,7 +124,7 @@ test('uiSurvey counts element types and reports only allow-listed names, never t
 test('the failure handler prints the survey next to the login evidence', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(s, /facts\.failureUi\.survey = uiSurvey\(s\);/);
-  assert.match(s, /survey: facts\.failureUi\.survey, secretGeometry/);
+  assert.match(s, /survey: facts\.failureUi\.survey, driverFailure/);
 });
 
 test('uiSurvey plainLabels keeps plain UI words and drops user names, URLs, tokens, long text and duplicates', () => {
@@ -138,4 +138,18 @@ test('uiSurvey plainLabels keeps plain UI words and drops user names, URLs, toke
   const labels = uiSurvey(src).plainLabels;
   assert.deepEqual(labels, ['Reload', 'Safari cannot open the page.']);
   assert.ok(uiSurvey(`<A>${Array.from({ length: 30 }, (_, i) => el('Button', { name: 'Word ' + 'abcdefghijklmnopqrstuvwxyz'[i % 26] + ' x' + 'q'.repeat(i) })).join('')}</A>`).plainLabels.length <= 12);
+});
+
+test('routeShape keeps the route shape and drops ids, queries and odd characters', () => {
+  assert.equal(routeShape('POST', '/element/0F8B1C2D-1111-2222-3333-444455556666/value'), 'POST /element/:id/value');
+  assert.equal(routeShape('GET', '/source?x=secret'), 'GET /source');
+  assert.equal(routeShape('POST', '/execute/sync'), 'POST /execute/sync');
+  assert.equal(routeShape('POST', '/a b<script>'), 'POST /?');
+  assert.equal(routeShape('bad method', '/x'), '? /x');
+});
+test('the driver records the last route and the last mobile command, and prints them with the redacted driver failure', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.match(s, /facts\.lastRoute = routeShape\(method, route\)/);
+  assert.match(s, /facts\.lastNative = `mobile: \$\{name\}`/);
+  assert.match(s, /driverFailure: facts\.driverFailure \?\? null, lastNative: facts\.lastNative \?\? null, lastRoute: facts\.lastRoute \?\? null/);
 });

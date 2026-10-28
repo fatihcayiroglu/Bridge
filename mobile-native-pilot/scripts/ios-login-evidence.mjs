@@ -78,3 +78,11 @@ export function uiSurvey(source) {
       .filter((v) => v.length > 0 && v.length <= 40 && PLAIN_LABEL.test(v)))].slice(0, 12),
   };
 }
+
+// The route a driver command used, with every element or session id replaced, so a failure can be placed on a step
+// without printing ids, arguments or response bodies (run 40779920476: DRIVER_OR_SERVICE_FAILED after the username).
+export function routeShape(method, route) {
+  const clean = String(route ?? '').split('?')[0].split('/').map((seg) => (/^[0-9A-Fa-f-]{16,}$/.test(seg) ? ':id' : seg)).join('/');
+  const ok = /^\/[A-Za-z0-9_:\/.-]{0,120}$/.test(clean) ? clean : '/?';
+  return `${/^[A-Z]{3,7}$/.test(String(method)) ? method : '?'} ${ok}`;
+}

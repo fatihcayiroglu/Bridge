@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { loginEvidence, uiSurvey, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
+import { loginEvidence, uiSurvey, routeShape, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,8 +22,8 @@ const facts = { category: 'AUTOMATED / IOS SIMULATOR / DEBUG', status: 'FAIL', s
 let session, database, activeCase;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const wd = (method, route, body, timeout) => webdriverRequest('http://127.0.0.1:4723', method, route, body, timeout);
-const command = (method, route, body) => wd(method, `/session/${session}${route}`, body);
-const native = (name, args = {}) => command('POST', '/execute/sync', { script: `mobile: ${name}`, args: [args] });
+const command = (method, route, body) => { facts.lastRoute = routeShape(method, route); return wd(method, `/session/${session}${route}`, body); };
+const native = (name, args = {}) => { facts.lastNative = `mobile: ${name}`; return command('POST', '/execute/sync', { script: `mobile: ${name}`, args: [args] }); };
 const key = value => value?.['element-6066-11e4-a52e-4f735466cecf'] ?? value?.ELEMENT;
 async function until(action, label, timeout = 60000) {
   facts.lastWait = label;
@@ -252,7 +252,7 @@ try {
       // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
       facts.failureUi.login = loginEvidence(s, activeUsername);
       facts.failureUi.survey = uiSurvey(s);
-      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, driverFailure: facts.driverFailure ?? null, lastNative: facts.lastNative ?? null, lastRoute: facts.lastRoute ?? null, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
       await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;
