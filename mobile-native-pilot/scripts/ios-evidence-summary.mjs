@@ -14,7 +14,7 @@ export function prefetchSummary(report) {
 // callback URLs. Only the closed failure code, element counts and the foreground bundle id are safe.
 export function journeySummary(r) {
   const ui = r?.failureUi && typeof r.failureUi === 'object' ? pick(r.failureUi, ['webViews', 'textFields', 'secureFields', 'alerts']) : undefined;
-  return { ...pick(r, ['status', 'stage', 'runtimeVersion', 'driverDeadlineMs', 'failure', 'physicalDevice']),
+  return { ...pick(r, ['status', 'stage', 'runtimeVersion', 'driverDeadlineMs', 'failure', 'physicalDevice', 'signInMatches']),
     cases: (r?.cases ?? []).map((c) => pick(c, ['id', 'status'])),
     ...(ui ? { failureUi: ui } : {}),
     ...(typeof r?.failureApplication?.bundleId === 'string' ? { foregroundBundle: r.failureApplication.bundleId.slice(0, 80) } : {}),

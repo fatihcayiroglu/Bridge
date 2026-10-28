@@ -1,5 +1,6 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
+import { chooseSubmitIndex } from './ios-signin-select.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +43,19 @@ async function nativeScreen(name) {
 async function clickName(name) {
   const found = await until(async () => (await byName(name))[0], 'native-control');
   await command('POST', `/element/${key(found)}/click`, {});
+}
+// Two controls are named "Sign In" (the tab and the submit button); click the one below the password field.
+async function clickSignInSubmit(passwordElement) {
+  const passwordRect = await command('GET', `/element/${key(passwordElement)}/rect`);
+  const chosen = await until(async () => {
+    const all = await byName('Sign In');
+    facts.signInMatches = all.length;
+    const rects = [];
+    for (const element of all) rects.push(await command('GET', `/element/${key(element)}/rect`));
+    const index = chooseSubmitIndex(rects, passwordRect);
+    return index < 0 ? null : all[index];
+  }, 'sign-in-submit');
+  await command('POST', `/element/${key(chosen)}/click`, {});
 }
 async function screenshot(label) {
   const bytes = await command('GET', '/screenshot');
@@ -105,7 +119,7 @@ async function signIn(user, expectedPid) {
   assert.ok(fields.length === 1 && secrets.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED');
   await command('POST', `/element/${key(fields[0])}/value`, { text: user.username });
   await command('POST', `/element/${key(secrets[0])}/value`, { text: password });
-  await clickName('Sign In');
+  await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
   await screenshot(`consent-${activeCase}`);
   const before = await families(user);
