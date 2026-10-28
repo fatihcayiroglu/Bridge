@@ -92,3 +92,9 @@ acceptance_print_tail() {
   { tail -n "$lines" "$file" || true; } | acceptance_redact | cut -c1-300 \
     | sed "s/^/NATIVE_${label^^}_${tag}: /" >&2 || true
 }
+
+# ActivityManager logs "ANR in <process> (...)" for EVERY ANR, whether or not a dialog was
+# shown or answered. Prints each ANR'd process once, from a logcat capture. Always 0.
+acceptance_anr_processes() {
+  { grep -oE 'ANR in [A-Za-z0-9._:]+' "$1" 2>/dev/null || true; } | sed 's/^ANR in //' | sort -u
+}
