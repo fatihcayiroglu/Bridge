@@ -88,7 +88,7 @@ test('geometry helpers produce plain numbers, a centre, and a single touch tap',
 
 test('the printed login evidence carries the field geometry and nothing else free-form', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null, secretGeometry: facts\.secretGeometry \?\? null/);
+  assert.match(s, /login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null, typing: \{ method: facts\.passwordTypingMethod \?\? null, keysRoute: facts\.keysRouteFailure \?\? null \}, secretGeometry: facts\.secretGeometry \?\? null/);
 });
 
 test('the page-source focus flag is read as true, false or unknown, never as free text', () => {
