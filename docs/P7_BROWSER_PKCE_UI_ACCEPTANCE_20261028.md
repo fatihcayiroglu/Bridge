@@ -13,6 +13,15 @@ than being overwritten. Chromium M146+ defaults to .local/share/pki/nssdb:
 HTTPS verification and the Chromium sandbox remain enabled. No certificate
 ignore flag, HTTP exception, production domain or signing identity is added.
 
+The first run, 40663269198 at ad749606, passed the 18 real backend cases but
+failed all three browser launches with Chromium's "No usable sandbox" fatal
+error. The archive/logs are retained, SHA/CRC/head verified. Ubuntu's AppArmor
+user-namespace restriction needs an allowlist for the downloaded browser.
+Following [Chromium's documented per-binary policy](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md),
+the CI profile permits userns only for the exact installed test executable,
+with no glob attachment. The global restriction is read before/after and must
+remain unchanged. The browser still launches with chromiumSandbox=true.
+
 Three mandatory cases, zero retries/skips:
 
 1. UI password login and explicit consent produce the real 303 callback. The

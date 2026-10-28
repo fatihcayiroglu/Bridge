@@ -91,6 +91,20 @@ jobs:
         run: |
           (cd e2e && npx playwright install --with-deps chromium)
           sudo apt-get install -y --no-install-recommends libnss3-tools
+      - name: Permit sandbox user namespaces for the exact test Chromium binary
+        run: |
+          # First run: Ubuntu AppArmor denied the browser's namespace sandbox.
+          # Keep the global restriction and Chromium sandbox enabled; allow
+          # only the installed test executable, without wildcard attachments.
+          task_chromium=$(cd e2e && node --input-type=module -e 'import {chromium} from "@playwright/test"; console.log(chromium.executablePath())')
+          test -x "$task_chromium"
+          [[ "$task_chromium" =~ ^[A-Za-z0-9_./-]+$ ]]
+          task_userns_before=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile bridge-ci-chromium "%s" flags=(unconfined) {\n  userns,\n}\n' "$task_chromium" > "$RUNNER_TEMP/bridge-ci-chromium.apparmor"
+          sudo install -o root -g root -m 0644 "$RUNNER_TEMP/bridge-ci-chromium.apparmor" /etc/apparmor.d/bridge-ci-chromium
+          sudo apparmor_parser -r /etc/apparmor.d/bridge-ci-chromium
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "$task_userns_before"
+          echo 'CHROMIUM_SANDBOX_EXACT_BINARY_ALLOWLIST_READY'
       - name: Create ephemeral secrets and a trusted local TLS certificate
         shell: bash
         run: |
