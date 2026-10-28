@@ -1,0 +1,66 @@
+name: Deepmerge patch install and build qualification
+on:
+  pull_request:
+    paths:
+      - 'vendor/deepmerge/**'
+      - 'scripts/deepmerge-*.test.mjs'
+      - 'package*.json'
+      - 'server/package*.json'
+      - 'electron/package*.json'
+      - 'Dockerfile'
+      - '.github/workflows/deepmerge-security.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install-and-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24.20.0']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            electron/package-lock.json
+      - name: Install-independent exploit, compatibility and lock contracts
+        run: node --test scripts/deepmerge-security.test.mjs
+      - name: Normal installs in each independent dependency graph
+        run: |
+          npm ci --no-fund
+          npm ci --prefix server --no-fund
+          npm ci --prefix electron --no-fund
+      - name: Actual Vite and Jest resolution and exploit regression
+        run: node --test scripts/deepmerge-installed.test.mjs
+      - name: Unsuppressed audits including low severity
+        run: |
+          npm audit --audit-level=low
+          npm audit --prefix server --audit-level=low
+          npm audit --prefix electron --audit-level=low
+      - name: Client build through the actual patched Vite configuration
+        run: npm run build
+  container-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Production Docker build stage with the actual vendor context
+        run: docker build --target build --progress=plain -t bridge-deepmerge-build .
+      - name: Production dependency install with development packages omitted
+        run: docker build --target deps --progress=plain -t bridge-deepmerge-deps .
+      - name: No build-only deepmerge link leaks into production dependencies
+        run: |
+          docker run --rm --network none --entrypoint node bridge-deepmerge-deps -e 'const assert=require("node:assert/strict");const r=require("node:module").createRequire("/app/server/package.json");assert.throws(()=>r.resolve("deepmerge"),{code:"MODULE_NOT_FOUND"});console.log("build-only dependency absent from production install")'
