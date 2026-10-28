@@ -306,3 +306,30 @@ test('anr-check: foreign ANRs are recorded, not failed; a clean log reports none
   assert.equal(clean.status, 0);
   assert.equal(clean.stdout, 'anrs=none\n');
 });
+
+test('ANR reports: which process and why (reason, load), from ActivityManager only', () => {
+  const log = [
+    '10-28 00:20:10.000   600   720 E ActivityManager: ANR in com.google.android.apps.nexuslauncher (com.google.android.apps.nexuslauncher/.NexusLauncherActivity)',
+    '10-28 00:20:10.000   600   720 E ActivityManager: PID: 1432',
+    '10-28 00:20:10.000   600   720 E ActivityManager: Reason: Input dispatching timed out (8f2 NexusLauncherActivity is not responding. Waited 5001ms for FocusEvent(hasFocus=true))',
+    '10-28 00:20:10.000   600   720 E ActivityManager: ErrorId: 0123',
+    '10-28 00:20:10.000   600   720 E ActivityManager: Load: 22.5 / 18.1 / 9.4',
+    '10-28 00:20:10.000   600   720 E ActivityManager: 197% TOTAL: 120% user + 61% kernel',
+    '10-28 00:20:10.000   600   720 I ActivityManager: Start proc 2000:com.bridge.nativepilot',
+    '10-28 00:20:11.000  1000  1000 E SurfaceFlinger: unrelated',
+  ].join('\n');
+  const r = runInDir('acceptance_print_anr_reports android < log.txt', { 'log.txt': log });
+  assert.equal(r.status, 0);
+  const lines = r.stderr.trim().split('\n');
+  assert.equal(lines.length, 6);
+  assert.ok(lines.every((l) => l.startsWith('NATIVE_ANDROID_ANR_REPORT: ')));
+  assert.match(r.stderr, /Reason: Input dispatching timed out/);
+  assert.match(r.stderr, /Load: 22\.5 \/ 18\.1 \/ 9\.4/);
+  assert.doesNotMatch(r.stderr, /Start proc|SurfaceFlinger/);
+  assert.equal(runInDir('acceptance_print_anr_reports android < /dev/null').stderr, '');
+});
+
+test('on failure the Android script prints the ActivityManager ANR reports', () => {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  assert.match(s, /\(\( status == 0 \)\) \|\| acceptance_print_anr_reports android < native-evidence\/android-logcat\.txt/);
+});

@@ -98,3 +98,14 @@ acceptance_print_tail() {
 acceptance_anr_processes() {
   { grep -oE 'ANR in [A-Za-z0-9._:]+' "$1" 2>/dev/null || true; } | sed 's/^ANR in //' | sort -u
 }
+
+# Reads an `adb logcat -d` capture on stdin; prints ActivityManager's ANR reports (which
+# process, and WHY: e.g. "Reason: Input dispatching timed out ...", plus its load line).
+# Runs 40599501153, 40607485747, 40607417756 and 40607482638 failed behind a launcher ANR
+# dialog; these lines say whether that ANR was an input-dispatch timeout.
+acceptance_print_anr_reports() {
+  local label="$1"
+  { grep -E ' ActivityManager: (ANR in |PID: |Reason: |Parent: |ErrorId: |Load: |Frozen: |CPU usage from |[0-9.]+% TOTAL)' || true; } \
+    | acceptance_redact | cut -c1-300 | head -n 40 \
+    | sed "s/^/NATIVE_${label^^}_ANR_REPORT: /" >&2 || true
+}
