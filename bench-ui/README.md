@@ -28,6 +28,15 @@ Framework order
 alternates each round to reduce drift. Each duration ends at the `MutationObserver`
 notification when the expected number of DOM elements has committed. The
 two animation frames are awaited for correctness, **not included in timing**.
-Compare p50 and p95 only within the same runner and the same Electron version.
+The separate cross-platform jobs exercise the same fixture in real Electron on
+Windows and macOS. GUI access on hosted runner images is an environment
+requirement; a missing desktop session is a red **NOT MEASURED** job, never a
+product regression or an invented comparison. Compare p50 and p95 only within
+the same OS/runner and the same Electron version: Windows, macOS and Linux
+hosted runners can differ in CPU and scheduling.
+Memory is sampled through Electron's OS renderer-process working-set metric,
+never through `performance.memory` (which may report privacy-clamped constants).
+This is **one snapshot**, and shared Chromium resources, GC and runner conditions
+prevent any claim about real Bridge's RAM use, memory peaks or power draw.
 **Never infer CPU/RAM, voice/video,
 file uploads or complete-app parity from this test.**

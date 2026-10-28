@@ -16,6 +16,9 @@ function verify(report) {
   if (!String(report.timingDefinition || '').includes('DOM mutation')) {
     throw new Error('The report must identify DOM commit latency, not frame-wait time');
   }
+  if (!String(report.memoryDefinition || '').includes('working-set snapshot')) {
+    throw new Error('The report must identify non-isolated renderer memory methodology');
+  }
   if (!report.electron || !report.chromium || !report.platform) {
     throw new Error('Missing actual runtime identification');
   }
@@ -33,8 +36,11 @@ function verify(report) {
     for (const name of variants) {
       const variant = scenario.variants?.[name];
       if (!variant) throw new Error('Missing framework: ' + name);
-      if (variant.heapMB !== null && (!(variant.heapMB > 0) || !Number.isFinite(variant.heapMB))) {
-        throw new Error('Invalid heap snapshot: ' + name);
+      if (Object.hasOwn(variant, 'heapMB')) throw new Error('Browser-clamped JS heap is not a valid RAM metric');
+      if (!(variant.memoryStatus === 'not-measured' && variant.rendererWorkingSetMB === null) &&
+          !(variant.memoryStatus === 'renderer-working-set-1-snapshot' &&
+            Number.isFinite(variant.rendererWorkingSetMB) && variant.rendererWorkingSetMB > 0)) {
+        throw new Error('Invalid renderer working-set evidence: ' + name);
       }
       for (const key of required) {
         const sample = variant.timings?.[key];

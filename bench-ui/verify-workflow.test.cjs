@@ -29,3 +29,13 @@ test('large history, batch update and draft preview remain part of the benchmark
   assert.match(runner, /draft burst below clock resolution/);
   assert.match(runner, /MutationObserver/);
 });
+
+test('Windows and macOS runs use real Electron with the same fixtures and fail-closed reports', () => {
+  const workflow = readFileSync(join(__dirname, '../.github/workflows/desktop-ui-ab-benchmark.yml'), 'utf8');
+  assert.match(workflow, /os: \[windows-2025, macos-15\]/);
+  assert.match(workflow, /node electron\/node_modules\/electron\/cli\.js --no-sandbox bench-ui\/electron-benchmark\.cjs/);
+  assert.equal((workflow.match(/node bench-ui\/build-assets\.mjs/g) || []).length, 2);
+  assert.equal((workflow.match(/node bench-ui\/verify-report\.cjs/g) || []).length, 2);
+  assert.match(workflow, /name: desktop-ui-ab-\$\{\{ matrix\.os \}\}-\$\{\{ github\.sha \}\}/);
+  assert.doesNotMatch(workflow, /continue-on-error:\s*true/);
+});

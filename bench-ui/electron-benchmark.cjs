@@ -102,6 +102,7 @@ async function run() {
     electron: process.versions.electron,
     chromium: process.versions.chrome,
     viewport: '1280x800',
+    memoryDefinition: 'single renderer-process working-set snapshot (Electron OS metrics), not total Bridge RAM or peak memory',
     scenarios: [],
   };
   const meta = JSON.parse(readFileSync(join(generated, 'bundle-meta.json'), 'utf8'));
@@ -137,10 +138,20 @@ async function run() {
       }
     }
     const report = { sampleSize, iterations, warmups, variants: {} };
+    const rendererPids = Object.fromEntries(names.map(name => [name, windows[name].webContents.getOSProcessId()]));
+    const distinctRendererPids = new Set(Object.values(rendererPids)).size === names.length;
+    const processMetrics = app.getAppMetrics();
     for (const name of names) {
-      const heapBytes = await windows[name].webContents.executeJavaScript('performance.memory?.usedJSHeapSize ?? null');
+      const processMetric = distinctRendererPids
+        ? processMetrics.find(metric => metric.pid === rendererPids[name])
+        : null;
+      const workingSetKB = processMetric?.memory?.workingSetSize;
+      const rendererWorkingSetMB = Number.isFinite(workingSetKB) && workingSetKB > 0
+        ? Number((workingSetKB / 1024).toFixed(2))
+        : null;
       report.variants[name] = {
-        heapMB: heapBytes === null ? null : Number((heapBytes / 1048576).toFixed(2)),
+        rendererWorkingSetMB,
+        memoryStatus: rendererWorkingSetMB === null ? 'not-measured' : 'renderer-working-set-1-snapshot',
         timings: Object.fromEntries(Object.entries(values[name]).map(([key, list]) => [key, summarize(list, iterations)])),
       };
     }
