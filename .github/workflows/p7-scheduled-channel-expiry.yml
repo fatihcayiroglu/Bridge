@@ -58,6 +58,12 @@ jobs:
           npm run build
       - name: Scheduling and authority regression suites, zero skipped tests
         working-directory: server
+        env:
+          # These suites explicitly use the mock DB / in-memory policy adapter.
+          # A configured but unconnected Redis correctly fails closed instead.
+          # Real Redis authority is required in the separate PG integration step.
+          REDIS_URL: ''
+          REDIS_TEST_URL: ''
         run: |
           node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts --json --outputFile=d2-unit-results.json
           node ../scripts/require-no-skipped-tests.js d2-unit-results.json --label "D2 scheduling unit regression"

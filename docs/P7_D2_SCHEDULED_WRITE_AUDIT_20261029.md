@@ -91,6 +91,17 @@ set, strict types and production build on Linux; its exact-head result must be
 recorded separately. PostgreSQL/Redis remain unavailable locally; this is hosted
 CI service evidence, not local or complete product E2E acceptance.
 
+Preserved workflow failure: `2017f242faa02c4cf7ab228b68d8a593f036bff5`, run
+40789305382 / job 123170252502. Types/strict test types/build PASS; unit regression
+90 PASS / 7 FAIL / 0 skipped. Cause: the new workflow incorrectly supplied a
+Redis authority URL to mock-DB unit suites which never connect a Redis adapter.
+The security policy correctly failed closed (`Redis mutation coordination
+unavailable`) before their intended AutoMod/expiry checks. PG steps on that run
+were **NOT EXECUTED** after the unit failure. The fix scopes empty Redis URLs to
+the explicitly in-memory unit step, matching its existing fixture contract;
+the real-service step still requires genuine connected Redis/PONG and PG16.
+No production guard, B1 policy, assertion or auth check is relaxed.
+
 ## Still required for D2 acceptance
 
 - Supported owner-authorized expiry configuration with explicit approved bounds;
