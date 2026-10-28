@@ -146,6 +146,9 @@ jobs:
           echo $! > "$RUNNER_TEMP/mobile-metro.pid"
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8081/status && break; sleep 1; done
           curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
+      - name: Prebuild WebDriverAgent (own bounded step; compile time is not test time)
+        timeout-minutes: 25
+        run: bash mobile-native-pilot/scripts/prebuild-wda.sh
       - name: Actual system-browser sign-in, OS callback, protected restore and revocation
         run: bash mobile-native-pilot/scripts/run-ios-browser-auth.sh
       - name: Stop only owned test services

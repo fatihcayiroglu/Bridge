@@ -184,6 +184,8 @@ try {
     'appium:app': path.resolve(process.env.IOS_APP_PATH), 'appium:bundleId': bundle,
     'appium:isHeadless': true, 'appium:noReset': true, 'appium:autoAcceptAlerts': false,
     'appium:showXcodeLog': true,
+    // Use the WebDriverAgent compiled in the previous step; never rebuild it inside the journey's deadline.
+    ...(process.env.WDA_DERIVED_DATA ? { 'appium:usePrebuiltWDA': true, 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA } : {}),
     'appium:printPageSourceOnFindFailure': false, 'appium:newCommandTimeout': 180,
   } } }, 240000);
   session = created.sessionId; assert.ok(session, 'NATIVE_XCTEST_SESSION_REQUIRED');
