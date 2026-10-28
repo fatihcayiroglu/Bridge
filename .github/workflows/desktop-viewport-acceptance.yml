@@ -1,0 +1,88 @@
+name: Bridge desktop viewport acceptance (Chromium Firefox WebKit)
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'e2e/desktop-resolutions.cjs'
+      - 'e2e/playwright.desktop-resolutions.config.ts'
+      - 'e2e/tests/desktop-resolutions.spec.ts'
+      - 'e2e/checks/assert-desktop-results*'
+      - '.github/workflows/desktop-viewport-acceptance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop-browser-layout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      CI: '1'
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Pure profile and fake-green negative controls
+        run: |
+          set -euo pipefail
+          mkdir -p e2e/desktop-layout-evidence
+          git rev-parse HEAD > e2e/desktop-layout-evidence/head.txt
+          node --test e2e/checks/desktop-resolutions.test.mjs e2e/checks/assert-desktop-results.test.mjs
+      - name: Exact dependencies and real browser engines
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Build real Bridge server and client
+        run: |
+          set -euo pipefail
+          npm run build
+          cd server && npm run build
+      - name: Apply real PostgreSQL schema and migrations
+        run: |
+          set -euo pipefail
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+      - name: Execute all desktop sizes in three real browser engines (zero retries)
+        run: |
+          set -euo pipefail
+          cd e2e
+          npx playwright test --config=playwright.desktop-resolutions.config.ts --retries=0
+          node checks/assert-desktop-results.cjs desktop-layout-results.json
+      - name: Preserve screenshots, measurements, and first-failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-viewport-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            e2e/desktop-layout-evidence/
+            e2e/desktop-layout-results.json
+            e2e/playwright-desktop-layout-report/
+            e2e/test-results/
+          if-no-files-found: error
+          retention-days: 7
