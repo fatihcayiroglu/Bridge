@@ -39,6 +39,19 @@ export function visibleText(nodes, limit = 40, secrets = []) {
   return [...seen];
 }
 
+// The first `limit` texts can fill up before a dialog drawn later in the tree (run 40712205603: the hub filled all 40
+// and the consent dialog, if present, was cut off). The tail shows what the front truncated.
+export function visibleTextTail(nodes, count = 15, secrets = []) {
+  const seen = new Set();
+  for (const node of nodes ?? []) {
+    for (const raw of [node.text, node['content-desc']]) {
+      const text = redact(raw, 120, secrets);
+      if (text) { seen.delete(text); seen.add(text); }
+    }
+  }
+  return [...seen].slice(-count);
+}
+
 export function failureReport({ facts, nodes = [], secrets = [] }) {
   return {
     failure: facts.failure ?? null,
@@ -49,6 +62,7 @@ export function failureReport({ facts, nodes = [], secrets = [] }) {
     activity: redact(facts.failureActivity ?? '', 120, secrets),
     packages: [...new Set(nodes.map((node) => node.package).filter(Boolean))].slice(0, 12),
     visibleText: visibleText(nodes, 40, secrets),
+    visibleTextTail: visibleTextTail(nodes, 15, secrets),
     classes: [...new Set(nodes.map((node) => node.class).filter(Boolean))].slice(0, 16).map((c) => redact(c, 60, secrets)),
     editFields: nodes.filter((node) => node.class === 'android.widget.EditText').length,
     firstAdbFailure: facts.firstAdbFailure ?? null,

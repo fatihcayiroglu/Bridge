@@ -59,7 +59,7 @@ test('failure report: the CA-install failure shape is fully described and secret
   assert.deepEqual(report.packages,['com.android.settings']);
   assert.deepEqual(report.visibleText,['Enter your PIN','Your PIN [secret] is wrong']);
   assert.ok(!JSON.stringify(report).includes(PIN));
-  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,caDownloadsTaps:0,settingsHopTaps:0,pinEntries:0,loginTabPresses:0,chromeConsole:[],ambiguousMatches:[],anrDialogsAnswered:[]});
+  assert.deepEqual(failureReport({facts:{},secrets:[]}),{failure:null,stage:null,lastWait:null,errorKind:null,errorMessage:null,activity:'',packages:[],visibleText:[],visibleTextTail:[],classes:[],editFields:0,firstAdbFailure:null,uiDumpFailures:[],anrEvidence:[],clickables:[],caFileRetaps:0,caDownloadsTaps:0,settingsHopTaps:0,pinEntries:0,loginTabPresses:0,chromeConsole:[],ambiguousMatches:[],anrDialogsAnswered:[]});
 });
 
 test('the harness records only the FIRST adb failure and prints the report before the summary line',()=>{
@@ -278,4 +278,17 @@ test('the harness finds the PIN field through findPinField, never through a Sett
   const src = readFileSync(new URL('../scripts/android-browser-auth.mjs', import.meta.url), 'utf8');
   assert.match(src, /field=findPinField\(n\)/);
   assert.doesNotMatch(src, /x\.package==='com\.android\.settings' && x\.class==='android\.widget\.EditText'/);
+});
+
+// ---- the first 40 texts can hide a dialog drawn later (run 40712205603) ----
+import { visibleTextTail } from '../scripts/android-auth-failure.mjs';
+test('the tail of the visible texts shows what the 40-item front cut off, de-duplicated and redacted', () => {
+  const nodes = Array.from({ length: 60 }, (_, i) => ({ text: `item ${i}` }));
+  nodes.push({ text: 'Sign in to the Bridge app?' }, { 'content-desc': 'Continue in the app' }, { text: 'item 3' });
+  const tail = visibleTextTail(nodes, 5, []);
+  assert.deepEqual(tail, ['item 58', 'item 59', 'Sign in to the Bridge app?', 'Continue in the app', 'item 3']);
+  assert.ok(!visibleText(nodes, 40, []).includes('Continue in the app'), 'the front cut-off is real');
+  assert.equal(failureReport({ facts: {}, nodes }).visibleTextTail.at(-2), 'Continue in the app');
+  assert.deepEqual(visibleTextTail(undefined), []);
+  assert.deepEqual(visibleTextTail([{ text: `x ${'Q'.repeat(60)}` }], 3, []).map((t) => t.includes('QQQQ')), [false]);
 });
