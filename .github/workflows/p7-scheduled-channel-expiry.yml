@@ -1,0 +1,109 @@
+name: P7 Scheduled Channel Expiry PostgreSQL 16
+
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'scripts/require-no-skipped-tests.js'
+      - '.github/workflows/p7-scheduled-channel-expiry.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres16-dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge_d2_test
+          POSTGRES_PASSWORD: disposable_d2_ci_only
+          POSTGRES_DB: bridge_d2_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bridge_d2_test -d bridge_d2_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      # Disposable job-local services only. No repository/environment secrets,
+      # persisted volumes, production directories or deployment permissions.
+      DATABASE_URL: postgresql://bridge_d2_test:disposable_d2_ci_only@localhost:5432/bridge_d2_test
+      PG_TEST_URL: postgresql://bridge_d2_test:disposable_d2_ci_only@localhost:5432/bridge_d2_test
+      REDIS_URL: redis://localhost:6379/0
+      REDIS_TEST_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install locked root and server dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix server --ignore-scripts
+      - name: Server production and strict test types, production build
+        working-directory: server
+        run: |
+          npm run typecheck
+          npm run typecheck:test-strict
+          npm run build
+      - name: Scheduling and authority regression suites, zero skipped tests
+        working-directory: server
+        env:
+          # These suites explicitly use the mock DB / in-memory policy adapter.
+          # A configured but unconnected Redis correctly fails closed instead.
+          # Real Redis authority is required in the separate PG integration step.
+          REDIS_URL: ''
+          REDIS_TEST_URL: ''
+        run: |
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts --json --outputFile=d2-unit-results.json
+          node ../scripts/require-no-skipped-tests.js d2-unit-results.json --label "D2 scheduling unit regression"
+      - name: Require genuine PostgreSQL 16 and Redis
+        run: |
+          node - <<'NODE'
+          const { Pool } = require('./server/node_modules/pg');
+          const { createClient } = require('./server/node_modules/redis');
+          (async () => {
+            const pool = new Pool({connectionString: process.env.PG_TEST_URL});
+            const redis = createClient({url: process.env.REDIS_TEST_URL});
+            try {
+              const result = await pool.query('SHOW server_version_num');
+              const version = Number(result.rows[0].server_version_num);
+              if (Math.floor(version / 10000) !== 16) throw Error('PostgreSQL 16 required');
+              await redis.connect();
+              if (await redis.ping() !== 'PONG') throw Error('Redis PONG required');
+              console.log(JSON.stringify({postgresVersion: version, redisPong: true}));
+            } finally {
+              if (redis.isOpen) await redis.quit();
+              await pool.end();
+            }
+          })().catch(() => { console.error('SERVICE_PREREQUISITE_FAILED'); process.exitCode = 1; });
+          NODE
+      - name: Initialize disposable schema and apply migration chain
+        working-directory: server
+        run: |
+          node node_modules/ts-node/dist/bin.js --project tsconfig.json db/postgres/index.ts
+          node node_modules/ts-node/dist/bin.js --project tsconfig.json db/migrate-postgres.ts up
+      - name: Actual scheduled dispatch integration, zero skipped tests
+        working-directory: server
+        run: |
+          node node_modules/jest/bin/jest.js --config jest.pg.config.js --runInBand --runTestsByPath tests/pg-integration/scheduled-channel-expiry.pgtest.ts --json --outputFile=d2-pg16-results.json
+          node ../scripts/require-no-skipped-tests.js d2-pg16-results.json --label "D2 PostgreSQL 16 scheduled dispatch"
+      - name: Preserve first-attempt test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p7-scheduled-expiry-pg16-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            server/d2-pg16-results.json
+            server/d2-unit-results.json
+          if-no-files-found: warn
