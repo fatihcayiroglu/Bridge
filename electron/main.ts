@@ -13,7 +13,7 @@
 
 import {
   app, BrowserWindow, dialog, shell, Menu, Tray,
-  Notification, nativeImage, session, ipcMain, net,
+  Notification, nativeImage, session, ipcMain, net, desktopCapturer,
 } from 'electron';
 import {
   checkForBridgeUpdates,
@@ -339,6 +339,59 @@ function installSessionPolicies(): void {
     const requesterUrl = (webContents as { getURL?: () => string }).getURL?.() ?? '';
     callback(isSameAppOrigin(requesterUrl) && allowed.includes(permission));
   });
+
+  // Chromium's getDisplayMedia needs a source-selection response in Electron.
+  // Prefer the platform picker. Some Linux/Windows builds need a fallback:
+  // NEVER silently select sources[0] or grant cross-origin/iframe requests.
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    // Electron runtime accepts null to reject capture; v42's TS callback
+    // signature omits null, despite the documented API contract.
+    const isTrusted = (): boolean =>
+      Boolean(mainWindow && !mainWindow.isDestroyed() &&
+        request.userGesture &&
+        request.frame === mainWindow.webContents.mainFrame &&
+        isSameAppOrigin(request.securityOrigin) &&
+        isSameAppOrigin(mainWindow.webContents.getURL()));
+
+    if (!isTrusted()) { callback(null as never); return; }
+
+    void (async () => {
+      try {
+        // With the system picker available Electron does not invoke this
+        // fallback. In Wayland, getSources may itself show the PipeWire portal.
+        const sources = (await desktopCapturer.getSources({
+          types: ['screen', 'window'],
+          thumbnailSize: { width: 0, height: 0 },
+          fetchWindowIcons: false,
+        })).filter((source) => typeof source.id === 'string' && source.id.length > 0 &&
+          typeof source.name === 'string').slice(0, 12);
+
+        if (!isTrusted() || sources.length === 0) { callback(null as never); return; }
+
+        const result = await dialog.showMessageBox(mainWindow!, {
+          type: 'question',
+          title: 'Bridge — Screen sharing',
+          message: 'Choose what to share',
+          detail: 'Only the selected screen or window will be shared with call participants. Cancel shares nothing.',
+          buttons: ['Cancel', ...sources.map((source, index) =>
+            `${index + 1}. ${source.name.slice(0, 72)}`)],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        // An origin/window may change while the native prompt is open.
+        if (!isTrusted() || !Number.isInteger(result.response) ||
+            result.response <= 0 || result.response > sources.length) {
+          callback(null as never); return;
+        }
+        callback({ video: sources[result.response - 1] });
+      } catch {
+        // Any cancelled PipeWire portal, denied OS permission or picker error
+        // must reject getDisplayMedia. Never fall back to an unchosen source.
+        callback(null as never);
+      }
+    })();
+  }, { useSystemPicker: true });
 }
 
 function createMainWindow(): void {

@@ -61,6 +61,7 @@ const ipcMain = {
 // ── webContents ───────────────────────────────────────────────────────────────
 class WebContents extends MockEmitter {
   url = '';
+  mainFrame = { id: 'trusted-main-frame' };
   send = jest.fn();
   executeJavaScript = jest.fn().mockResolvedValue(undefined);
   getURL = jest.fn(() => this.url);
@@ -163,12 +164,14 @@ const shell = {
   openPath     : jest.fn().mockResolvedValue(''),
 };
 const dialog = { showMessageBox: jest.fn().mockResolvedValue({ response: 0 }) };
+const desktopCapturer = { getSources: jest.fn().mockResolvedValue([]) };
 const net = { fetch: jest.fn() };
 
 // ── session ────────────────────────────────────────────────────────────────────
 const session = {
   defaultSession: {
     setPermissionRequestHandler: jest.fn(),
+    setDisplayMediaRequestHandler: jest.fn(),
     webRequest: { onHeadersReceived: jest.fn() },
   },
 };
@@ -213,6 +216,7 @@ module.exports = {
   Menu,
   shell,
   dialog,
+  desktopCapturer,
   net,
   session,
   _ipcMainListeners,
