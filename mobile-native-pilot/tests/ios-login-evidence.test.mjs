@@ -43,13 +43,13 @@ test('no value, username or password text ever appears in the evidence', () => {
 
 test('the iOS driver records the evidence on failure from the page source, not from argument values', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, uiSurvey, routeShape, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, uiSurvey, routeShape, keyActions, assertPasswordLanded, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /facts\.failureUi\.login = loginEvidence\(s, activeUsername\)/);
 });
 
 test('the evidence is printed to the job log (artifacts are not downloadable) from the closed shape only', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
+  assert.match(s, /console\.log\(`IOS_LOGIN_EVIDENCE \$\{JSON\.stringify\(\{ stage: facts\.stage \?\? null, failure: facts\.failure, login: facts\.failureUi\.login, survey: facts\.failureUi\.survey, driverFailure: facts\.driverFailure \?\? null, failedAt: facts\.failedAt \?\? null, typing: \{ method: facts\.passwordTypingMethod \?\? null, keysRoute: facts\.keysRouteFailure \?\? null \}, secretGeometry: facts\.secretGeometry \?\? null, focusBeforePassword: facts\.focusBeforePassword \?\? null \}\)\}`\)/);
 });
 
 import { assertUsernameIntact } from '../scripts/ios-login-evidence.mjs';
@@ -66,9 +66,9 @@ test('the username field must hold exactly the username after typing; the failur
 
 test('the iOS driver re-finds the password field after the username keyboard, taps it like a finger, then types and checks', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /import \{ loginEvidence, uiSurvey, routeShape, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
+  assert.match(s, /import \{ loginEvidence, uiSurvey, routeShape, keyActions, assertPasswordLanded, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot \} from '\.\/ios-login-evidence\.mjs'/);
   assert.match(s, /\/element\/\$\{key\(fields\[0\]\)\}\/value`, \{ text: user\.username \}\);[\s\S]*?const freshSecrets = await elements\('class name', 'XCUIElementTypeSecureTextField'\);\s*assert\.ok\(freshSecrets\.length === 1, 'REAL_LOGIN_FIELDS_REQUIRED'\);/);
-  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);[\s\S]*?(?:\/\/[^\n]*\s*)*await native\('keys', \{ keys: \[password\] \}\);\s*assertUsernameIntact\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);/);
+  assert.match(s, /await command\('POST', '\/actions', tapActions\(centerOf\(secretRect\)\)\);\s*await command\('POST', `\/element\/\$\{key\(freshSecrets\[0\]\)\}\/click`, \{\}\);[\s\S]*?(?:\/\/[^\n]*\s*)*await typeIntoFocused\(password\);\s*const afterPassword = loginEvidence\(await command\('GET', '\/source'\), user\.username\);\s*assertUsernameIntact\(afterPassword\);/);
   assert.ok(!/key\(secrets\[0\]\)\}\/value/.test(s), 'the stale element reference is never typed into');
 });
 
@@ -103,10 +103,10 @@ test('the page-source focus flag is read as true, false or unknown, never as fre
 
 test('the driver taps natively, then records the focus snapshot before typing the password', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*(?:\/\/[^\n]*\s*)*await native\('keys', \{ keys: \[password\] \}\);/);
+  assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*(?:\/\/[^\n]*\s*)*await typeIntoFocused\(password\);/);
 });
 
-import { uiSurvey, routeShape } from '../scripts/ios-login-evidence.mjs';
+import { uiSurvey, routeShape, keyActions, assertPasswordLanded } from '../scripts/ios-login-evidence.mjs';
 test('uiSurvey counts element types and reports only allow-listed names, never text or values', () => {
   const src = `<AppiumAUT>${[
     el('WebView', { visible: 'true' }), el('WebView', { visible: 'false' }),
@@ -160,4 +160,28 @@ test('the failing step is captured before the failure handler runs its own drive
   const capture = s.indexOf('facts.failedAt = { native: facts.lastNative ?? null, route: facts.lastRoute ?? null };', catchStart);
   const firstHandlerCommand = s.indexOf("await native('activeAppInfo')", catchStart);
   assert.ok(capture > catchStart && firstHandlerCommand > capture, 'failedAt is recorded before the first handler command');
+});
+
+test('keyActions types one keyDown/keyUp pair per character and refuses empty or oversized text', () => {
+  const a = keyActions('a€').actions[0];
+  assert.equal(a.type, 'key');
+  assert.deepEqual(a.actions.map((x) => `${x.type}:${x.value}`), ['keyDown:a', 'keyUp:a', 'keyDown:€', 'keyUp:€']);
+  assert.throws(() => keyActions(''), /KEY_TEXT_INVALID/);
+  assert.throws(() => keyActions('x'.repeat(257)), /KEY_TEXT_INVALID/);
+});
+test('assertPasswordLanded needs exactly one visible secret field holding the typed length', () => {
+  const ok = { secureFields: [{ visible: true, valueLength: 21 }] };
+  assert.equal(assertPasswordLanded(ok, 21), true);
+  assert.throws(() => assertPasswordLanded({ secureFields: [{ visible: true, valueLength: 0 }] }, 21), /LOGIN_PASSWORD_NOT_IN_SECRET_FIELD/);
+  assert.throws(() => assertPasswordLanded({ secureFields: [{ visible: true, valueLength: 20 }] }, 21), /LOGIN_PASSWORD_NOT_IN_SECRET_FIELD/);
+  assert.throws(() => assertPasswordLanded({ secureFields: [] }, 21), /LOGIN_SECRET_FIELD_NOT_UNIQUE/);
+  assert.throws(() => assertPasswordLanded({ secureFields: [{ visible: true, valueLength: 21 }, { visible: true, valueLength: 21 }] }, 21), /LOGIN_SECRET_FIELD_NOT_UNIQUE/);
+  assert.throws(() => assertPasswordLanded(undefined, 21), /LOGIN_SECRET_FIELD_NOT_UNIQUE/);
+});
+test('the driver types through the keys route or key actions, records the method, and checks the secret field', () => {
+  const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
+  assert.ok(!/native\('keys'/.test(s), 'mobile: keys returned 500 and is not used');
+  assert.match(s, /await typeIntoFocused\(password\);\s*const afterPassword = loginEvidence\(await command\('GET', '\/source'\), user\.username\);\s*assertUsernameIntact\(afterPassword\);\s*assertPasswordLanded\(afterPassword, password\.length\);/);
+  assert.match(s, /facts\.passwordTypingMethod = 'keys-route'/);
+  assert.match(s, /await command\('POST', '\/actions', keyActions\(text\)\); facts\.passwordTypingMethod = 'key-actions'/);
 });

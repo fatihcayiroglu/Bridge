@@ -1,7 +1,7 @@
 // Drives the REAL RN screen and system authentication UI via native XCUITest.
 // No WebView JavaScript, injected cookies/tokens/callbacks, openurl or fake browser.
 import { chooseSubmitIndex } from './ios-signin-select.mjs';
-import { loginEvidence, uiSurvey, routeShape, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
+import { loginEvidence, uiSurvey, routeShape, keyActions, assertPasswordLanded, assertUsernameIntact, fieldGeometry, centerOf, tapActions, focusSnapshot } from './ios-login-evidence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -117,6 +117,14 @@ async function browserReady() {
   facts.systemBrowserObserved = true;
 }
 let activeUsername;
+async function typeIntoFocused(text) {
+  try { await command('POST', '/keys', { value: Array.from(text) }); facts.passwordTypingMethod = 'keys-route'; }
+  catch (error) {
+    if (!String(error?.message).startsWith('WebDriver ')) throw error;
+    facts.keysRouteFailure = error.message;
+    await command('POST', '/actions', keyActions(text)); facts.passwordTypingMethod = 'key-actions';
+  }
+}
 async function signIn(user, expectedPid) {
   activeUsername = user.username;
   await browserReady();
@@ -138,10 +146,13 @@ async function signIn(user, expectedPid) {
   // (run 40717519808: the password still landed in the username field after the touch action above).
   await native('tap', centerOf(secretRect));
   facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
-  // Element-addressed typing reached the username field in runs 40700229648, 40706730676, 40717519808 and 40725593481,
-  // so type through the keyboard instead; assertUsernameIntact still gates the result.
-  await native('keys', { keys: [password] });
-  assertUsernameIntact(loginEvidence(await command('GET', '/source'), user.username));
+  // Element-addressed typing reached the username field in runs 40700229648, 40706730676, 40717519808 and 40725593481, and
+  // `mobile: keys` returned 500 (run 40785140974). Type through the keyboard with W3C key actions into the focused field,
+  // then require the password in the secret field AND the username untouched; the method used is recorded.
+  await typeIntoFocused(password);
+  const afterPassword = loginEvidence(await command('GET', '/source'), user.username);
+  assertUsernameIntact(afterPassword);
+  assertPasswordLanded(afterPassword, password.length);
   await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
   await screenshot(`consent-${activeCase}`);
@@ -255,7 +266,7 @@ try {
       // Closed shape only: counts, lengths, allow-listed labels - never a field value or credential.
       facts.failureUi.login = loginEvidence(s, activeUsername);
       facts.failureUi.survey = uiSurvey(s);
-      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, driverFailure: facts.driverFailure ?? null, failedAt: facts.failedAt ?? null, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
+      console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, driverFailure: facts.driverFailure ?? null, failedAt: facts.failedAt ?? null, typing: { method: facts.passwordTypingMethod ?? null, keysRoute: facts.keysRouteFailure ?? null }, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
       await screenshot('first-failure'); } catch {}
   }
   process.exitCode = 1;

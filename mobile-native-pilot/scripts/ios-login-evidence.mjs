@@ -86,3 +86,19 @@ export function routeShape(method, route) {
   const ok = /^\/[A-Za-z0-9_:\/.-]{0,120}$/.test(clean) ? clean : '/?';
   return `${/^[A-Z]{3,7}$/.test(String(method)) ? method : '?'} ${ok}`;
 }
+
+// W3C key actions that type text into whatever holds keyboard focus (one keyDown/keyUp pair per character).
+export function keyActions(text) {
+  const chars = Array.from(String(text ?? ''));
+  if (chars.length === 0 || chars.length > 256) throw new Error('KEY_TEXT_INVALID');
+  return { actions: [{ type: 'key', id: 'keyboard', actions: chars.flatMap((value) => [{ type: 'keyDown', value }, { type: 'keyUp', value }]) }] };
+}
+
+// After typing the password, the one visible secure field must hold exactly that many characters. Run 40785140974
+// showed `mobile: keys` returning 500; a method that reports success but types nowhere must not pass either.
+export function assertPasswordLanded(evidence, length) {
+  const visible = (evidence?.secureFields ?? []).filter((field) => field.visible);
+  if (visible.length !== 1) throw new Error('LOGIN_SECRET_FIELD_NOT_UNIQUE');
+  if (visible[0].valueLength !== length) throw new Error('LOGIN_PASSWORD_NOT_IN_SECRET_FIELD');
+  return true;
+}
