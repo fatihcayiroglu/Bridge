@@ -43,6 +43,12 @@ adb shell pm clear com.bridge.nativepilot
 # the first dump but no ANR report after this clear, i.e. it happened at/after boot.
 adb logcat -d > native-evidence/pre-test-logcat.txt 2>&1 || true
 adb logcat -c
+# RN defaults to 10.0.2.2 on this emulator, even when adb reverse exists. Run
+# 40610885003 recorded ENETUNREACH there, then RN's status IOException and asset
+# fallback. Set the fresh debug fixture's host to the reverse tunnel and require
+# its actual /status response once, without retrying startup or changing budgets.
+stage=metro-route-configure
+node scripts/android-metro-route.mjs
 foreign_anr_count=0
 # The ANR dialog title uses the app label; read it from app.json so a rename cannot turn
 # the pilot's own dialog into a "foreign" one.
@@ -106,6 +112,7 @@ adb shell am start -W -n com.bridge.nativepilot/.MainActivity > native-evidence/
 stage=first-ui-assertions
 assert_native_marker NATIVE_SQLCIPHER_WRITE_PASS native-evidence/first-ui.xml
 grep -q NATIVE_SECURE_STORE_ROUNDTRIP_PASS native-evidence/first-ui.xml
+grep -q NATIVE_METRO_LOOPBACK_PASS native-evidence/first-ui.xml
 grep -q NATIVE_RECEIPT_COMPACTION_PASS native-evidence/first-ui.xml
 stage=force-stop
 adb shell am force-stop com.bridge.nativepilot
@@ -114,6 +121,7 @@ adb shell am start -W -n com.bridge.nativepilot/.MainActivity > native-evidence/
 stage=restart-ui-assertions
 assert_native_marker NATIVE_SQLCIPHER_RECOVERY_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_SECURE_STORE_RESTORE_PASS native-evidence/restart-ui.xml
+grep -q NATIVE_METRO_LOOPBACK_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_ACCOUNT_ISOLATION_PASS native-evidence/restart-ui.xml
 grep -q NATIVE_RECEIPT_COMPACTION_RESTORE_PASS native-evidence/restart-ui.xml
 stage=final-screenshot-capture
