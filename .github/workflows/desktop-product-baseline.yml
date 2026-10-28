@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'e2e/tests/desktop-responsive-viewport.spec.ts'
+      - 'e2e/tests/desktop-cdp-runtime.spec.ts'
       - 'scripts/verify-desktop-product-probe.test.cjs'
       - '.github/workflows/desktop-product-baseline.yml'
   workflow_dispatch:
@@ -79,6 +80,7 @@ jobs:
           case "$BRIDGE_PRODUCT_SUITE" in
             startup-interactions)
               npx playwright test tests/perf-benchmark.spec.ts --project=perf --retries=0 --workers=1 --reporter=list
+              npx playwright test tests/desktop-cdp-runtime.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list
               ;;
             responsive-a11y)
               npx playwright test tests/desktop-responsive-viewport.spec.ts --project=chromium --retries=0 --workers=1 --reporter=list

@@ -21,6 +21,15 @@ test('authenticated Bridge desktop shell reflows without horizontal clipping', a
   for (const size of viewports) {
     await page.setViewportSize(size);
     await expect(page.locator('#app')).toBeVisible();
+    // The shell uses a visualViewport-driven CSS height variable. A viewport
+    // resize may update window.innerHeight before the visualViewport event
+    // reaches the app. Wait for the actual visible shell to catch up, without
+    // a fixed sleep or a fabricated PASS on the previous viewport's height.
+    await expect.poll(async () => {
+      return page.locator('#app').evaluate((app) =>
+        Math.abs(app.getBoundingClientRect().height - window.innerHeight));
+    }, { message: `shell must fill ${size.width}x${size.height}`, timeout: 5_000 })
+      .toBeLessThanOrEqual(1);
     const dimensions = await page.evaluate(() => {
       const app = document.querySelector('#app');
       if (!app) throw new Error('REAL_PRODUCT_APP_MISSING');
@@ -42,6 +51,7 @@ test('authenticated Bridge desktop shell reflows without horizontal clipping', a
     expect(dimensions.viewportHeight).toBe(size.height);
     expect(dimensions.appWidth).toBeGreaterThan(0);
     expect(dimensions.appHeight).toBeGreaterThan(0);
+    expect(Math.abs(dimensions.appHeight - size.height)).toBeLessThanOrEqual(1);
     expect(dimensions.documentWidth, `desktop document overflow at ${size.width}x${size.height}`)
       .toBeLessThanOrEqual(size.width + 1);
     expect(dimensions.bodyWidth, `desktop body overflow at ${size.width}x${size.height}`)
