@@ -241,3 +241,34 @@ test('runtime errors include RN\'s packager-status WARNING (it names the IOExcep
   assert.match(lines[0], /IOException requesting its status: failed to connect .* after 5000ms/);
   assert.match(lines[1], /Unable to load script/);
 });
+
+// Runs the REAL final-logcat block with a fake adb.
+function runFinalLogcat(adbScript) {
+  const s = fs.readFileSync('scripts/android-native-acceptance.sh', 'utf8');
+  const start = s.indexOf('stage=final-logcat');
+  const block = s.slice(start, s.indexOf('\nstage=', start + 1));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acc-'));
+  fs.mkdirSync(path.join(dir, 'bin')); fs.mkdirSync(path.join(dir, 'native-evidence'));
+  fs.writeFileSync(path.join(dir, 'bin', 'adb'), `#!/usr/bin/env bash\n${adbScript}\n`, { mode: 0o755 });
+  const script = `set -euo pipefail\nsource ${JSON.stringify(TRAP)}\nfunction cleanup() { local status=$?; acceptance_record_failure "$status" native-evidence android; exit "$status"; }\ntrap cleanup EXIT\n${block}\necho continued\n`;
+  fs.writeFileSync(path.join(dir, 'case.sh'), script);
+  return spawnSync('bash', ['case.sh'], { encoding: 'utf8', cwd: dir, env: { ...process.env, PATH: `${dir}/bin:${process.env.PATH}` } });
+}
+
+test('final logcat: a failed capture still fails the run, and says why', () => {
+  const r = runFinalLogcat('case "$1 $2" in "logcat -d") echo "partial line"; echo "logcat: read failure" >&2; exit 255;; "shell getprop") echo running;; "logcat -g") echo "main: ring buffer is 2 MiB";; esac');
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.stdout, /continued/);
+  assert.match(r.stderr, /NATIVE_ANDROID_LOGCAT: exit=255 bytes=13/);
+  assert.match(r.stderr, /NATIVE_ANDROID_LOGCAT: stderr: logcat: read failure/);
+  assert.match(r.stderr, /NATIVE_ANDROID_LOGCAT: logd: running/);
+  assert.match(r.stderr, /NATIVE_ANDROID_LOGCAT: buffers: main: ring buffer is 2 MiB/);
+  assert.match(r.stderr, /NATIVE_ANDROID_ACCEPTANCE_FAILED stage=final-logcat .*detail=logcat-capture-failed:exit=255/);
+});
+
+test('final logcat: a good capture continues with nothing extra printed', () => {
+  const r = runFinalLogcat('[[ "$1 $2" == "logcat -d" ]] && echo "10-28 00:39:22.000 I x: y"; exit 0');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'continued');
+  assert.equal(r.stderr, '');
+});
