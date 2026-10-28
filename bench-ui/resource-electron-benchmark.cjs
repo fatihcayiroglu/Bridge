@@ -14,6 +14,9 @@ const ITERATIONS = 5;
 const windows = {};
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// Between scenarios there are intentionally no windows for a moment. Keep
+// Electron alive on Windows/Linux so the next isolated scenario can start.
+app.on('window-all-closed', () => {});
 
 function percentile(values, ratio) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -122,29 +125,42 @@ async function measure(name, mode, round) {
   }
 }
 async function run() {
-  for (const name of variants) windows[name] = await start(name);
   const data = {};
   for (const mode of scenarios) {
-    const samples = Object.fromEntries(variants.map(name => [name, []]));
-    for (let round = 0; round < WARMUPS + ITERATIONS; round++) {
-      const order = round % 2 ? [...variants].reverse() : variants;
-      for (const name of order) {
-        if (round === 0) console.log('RESOURCE_SCENARIO_START ' + JSON.stringify({ mode, name }));
-        const sample = await measure(name, mode, round);
-        if (round >= WARMUPS) samples[name].push(sample);
+    // Open clean renderer processes for EVERY workload. Otherwise 10,800
+    // message nodes and GC from an earlier mode contaminate later RAM values.
+    try {
+      for (const name of variants) windows[name] = await start(name);
+      const samples = Object.fromEntries(variants.map(name => [name, []]));
+      for (let round = 0; round < WARMUPS + ITERATIONS; round++) {
+        const order = round % 2 ? [...variants].reverse() : variants;
+        for (const name of order) {
+          if (round === 0) console.log('RESOURCE_SCENARIO_START ' + JSON.stringify({ mode, name }));
+          const sample = await measure(name, mode, round);
+          if (round >= WARMUPS) samples[name].push(sample);
+        }
       }
-    }
-    data[mode] = { variants: {} };
-    for (const name of variants) {
-      const s = samples[name];
-      data[mode].variants[name] = {
-        samples: s,
-        cpuPercent: summarize(s, 'rendererCpuIntervalPercent'),
-        workingSetMB: summarize(s, 'rendererWorkingSetMB'),
-        taskSeconds: summarize(s, 'rendererTaskSeconds'),
-        measuredMs: summarize(s, 'measuredMs'),
-        uiWorkMs: summarize(s, 'uiWorkMs'),
-      };
+      data[mode] = { variants: {} };
+      for (const name of variants) {
+        const s = samples[name];
+        data[mode].variants[name] = {
+          samples: s,
+          cpuPercent: summarize(s, 'rendererCpuIntervalPercent'),
+          workingSetMB: summarize(s, 'rendererWorkingSetMB'),
+          taskSeconds: summarize(s, 'rendererTaskSeconds'),
+          measuredMs: summarize(s, 'measuredMs'),
+          uiWorkMs: summarize(s, 'uiWorkMs'),
+        };
+      }
+    } finally {
+      for (const name of variants) {
+        const win = windows[name];
+        if (win && !win.isDestroyed()) {
+          if (win.webContents.debugger.isAttached()) win.webContents.debugger.detach();
+          win.destroy();
+        }
+        delete windows[name];
+      }
     }
   }
   const report = {

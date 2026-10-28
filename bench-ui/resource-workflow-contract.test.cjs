@@ -51,3 +51,10 @@ test('media setup lies outside the bounded CPU interval and cannot hide a failed
   assert.match(runner, /result\.measuredMs < 1200/);
   assert.match(runner, /RESOURCE_SCENARIO_START/);
 });
+test('every workload starts with fresh renderer processes to isolate RAM from earlier modes', () => {
+  assert.match(runner, /app\.on\('window-all-closed', \(\) => \{\}\)/);
+  assert.match(runner, /for \(const mode of scenarios\) \{[\s\S]*?for \(const name of variants\) windows\[name\] = await start\(name\)/);
+  assert.match(runner, /if \(win\.webContents\.debugger\.isAttached\(\)\) win\.webContents\.debugger\.detach\(\)/);
+  assert.match(runner, /win\.destroy\(\)/);
+  assert.match(runner, /delete windows\[name\]/);
+});
