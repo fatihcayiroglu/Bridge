@@ -4,9 +4,10 @@ name: Desktop Linux + macOS + Windows native gates
 # Installed desktop clients connect to a Bridge server; no server is bundled.
 on:
   pull_request:
-    branches: [main, develop]
+    # Stacked P7 candidates need real native qualification before main review.
     paths:
       - 'electron/**'
+      - 'vendor/deepmerge/**'
       # The packaged app connects to the live web UI; PRs changing shared
       # client behavior must re-prove the native desktop startup contracts.
       - 'client/**'
@@ -38,6 +39,9 @@ jobs:
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Wayland protocol acceptance and privacy controls
         run: bash electron/scripts/ci-linux-wayland-protocol.test.sh
       - uses: actions/setup-node@v7
@@ -136,6 +140,9 @@ jobs:
     timeout-minutes: 65
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24.20.0'
@@ -198,6 +205,9 @@ jobs:
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24.20.0'

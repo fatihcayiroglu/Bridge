@@ -5,9 +5,25 @@
 wayland_protocol_ready() {
   local protocol_log="${1:?protocol log path required}"
   [[ -r "${protocol_log}" ]] || return 1
-  grep -Eq -- 'wl_registry[@#][0-9]+\.global\([0-9]+, "wl_seat", [0-9]+\)' "${protocol_log}" 2>/dev/null &&
-    grep -Eq -- 'xdg_surface[@#][0-9]+\.get_toplevel\(' "${protocol_log}" 2>/dev/null &&
-    grep -Eq -- 'xdg_surface[@#][0-9]+\.ack_configure\(' "${protocol_log}" 2>/dev/null
+  # A role request on surface A and an ACK on surface B do not prove that
+  # either toplevel completed configuration. Track the same live object in
+  # protocol order. Do not exit early: consuming the file also avoids SIGPIPE.
+  awk '
+    function surface_id(line, id) {
+      match(line, /xdg_surface[@#][0-9]+\./)
+      id = substr(line, RSTART, RLENGTH)
+      sub(/^xdg_surface[@#]/, "", id)
+      sub(/\.$/, "", id)
+      return id
+    }
+    /wl_registry[@#][0-9]+\.global\([0-9]+, "wl_seat", [0-9]+\)/ { seat = 1 }
+    /xdg_surface[@#][0-9]+\.get_toplevel\(/ { toplevel[surface_id($0)] = 1 }
+    /xdg_surface[@#][0-9]+\.(destroy|get_popup)\(/ { delete toplevel[surface_id($0)] }
+    /xdg_surface[@#][0-9]+\.ack_configure\([0-9]+\)/ {
+      if (toplevel[surface_id($0)]) configured = 1
+    }
+    END { exit !(seat && configured) }
+  ' "${protocol_log}" 2>/dev/null
 }
 
 # Closed counts only: no arbitrary title, renderer text, URL or runner path.
