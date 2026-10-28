@@ -13,6 +13,12 @@ env:
   NODE_OPTIONS: --dns-result-order=ipv4first
 jobs:
   android:
+    name: Android API ${{ matrix.api }} native storage and recovery
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        api: [24, 35, 36, 37]
     env:
       EXPO_PUBLIC_REQUIRE_METRO_LOOPBACK: '1'
     runs-on: ubuntu-latest
@@ -36,6 +42,7 @@ jobs:
         run: |
           mkdir -p native-evidence
           git rev-parse HEAD > native-evidence/head.txt
+          node scripts/native-version-evidence.mjs init-android '${{ matrix.api }}'
           npm ci --no-fund
           npm audit --audit-level=low
           npx expo prebuild --platform android --no-install
@@ -45,22 +52,24 @@ jobs:
           cd android
           ./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 2>&1 | tee ../native-evidence/android-build.log
           test -s app/build/outputs/apk/debug/app-debug.apk
+          task_aapt=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
+          "$task_aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > ../native-evidence/apk-badging.txt
       - name: Enable runner KVM
         run: sudo chmod 666 /dev/kvm
       - name: Boot real app, native secure storage and encrypted crash recovery
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           arch: x86_64
           target: google_apis
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: bash mobile-native-pilot/scripts/android-native-acceptance.sh
+          script: bash mobile-native-pilot/scripts/android-version-acceptance.sh '${{ matrix.api }}'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-android-${{ github.run_id }}-${{ github.run_attempt }}
+          name: native-android-api${{ matrix.api }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             mobile-native-pilot/android/app/build/outputs/apk/debug/app-debug.apk
             mobile-native-pilot/native-evidence/
@@ -123,9 +132,7 @@ jobs:
           set -o pipefail
           node -e 'require("dns").lookup("localhost", (error,address,family)=>{if(error)throw error; console.log({address,family})})' > native-evidence/metro-dns.txt
           xcrun simctl list devices available -j > native-evidence/simulators.json
-          udid=$(python3 -c 'import json; d=json.load(open("native-evidence/simulators.json")); print(next(x["udid"] for a in d["devices"].values() for x in a if x.get("isAvailable") and "iPhone" in x["name"]))')
-          xcrun simctl boot "$udid"
-          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl list runtimes -j > native-evidence/runtimes.json
           npx expo start --localhost --port 8081 > native-evidence/metro-ios.log 2>&1 &
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8081/status && break; sleep 1; done
           curl -fsS http://127.0.0.1:8081/status
@@ -133,11 +140,8 @@ jobs:
           # fixed 20s screenshot captured only 'Bundling 39%', not application UI.
           curl -fsS --max-time 180 'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false' -o /dev/null
           app=$(find "$RUNNER_TEMP/bridge-native-ios/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)
-          xcrun simctl install "$udid" "$app" 2>&1 | tee native-evidence/simulator-install.txt
-          # Preserve logs/screens on assertion failure too. Vision reads actual
-          # rendered fixture UI; both launches must expose the required markers.
-          trap 'xcrun simctl spawn "$udid" log show --last 3m --style compact --predicate '\''process == "BridgeNativePilot" OR process == "SpringBoard" OR process == "runningboardd" OR process == "securityd"'\'' > native-evidence/app-runtime.log || true; xcrun simctl io "$udid" screenshot native-evidence/final-screen.png || true' EXIT
-          bash scripts/ios-native-acceptance.sh "$udid"
+          export IOS_APP_PATH="$app"
+          bash scripts/ios-version-acceptance.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
