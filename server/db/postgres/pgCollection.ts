@@ -218,6 +218,9 @@ const ALLOWED_COLUMNS = new Set([
   // access. This identifier allowlist is NOT an authorization gate and does
   // not activate expiry APIs, cleanup, or tombstone reads on any route.
   'expiryVersion', 'expiredAt', 'recordedAt', 'cleanupState',
+  // P7 B5 migration 085 (#336): exact message_reports evidence identifiers; not an authorization gate.
+  'evidenceCapturedAt', 'evidenceAuthorId', 'evidenceAuthorName', 'evidenceText', 'evidenceTextTruncated',
+  'evidenceCreatedAt', 'evidenceEditedAt', 'evidenceFileName', 'evidenceFileType',
 ]);
 
 /**

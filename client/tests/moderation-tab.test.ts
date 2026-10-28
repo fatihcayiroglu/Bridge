@@ -541,3 +541,46 @@ describe('erişilebilirlik ve boş durumlar', () => {
     release(ok());
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+describe('rapor kuyruğu — kanıt anlık görüntüsü (P7 B5, #336)', () => {
+  const PERM_MANAGE_MESSAGES = 1 << 9;
+  const reportRow = (over: Record<string, unknown> = {}) => ({
+    id: 'r1', messageId: 'm1', channelId: 'c1', reason: 'harassment', createdAt: 1,
+    channel: { _id: 'c1', name: 'genel' }, message: { displayName: 'Yazar', preview: 'REPORTED-TEXT' },
+    reporter: { _id: 'u2', displayName: 'Raporcu' }, ...over,
+  });
+  const withReports = (rows: unknown[]) => vi.fn(async (url: string) =>
+    String(url).endsWith('/reports') ? ok({ reports: rows }) : ok());
+
+  it('düzenlenmiş mesaj: raporlanan metin görünür ve "düzenlendi" uyarısı gösterilir', async () => {
+    myPerms = PERM_MANAGE_MESSAGES;
+    apiMock = withReports([reportRow({ evidence: { state: 'edited' } })]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.body.textContent).toContain('REPORTED-TEXT'));
+    expect(document.querySelector('.mod-evidence-state')?.textContent).toBe(t('moderation_report_edited_since'));
+  });
+
+  it('silinmiş mesaj: "silindi" uyarısı gösterilir', async () => {
+    myPerms = PERM_MANAGE_MESSAGES;
+    apiMock = withReports([reportRow({ evidence: { state: 'deleted' } })]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('.mod-evidence-state')).toBeTruthy());
+    expect(document.querySelector('.mod-evidence-state')?.textContent).toBe(t('moderation_report_deleted_since'));
+  });
+
+  it('değişmemiş veya anlık görüntüsüz (eski) rapor uyarı göstermez', async () => {
+    myPerms = PERM_MANAGE_MESSAGES;
+    apiMock = withReports([reportRow({ evidence: { state: 'unchanged' } }), reportRow({ id: 'r2' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.body.textContent).toContain('REPORTED-TEXT'));
+    expect(document.querySelector('.mod-evidence-state')).toBeNull();
+  });
+
+  it('kırpılmış anlık görüntü kırpıldığını söyler', async () => {
+    myPerms = PERM_MANAGE_MESSAGES;
+    apiMock = withReports([reportRow({ evidence: { state: 'unchanged', truncated: true } })]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.body.textContent).toContain(t('moderation_report_evidence_truncated')));
+  });
+});

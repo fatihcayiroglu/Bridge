@@ -52,6 +52,7 @@
     id: string; messageId: string; channelId: string; reason: string; detail?: string; createdAt?: number;
     channel?: { _id?: string; name?: string };
     message?: { displayName?: string; preview?: string };
+    evidence?: { state?: 'unchanged' | 'edited' | 'deleted'; truncated?: boolean };
     reporter?: { _id?: string; displayName?: string };
   }
   interface MemberRow {
@@ -341,6 +342,9 @@
                 <div class="mod-report-main">
                   <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>#{report.channel?.name ?? report.channelId}</span><span>{whenOf(report.createdAt)}</span></div>
                   <p><strong>{report.message?.displayName ?? t('ui_bridge_user')}:</strong> {report.message?.preview || t("surface_mesaj_icerigi_yok_23c6dd")}</p>
+                  {#if report.evidence?.state === 'edited'}<small class="mod-evidence-state" role="status">{t('moderation_report_edited_since')}</small>{/if}
+                  {#if report.evidence?.state === 'deleted'}<small class="mod-evidence-state" role="status">{t('moderation_report_deleted_since')}</small>{/if}
+                  {#if report.evidence?.truncated}<small>{t('moderation_report_evidence_truncated')}</small>{/if}
                   {#if report.detail}<small>{t('moderation_report_note', undefined, { detail: report.detail })}</small>{/if}
                   <small>{t('moderation_reporter', undefined, { name: report.reporter?.displayName ?? t('ui_bridge_user') })}</small>
                 </div>

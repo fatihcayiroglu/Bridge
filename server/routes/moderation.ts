@@ -19,6 +19,7 @@ import { evictUserFromServerRooms, evictSocketsWithoutChannelAccessBestEffort } 
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery, parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
 import { resolvePermissions as resolveEffectivePermissions } from '../lib/permissions';
 import { storedMessageText } from '../lib/storedText';
+import { evidenceView } from '../lib/reportEvidence';
 import { enforceStepUp } from '../lib/stepUp';
 
 type PermissionState = { allow: number; deny: number };
@@ -150,15 +151,18 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
       Users.findById(String(row.reporterId ?? '')),
     ]);
     if (!message || !channel) continue;
+    // P7 B5 (#336): a report with a snapshot shows what was reported, never the edited or deleted current text.
+    const evidence = evidenceView(row, message as unknown as Record<string, unknown>);
     visible.push({
       id: String(row._id), messageId: String(row.messageId), channelId,
       reason: String(row.reason ?? 'other'), detail: String(row.detail ?? ''),
       createdAt: Number(row.createdAt ?? 0),
       channel: { _id: channelId, name: String(channel.name ?? channelId) },
       message: {
-        displayName: String(message.displayName ?? message.username ?? 'Bridge user'),
-        preview: storedMessageText(message).replace(/\s+/g, ' ').trim().slice(0, 240),
+        displayName: String((evidence?.authorName || message.displayName || message.username) ?? 'Bridge user'),
+        preview: (evidence ? evidence.text : storedMessageText(message)).replace(/\s+/g, ' ').trim().slice(0, 240),
       },
+      ...(evidence ? { evidence } : {}),
       reporter: { _id: String(row.reporterId ?? ''), displayName: String(reporter?.displayName ?? reporter?.username ?? 'Bridge user') },
     });
   }
