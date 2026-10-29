@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateConfig, normalizeMetrics, validateIdentity, isolatedRequestAllowed, closedAuthInputGeometry } from './perf-acceptance/packaged.mjs';
+import { validateConfig, normalizeMetrics, validateIdentity, isolatedRequestAllowed, closedAuthInputGeometry, x11ActiveWindowMatches } from './perf-acceptance/packaged.mjs';
 import { SCENARIOS } from './perf-acceptance/scenarios.mjs';
 import { requireDisposable } from './perf-acceptance/disposable.mjs';
 
@@ -91,4 +91,17 @@ test('auth input transition evidence uses closed boolean geometry and never leak
   assert.doesNotMatch(JSON.stringify(safe), /private|sensitive|example|username|password|token|url|text/);
   assert.deepEqual(closedAuthInputGeometry(null), { unavailable: true });
   assert.deepEqual(closedAuthInputGeometry('sensitive-secret'), { unavailable: true });
+});
+
+test('X11 active window evidence is boolean-only and rejects malformed or absent state', () => {
+  const good = '_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3e00007';
+  assert.equal(x11ActiveWindowMatches(good, 0x3e00007), true);
+  assert.equal(x11ActiveWindowMatches(good, 0x3e00008), false);
+  assert.equal(x11ActiveWindowMatches('_NET_ACTIVE_WINDOW: not found.', 42), null);
+  assert.equal(x11ActiveWindowMatches(good, -1), null);
+  assert.equal(x11ActiveWindowMatches('private-token', 42), null);
+  const report = { available: x11ActiveWindowMatches(good, 0x3e00007) !== null,
+    matchesNative: x11ActiveWindowMatches(good, 0x3e00008) };
+  assert.deepEqual(report, { available: true, matchesNative: false });
+  assert.doesNotMatch(JSON.stringify(report), /3e000|private|token|window id/);
 });
