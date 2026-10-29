@@ -631,4 +631,22 @@ describe('MessageLoader — send rejections reach the pending send', () => {
     socket.fire('warn:spam', { message: 'yavaşla', ackId: 'a-9' });
     expect(warn).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps the first page small and requests a complete bounded hundred-row older page', async () => {
+    currentChannel = { _id: 'paged-channel' };
+    apiFetchMock.mockResolvedValueOnce(apiResponse({ messages: [{ _id: 'latest', channelId: 'paged-channel' }],
+      prevCursor: 'before/first', hasMore: true }));
+    render(MessageLoader);
+    await waitFor(() => expect(messages).toHaveLength(1));
+    expect(apiFetchMock).toHaveBeenNthCalledWith(1, expect.stringContaining('/messages?limit=50'));
+    const older = Array.from({ length: 100 }, (_, n) => ({ _id: `older-${n}`, channelId: 'paged-channel', content: `History ${n}` }));
+    apiFetchMock.mockResolvedValueOnce(apiResponse({ messages: older, prevCursor: 'before/second', hasMore: true }));
+    await BridgeRegistry.call('loadOlderMessages');
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, expect.stringContaining('/messages?limit=100&cursor=before%2Ffirst'));
+    expect(messages.map(message => message._id)).toEqual([...older.map(message => message._id), 'latest']);
+    expect(messages).toHaveLength(101);
+    expect(cursor).toBe('before/second');
+    expect(hasMore).toBe(true);
+  });
+
 });
