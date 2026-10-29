@@ -638,6 +638,17 @@
     return 'file';
   });
 
+  // Keep the complete DOM for keyboard navigation and reply anchors. Only
+  // short delivered plain text may defer offscreen layout; rich/dynamic rows
+  // and focused/hovered controls retain ordinary rendering.
+  const containPlainText = $derived(Boolean(
+    message?.type === 'normal' && isDelivered && !isPinned && !canCrosspost &&
+    !message.replyTo && !fileHref && !message.sticker &&
+    typeof message.content === 'string' && message.content.length <= 256 && !message.content.includes('\n') &&
+    reactionList.length === 0 && linkEmbeds.length === 0 &&
+    contentNodes.length === 1 && contentNodes[0]?.kind === 'text'
+  ));
+
   onDestroy(() => {
     cancelPress();
     if (linkTimer) { clearTimeout(linkTimer); linkTimer = null; }
@@ -679,6 +690,7 @@
       class:msg-pending={message.pending}
       class:msg-failed={message.failed}
       class:msg-compact={compact}
+      class:msg-contained={containPlainText}
       data-id={message._id}
       data-delivery-state={message.failed ? 'failed' : message.queued ? 'queued' : message.pending ? 'pending' : 'sent'}
       aria-label={t('message_from_author_aria', undefined, { author })}
@@ -1097,6 +1109,17 @@
   }
   .msg:not(.msg-compact) { margin-top: 10px; padding-top: 2px; }
   .msg:hover { background: var(--msg-hover, rgba(255,255,255,.03)); }
+  @supports (content-visibility: auto) and (contain-intrinsic-block-size: auto 26px) {
+    .msg-contained {
+      content-visibility: auto;
+      contain-intrinsic-block-size: auto 44px;
+    }
+    .msg-contained.msg-compact { contain-intrinsic-block-size: auto 26px; }
+    .msg-contained:hover, .msg-contained:focus-within { content-visibility: visible; }
+  }
+  @media print {
+    .msg-contained { content-visibility: visible; }
+  }
   /* FAZ K+/4 — kopyalandı durumu RENKTEN başka işaret de taşır: ikon
      onay imine döner ve erişilebilir ad değişir. */
   .msg-link-btn.copied { color: var(--green); }

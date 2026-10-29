@@ -178,7 +178,8 @@ export async function runPackaged(config) {
       // Prime CPU interval; the first getAppMetrics interval is not a measurement.
       await application.evaluate(({ app }) => app.getAppMetrics());
       const historyCodes = new Set(['HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID',
-        'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING']);
+        'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING',
+        'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED']);
       const work = activity ? activity(end).then(value => ({ value }), error => ({ failed: true,
         code: historyCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'HISTORY_DRIVER_TIMEOUT' : 'HISTORY_ACTIVITY_FAILED' })) : Promise.resolve({});
       while (performance.now() < end) {
@@ -259,7 +260,14 @@ export async function runPackaged(config) {
       try {
         await page.evaluate(() => {
           if (!PerformanceObserver.supportedEntryTypes.includes('longtask')) throw Error('LONGTASK_UNAVAILABLE');
-          const state = window.__bridgePerf = { frames: [], longTasks: [], last: performance.now(), running: true };
+          const state = window.__bridgePerf = { frames: [], longTasks: [], last: performance.now(), running: true,
+            skipped: new Set(), skippedPeak: 0 };
+          state.onContainment = event => {
+            if (!event.target.classList.contains('msg-contained')) return;
+            if (event.skipped) state.skipped.add(event.target); else state.skipped.delete(event.target);
+            state.skippedPeak = Math.max(state.skippedPeak, state.skipped.size);
+          };
+          document.addEventListener('contentvisibilityautostatechange', state.onContainment, true);
           state.observer = new PerformanceObserver(list => state.longTasks.push(...list.getEntries().map(e => e.duration)));
           state.observer.observe({ type: 'longtask' });
           const frame = time => { if (!state.running) return; state.frames.push(time - state.last); state.last = time; requestAnimationFrame(frame); };
@@ -289,19 +297,40 @@ export async function runPackaged(config) {
         }
         await Promise.all([...pending]);
         requireFact(!invalidResponse && seen.size === 10000 && traversalMs !== null, 'HISTORY_TRAVERSAL_INCOMPLETE');
+        await inViewport(`${c.messagePrefix}10000`);
+        await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}10000"]`).focus();
+        await page.keyboard.press('ArrowUp');
+        try {
+          await page.waitForFunction(id => document.activeElement?.getAttribute('data-id') === id,
+            `${c.messagePrefix}09999`, { timeout: 2000 });
+        } catch { throw new Error('HISTORY_KEYBOARD_FAILED'); }
         const observed = await page.evaluate(() => {
           const s = window.__bridgePerf; s.running = false; s.observer.disconnect();
-          return { frames: s.frames, longTasks: s.longTasks };
+          document.removeEventListener('contentvisibilityautostatechange', s.onContainment, true);
+          return { frames: s.frames, longTasks: s.longTasks, skippedPeak: s.skippedPeak };
         });
         requireFact(observed.frames.length >= 3 && observed.frames.every(Number.isFinite), 'SCROLL_SAMPLES_MISSING');
+        requireFact(observed.skippedPeak > 0, 'CONTAINMENT_NOT_EXERCISED');
         return { samples: observed.frames.map(frameTimeMs => ({ frameTimeMs })), evidence: {
           firstPageVisibleMs, traversalMs, uniqueMessagesObserved: seen.size,
           newestAndOldestVisible: true,
+          keyboardNavigation: true, offscreenSkippedPeak: observed.skippedPeak,
           longTaskDurationsMs: observed.longTasks, persistedFixtureCount: c.seededMessages,
           scrollMethod: 'actual product scroll handler; authenticated network responses; no registry calls',
         } };
       } finally {
         page.off('response', onResponse);
+        try {
+          historyProgress.containment = await page.evaluate(() => {
+            const s = window.__bridgePerf;
+            if (s) {
+              s.running = false; s.observer.disconnect();
+              document.removeEventListener('contentvisibilityautostatechange', s.onContainment, true);
+            }
+            return { supported: CSS.supports('content-visibility', 'auto'),
+              eligibleRows: document.querySelectorAll('.msg-contained').length, skippedPeak: s?.skippedPeak ?? 0 };
+          });
+        } catch { historyProgress.containment = { unavailable: true }; }
         if (profiler) {
           try { historyProgress.rendererAfter = await metrics(); } catch { historyProgress.profilerAfterUnavailable = true; }
           await profiler.detach().catch(() => {});
@@ -339,6 +368,7 @@ export async function runPackaged(config) {
       'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE',
       'HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID','HISTORY_TRAVERSAL_INCOMPLETE',
       'HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING','HISTORY_DRIVER_TIMEOUT',
+      'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED',
       'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
     const code = closedCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'DRIVER_TIMEOUT' : 'DRIVER_OR_RUNTIME_FAILURE';
     writeAttempt('FAIL', code);
