@@ -667,6 +667,39 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
   });
 
 
+  it('keeps the newest row anchored if virtualized layout growth emits scroll before resize', () => {
+    const observers = installWindowObservers();
+    let height = 900;
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    messages = [makeMessage()];
+    mountList();
+    const list = host.querySelector('.msg-list')!;
+
+    // A visible newest row, just inside the 120px bottom-intent threshold.
+    host.scrollTop = 300;
+    host.dispatchEvent(new Event('scroll'));
+    expect(host.scrollTop).toBe(300);
+
+    // A virtual row materializes another 130px. Browser-generated scroll can
+    // arrive before ResizeObserver, but it is not a manual upward gesture.
+    height = 1030;
+    host.dispatchEvent(new Event('scroll'));
+    observers.sizes.get(list)!(height);
+    flushSync();
+    expect(host.scrollTop).toBe(1030);
+
+    // Real upward movement must still win, even when layout later grows.
+    host.scrollTop = 100;
+    host.dispatchEvent(new Event('scroll'));
+    height = 1300;
+    observers.sizes.get(list)!(height);
+    flushSync();
+    expect(host.scrollTop).toBe(100);
+  });
+
   it('shares row observers and delegates interactions without retaining a destroyed scroll owner', async () => {
     const observers = installWindowObservers();
     messages = Array.from({ length: 500 }, (_, n) => makeMessage({ _id: `pool-${n}` }));

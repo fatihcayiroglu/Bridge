@@ -48,6 +48,10 @@
   let layoutObserver: ResizeObserver | null = null;
   let scroller: HTMLElement | null = null;   // #messages-area
   let stickToBottom = true;                   // kullanıcı dipteyse yeni mesajda kaydır
+  // Distinguish a row-height/layout change from a real upward scroll. A browser
+  // can emit scroll before ResizeObserver when virtualized rows gain height.
+  let lastObservedScrollTop = 0;
+  let lastObservedScrollHeight = 0;
   let loadingOlder = false;
   let jumpTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingJumpId: string | null = null;
@@ -170,6 +174,8 @@
   function scrollToBottom(): void {
     if (!scroller) return;
     scroller.scrollTop = scroller.scrollHeight;
+    lastObservedScrollTop = scroller.scrollTop;
+    lastObservedScrollHeight = scroller.scrollHeight;
     stickToBottom = true;
     awayFromBottom = false;
   }
@@ -264,7 +270,20 @@
 
   function onScroll(): void {
     if (!scroller) return;
-    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    const top = scroller.scrollTop;
+    const height = scroller.scrollHeight;
+    const grewWhileAtBottom = stickToBottom && height > lastObservedScrollHeight &&
+      top >= lastObservedScrollTop - 1;
+    lastObservedScrollTop = top;
+    lastObservedScrollHeight = height;
+    if (grewWhileAtBottom) {
+      // Content-visibility placeholders may change size after an endpoint
+      // scroll and the browser can emit scroll before our resize callback.
+      // Preserve bottom intent only if the user did not move upward.
+      scrollToBottom();
+      return;
+    }
+    const distance = height - top - scroller.clientHeight;
     stickToBottom = distance <= NEAR_BOTTOM_PX;
     awayFromBottom = !stickToBottom;
 
@@ -324,6 +343,8 @@
 
   onMount(() => {
     scroller = document.getElementById('messages-area');
+    lastObservedScrollTop = scroller?.scrollTop ?? 0;
+    lastObservedScrollHeight = scroller?.scrollHeight ?? 0;
     scroller?.addEventListener('scroll', onScroll, { passive: true });
     // Virtual rows and late-loading media can change geometry after model
     // synchronization. Preserve bottom intent through that actual resize;
