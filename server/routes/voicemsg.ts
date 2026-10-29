@@ -61,7 +61,7 @@ const router = express.Router();
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { Channels, Members, Messages, VoiceMessages } from '../db/repositories';
+import { Channels, Members, Messages, Users, VoiceMessages } from '../db/repositories';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 import { authMiddleware} from '../middleware/auth';
 import logger from '../lib/logger';
@@ -73,6 +73,9 @@ import { uploadRoot } from '../lib/runtimePaths';
 import { parseNonNegativeSafeIntText } from '../lib/queryNumbers';
 import { transcriptionTarget } from '../lib/aiProvider';
 import { serverAllowsAi } from '../lib/aiServerPolicy';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
+import { channelLiveForMedia } from '../lib/channelContentAvailability';
 // ── AI TRANSKRİPSİYON ─────────────────────────────────────────
 // P6 AI-09: the provider decision lives in lib/aiProvider (AI_PROVIDER governs
 // it); the server's own setting is checked by the caller before this runs.
@@ -137,6 +140,15 @@ function safeUnlink(filePath: string): void {
   }
 }
 
+// A primary read that returns no row is not proof that a disconnected write
+// was rejected: the original PostgreSQL backend can still be completing it.
+// Only an explicit server-side SQL rejection is evidence of no commit.
+function isDefinitiveVoiceWriteRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  const code = error.code;
+  return typeof code === 'string' && /^(?:22[A-Z0-9]{3}|23[A-Z0-9]{3}|42[A-Z0-9]{3}|55000|P0001)$/.test(code);
+}
+
 async function cleanupUploadedObject(
   store: ReturnType<typeof getPrivateStorageAdapter>,
   result: { url: string; key: string | null; provider: string },
@@ -175,6 +187,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(membership.timeoutUntil) });
   }
 
+  // Access tokens identify the author; normal JWTs do not carry displayName.
+  // Use the stored author snapshot, including for valid id-only legacy tokens.
+  const author = await Users.findById(_u.id);
+  if (!author) return res.status(401).json({ error: 'User not found' });
+  const displayName = membership.nickname || author.displayName || author.username;
+
+  const availability = await channelWriteAvailability(db, channel);
+  if (availability === 'gone') return res.status(404).json({ error: 'Channel unavailable' });
+  if (availability !== 'live') return res.status(503).json({ error: 'Channel availability cannot be verified' });
+
   const parsedDuration = parseNonNegativeSafeIntText(duration, 0);
   if (parsedDuration === null) return res.status(400).json({ error: 'duration must be a non-negative safe integer' });
 
@@ -187,6 +209,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
   const store = getPrivateStorageAdapter();
   let result: Awaited<ReturnType<typeof store.uploadFile>> | null = null;
   let vm: Awaited<ReturnType<typeof VoiceMessages.insert>> | null = null;
+  // Preallocate identifiers so an insert that committed but lost its reply
+  // can be probed on the same primary before any destructive compensation.
+  const voiceId = uuidv4();
+  const chatId = uuidv4();
+  let voiceInsertAttempted = false;
+  let chatInsertAttempted = false;
+  let writeCompletionUncertain = false;
+  // Once both durable rows exist, HTTP delivery is no longer an upload rollback.
+  // A response serialization/transport exception must not remove live bytes.
+  let messageCommitted = false;
   try {
     // Local modda fiziksel dosya zaten server/uploads altındadır; remote modda
     // transkripsiyon bitene kadar yerel kopyayı koruruz.
@@ -194,31 +226,50 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       deleteLocal: false,
       contentType: req.file.mimetype,
     });
+    // Upload can outlast the channel. No DB reference exists yet, so only this
+    // request's newly uploaded object may be rolled back on a refused recheck.
+    const currentChannel = await Channels.findByIdAndServer(channelId, serverId);
+    const currentAvailability = currentChannel ? await channelWriteAvailability(db, currentChannel) : 'gone';
+    if (currentAvailability !== 'live') {
+      await cleanupUploadedObject(store, result, filePath);
+      return res.status(currentAvailability === 'gone' ? 404 : 503).json({
+        error: currentAvailability === 'gone' ? 'Channel unavailable' : 'Channel availability cannot be verified',
+      });
+    }
     // Voice messages are private channel attachments. Keep their persisted
     // reference on Bridge even when bytes live in S3/R2/MinIO/B2; uploadAuthz
     // re-checks current channel visibility before proxying remote bytes.
     const fileUrl = `/uploads/${fileName}`;
 
+    voiceInsertAttempted = true;
     vm = await VoiceMessages.insert({
-      _id: uuidv4(), channelId, serverId,
+      _id: voiceId, channelId, serverId,
       userId: _u.id,
       // `voice_messages."displayName"` is NOT NULL with no default and was never written here,
       // so this insert could only fail on real PostgreSQL — the unit-test store does not
       // enforce NOT NULL (Final21 Phase 16: every insert audited against the schema).
-      displayName: _u.displayName || _u.username,
+      displayName,
       url: fileUrl, duration: parsedDuration, createdAt: Date.now(),
+    }).catch((writeErr: unknown) => {
+      writeCompletionUncertain = !isDefinitiveVoiceWriteRejection(writeErr);
+      throw writeErr;
     });
     if (!vm?._id) throw new Error('Voice message persistence failed');
 
+    chatInsertAttempted = true;
     const msg = await Messages.create({
-      _id: uuidv4(), channelId, serverId,
-      userId: _u.id, username: _u.username,
-      displayName: _u.displayName, avatarColor: _u.avatarColor || '#2d9cdb',
+      _id: chatId, channelId, serverId,
+      userId: _u.id, username: author.username,
+      displayName, avatarColor: author.avatarColor || '#2d9cdb',
       content: '', type: 'voice_message',
       fileUrl, fileName, fileType: req.file.mimetype,
       reactions: {}, createdAt: Date.now(),
+    }).catch((writeErr: unknown) => {
+      writeCompletionUncertain = !isDefinitiveVoiceWriteRejection(writeErr);
+      throw writeErr;
     });
     if (!msg?._id) throw new Error('Message persistence failed');
+    messageCommitted = true;
 
     res.json({ ok: true, msg, vmId: vm._id });
 
@@ -228,12 +279,13 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     setImmediate(async () => {
       try {
         // P6: a server that turned AI off never has its members' audio sent out.
-        const transcript = await serverAllowsAi(String(channel.serverId)) ? await transcribeAudio(filePath) : null;
-        if (transcript) {
+        if (!await serverAllowsAi(String(channel.serverId)) || !await channelLiveForMedia(channelId, serverId)) return;
+        const transcript = await transcribeAudio(filePath);
+        if (transcript && await channelLiveForMedia(channelId, serverId)) {
           await VoiceMessages.update({ _id: vmId }, { $set: { transcript } });
           await Messages.update(messageId, { transcript });
-          const io = req.app.get('io'); if (io) {
-            io.to(channelId).emit('message:transcript', { messageId, transcript });
+          const io = req.app.get('io'); if (io && await channelLiveForMedia(channelId, serverId)) {
+            io.to(`channel:${channelId}`).emit('message:transcript', { messageId, transcript });
           }
         }
       } catch (_err) { const err = _err as Error;
@@ -245,6 +297,55 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       }
     });
   } catch (err) {
+    if (messageCommitted) {
+      // The chat message already references these bytes. A failed HTTP reply
+      // is not authority to delete durable user content. The client can
+      // reconcile an unknown acknowledgement from persisted message history.
+      // Only the throwaway local transcription copy may be removed.
+      if (result?.provider !== 'local') safeUnlink(filePath);
+      logger.error({ event: 'voicemsg.response_after_commit_failed' },
+        'Voice message committed but response could not be delivered');
+      throw err;
+    }
+    // PostgreSQL may commit a write before the client sees a transport error.
+    // On such an ambiguous result, deleting storage is worse than retaining
+    // an orphan: a real chat/voice row might still reference these bytes.
+    // Probe with the preallocated IDs; a failed proof must be fail-closed.
+    if (chatInsertAttempted) {
+      let persistedChat: Awaited<ReturnType<typeof Messages.findById>>;
+      try { persistedChat = await Messages.findById(chatId); }
+      catch {
+        logger.error({ event: 'voicemsg.chat_commit_unverifiable' },
+          'Voice message chat write result cannot be verified; backing bytes preserved');
+        if (result?.provider !== 'local') safeUnlink(filePath);
+        throw err;
+      }
+      if (persistedChat) {
+        logger.error({ event: 'voicemsg.chat_commit_confirmed_after_error' },
+          'Chat row committed but response was lost; backing bytes preserved');
+        if (result?.provider !== 'local') safeUnlink(filePath);
+        throw err;
+      }
+    }
+    if (voiceInsertAttempted && !vm?._id) {
+      try { vm = await VoiceMessages.findOne({ _id: voiceId }); }
+      catch {
+        logger.error({ event: 'voicemsg.voice_commit_unverifiable' },
+          'Voice write result cannot be verified; backing bytes preserved');
+        if (result?.provider !== 'local') safeUnlink(filePath);
+        throw err;
+      }
+    }
+    // Even a successful primary read of "no row" can race the old backend's
+    // eventual commit after a connection/unknown write failure. Preserve the
+    // object and the voice row; the reference-aware orphan collector may
+    // eventually reclaim genuinely unreferenced storage under its DB fence.
+    if (writeCompletionUncertain && (chatInsertAttempted || (voiceInsertAttempted && !vm?._id))) {
+      logger.error({ event: 'voicemsg.write_completion_indeterminate' },
+        'Voice write may still commit after an absent-row probe; backing bytes preserved');
+      if (result?.provider !== 'local') safeUnlink(filePath);
+      throw err;
+    }
     // İki tablo transaction paylaşmıyor. Voice row yazıldıktan sonra Message
     // insert'i başarısız olursa önce DB referansını geri al; DB rollback
     // başarısızsa fiziksel objeyi korumak fail-closed davranıştır.
@@ -270,7 +371,8 @@ router.get('/:vmId/transcript', authMiddleware, async (req, res) => {
   const channelId = String(vm.channelId ?? '');
   const serverId = String(vm.serverId ?? '');
   const channel = channelId && serverId ? await Channels.findByIdAndServer(channelId, serverId) : null;
-  if (!channel) return res.status(404).json({ error: 'Voice message not found' });
+  // The transcript is channel content: gone with the channel's expiry (P7 D2).
+  if (!channel || !await channelLiveForMedia(channelId, serverId)) return res.status(404).json({ error: 'Voice message not found' });
   const perms = await resolvePermissions(_u.id, serverId, channelId);
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY)) {
     return res.status(403).json({ error: 'Missing channel permissions' });

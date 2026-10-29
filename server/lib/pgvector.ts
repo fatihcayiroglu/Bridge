@@ -337,12 +337,19 @@ export async function saveMessageEmbedding(params: {
   }
 }
 
-/** The predicate every embeddable row satisfies (alias `m`). */
+/**
+ * The predicate every embeddable row satisfies (alias `m`). A message of an
+ * expired or tombstoned channel (P7 D2) is never sent to the embedding
+ * provider, and the purge sweep clears vectors that already exist for it.
+ */
 export const EMBEDDABLE_ROW_PREDICATE = `m."deletedAt" IS NULL
      AND m."encryptedContent" IS NULL
      AND m.content NOT LIKE '🔒e2e:%'
      AND m.type <> 'system'
-     AND EXISTS (SELECT 1 FROM servers s WHERE s._id = m."serverId" AND s."aiEnabled" = TRUE)`;
+     AND EXISTS (SELECT 1 FROM servers s WHERE s._id = m."serverId" AND s."aiEnabled" = TRUE)
+     AND NOT EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = m."channelId")
+     AND NOT EXISTS (SELECT 1 FROM channels c WHERE c._id = m."channelId" AND c."expiresAt" IS NOT NULL
+                       AND c."expiresAt" <= FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)`;
 
 const ELIGIBLE_MESSAGE_SQL = `SELECT 1 FROM messages m
    WHERE m._id = $1 AND m.content = $2

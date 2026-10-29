@@ -9,6 +9,8 @@ import { Members, Channels }    from '../../db/repositories';
 import { getMembershipsCached } from '../../lib/presenceCache';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { watchServerChannels } from '../../lib/channelActivity';
+import db from '../../db/loader';
+import { channelWriteAvailability } from '../../lib/channelWriteGuard';
 
 
 interface UserRef { _id: string }
@@ -59,14 +61,26 @@ export async function setupMemberships(
   // İlk yükleme
   await refreshMemberships();
 
+  let joinGeneration = 0;
+  let pendingChannel: string | null = null;
+
   // ── CHANNEL JOIN ────────────────────────────────────────────
   socket.on('channel:join', isolateSocketHandler(socket, 'channel:join', async (channelId: unknown) => {
     if (typeof channelId !== 'string') return;
+    const generation = ++joinGeneration;
+    pendingChannel = channelId;
+    const refuseTarget = () => {
+      if (generation !== joinGeneration) return;
+      pendingChannel = null;
+      socket.leave(`channel:${channelId}`);
+      const current = socket as typeof socket & { currentChannel?: string };
+      if (current.currentChannel === channelId) current.currentChannel = undefined;
+    };
     try {
       const channel = await Channels.findById(channelId);
-      if (!channel) return;
+      if (!channel) { refuseTarget(); return; }
       const membership = await Members.findOne(user._id, channel.serverId);
-      if (!membership) return;
+      if (!membership) { refuseTarget(); return; }
 
       // FAZ G5 — KANAL GORUNURLUGU (CANLI YAYIN SIZINTISI KAPATILDI).
       //
@@ -79,7 +93,20 @@ export async function setupMemberships(
       // Bu, HTTP tarafinda Faz D/F/G'de kapatilan ayni kusur sinifinin
       // gercek zamanli esdegeridir ve daha agirdir: tek seferlik bir okuma
       // degil, sureklilik arz eden bir akistir.
-      if (!await canViewChannel(user._id, String(channel.serverId), channelId)) return;
+      if (!await canViewChannel(user._id, String(channel.serverId), channelId)) { refuseTarget(); return; }
+
+      // Membership/permissions must still precede expiry authority. Never let
+      // a cached channel record qualify a new/replayed live subscription.
+      if (generation !== joinGeneration) return;
+      const availability = await channelWriteAvailability(db, channel);
+      if (generation !== joinGeneration) return;
+      if (availability !== 'live') {
+        // Rejoining an expired/unverifiable target cannot retain that room.
+        // An unrelated existing room is preserved when a new target is refused.
+        refuseTarget();
+        return;
+      }
+      pendingChannel = null;
 
       // Önceki text kanalından çık
       for (const room of socket.rooms) {
@@ -94,6 +121,8 @@ export async function setupMemberships(
         { userId: user._id, channelId, event: 'socket.channel_join.error', err: (e as Error).message },
         'channel:join işlemi başarısız.',
       );
+    } finally {
+      if (generation === joinGeneration) pendingChannel = null;
     }
   }));
 
@@ -114,6 +143,7 @@ export async function setupMemberships(
 
   socket.on('channel:leave', isolateSocketHandler(socket, 'channel:leave', (channelId: unknown) => {
     if (typeof channelId !== 'string') return;
+    if (pendingChannel === channelId) { joinGeneration++; pendingChannel = null; }
     try {
       if (socket.rooms.has(`channel:${channelId}`)) {
         socket.leave(`channel:${channelId}`);

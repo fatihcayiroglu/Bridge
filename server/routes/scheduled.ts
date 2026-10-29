@@ -97,6 +97,8 @@ import { authMiddleware} from '../middleware/auth';
 import { hasPermission, PERMS, resolvePermissions } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
 
 // POST /api/scheduled
 router.post('/', authMiddleware, limits.write(), async (req, res) => {
@@ -122,6 +124,10 @@ router.post('/', authMiddleware, limits.write(), async (req, res) => {
   const perms = await resolvePermissions(_u.id, serverId, channelId).catch(() => 0);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES))
     return res.status(403).json({ error: 'No permission to schedule messages in this channel' });
+
+  const availability = await channelWriteAvailability(db, channel);
+  if (availability === 'gone') return res.status(404).json({ error: 'Channel not available' });
+  if (availability !== 'live') return res.status(503).json({ error: 'Channel availability cannot be verified' });
 
   const msg = await ScheduledMessages.insert({
     channelId, serverId,

@@ -184,12 +184,13 @@ RUN('P7 D2 migration 084 — real PostgreSQL reversible schema-only foundation',
         [channel, id],
       );
 
-      await expect(Channels.deleteGraphAtomic(channel, id)).resolves.toBe('deleted');
+      // A tombstoned channel belongs to the expiry worker (bounded cleanup):
+      // ordinary deletion treats it as already gone and leaves it alone.
+      await expect(Channels.deleteGraphAtomic(channel, id)).resolves.toBe('not_found');
       const retained = await client.query(
         'SELECT "channelId" FROM channel_expiry_tombstones WHERE "channelId"=$1', [channel],
       );
       expect(retained.rows).toHaveLength(1);
-      expect((await client.query('SELECT _id FROM channels WHERE _id=$1', [channel])).rows).toHaveLength(0);
       expect((await client.query('SELECT _id FROM channels WHERE _id=$1', [sibling])).rows).toHaveLength(1);
 
       await expect(Servers.deleteGraphAtomic(id)).resolves.toBe('deleted');
