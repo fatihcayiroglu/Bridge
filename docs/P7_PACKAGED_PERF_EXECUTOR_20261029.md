@@ -173,3 +173,26 @@ HTTP requests are aborted rather than allowing fixture credentials to target a
 different installation; actual same-origin backend traffic is passed through
 without mocked responses. The egress boundary has a regression test (12 local
 contracts total). No API auth injection/force click/security bypass is used.
+
+Seventh attempt: `da870e9405580942d350119f71685e5f072849d4`, run 40794522256 /
+job 123187608778. **PA01 genuinely EXECUTED** for 300.107s (299 samples) after
+real HTTP 200 login and actual onboarding Skip. Checkout/ASAR provenance is
+`854abd5bde7c9e6545c6ab04cb8afb0262897421` /
+`12edacf8274f94e6068839bbd3ab1bc5f5b742d8d20728a812d4b3ef4d6aeba9`.
+Observed API CPU mean 0.0575%, p95 0.2492%; sum of process working sets mean
+742.16 MiB, peak 777.0 MiB (shared pages may be counted more than once).
+This hosted X11 VM result is measurement, not an approved performance threshold
+or physical-machine claim. Instrumented login-UI observation 5367ms is not a
+clean startup SLA benchmark.
+
+PA08 FAILed, workflow FAIL; report retains it as NOT EXECUTED/NOT QUALIFIED,
+with completed PA01 and failed-attempt resource series preserved. Final UI had
+5950 message elements; failed-attempt resource buckets stayed around 26–28%
+API CPU and working-set sums reached multi-GiB. This points to a scaling concern,
+but does not prove layout versus script/network as the cause. Do not treat the
+failed PA08 numbers as accepted scenario measurements. Artifact 12863846786,
+SHA-256 `eeb6666d61d85723709751708637b8018691a3568c1e91350fba9c41f599ae14`,
+was downloaded and verified. Follow-up preserves the precise internal history
+failure code, response-status/unique-ID counts and bounded numeric Chrome
+layout/script/heap/node counters for causal investigation. The 120s observation
+window and full-10000 assertion are unchanged; no performance green is forced.

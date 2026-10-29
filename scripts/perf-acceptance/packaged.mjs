@@ -76,10 +76,12 @@ export async function runPackaged(config) {
   let blockedExternalRequests = 0;
   const networkFailures = [];
   const runtimeErrors = [];
+  let historyProgress = null;
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
     blockedExternalRequests, networkFailures, runtimeErrors,
+    historyProgress,
     bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
@@ -175,7 +177,10 @@ export async function runPackaged(config) {
       const samples = { cpuPerProcess: [], ram: [], growth: [] };
       // Prime CPU interval; the first getAppMetrics interval is not a measurement.
       await application.evaluate(({ app }) => app.getAppMetrics());
-      const work = activity ? activity(end).then(value => ({ value }), () => ({ failed: true })) : Promise.resolve({});
+      const historyCodes = new Set(['HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID',
+        'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING']);
+      const work = activity ? activity(end).then(value => ({ value }), error => ({ failed: true,
+        code: historyCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'HISTORY_DRIVER_TIMEOUT' : 'HISTORY_ACTIVITY_FAILED' })) : Promise.resolve({});
       while (performance.now() < end) {
         await sleep(1000);
         const elapsedSec = (performance.now() - start) / 1000;
@@ -186,7 +191,7 @@ export async function runPackaged(config) {
         samples.growth.push({ elapsedSec, cpuPercent: sample.cpuPercent, workingSetKiB: sample.workingSetKiB });
       }
       const result = await work;
-      requireFact(!result.failed, 'HISTORY_ACTIVITY_FAILED');
+      requireFact(!result.failed, result.code || 'HISTORY_ACTIVITY_FAILED');
       if (activity) samples.scroll = result.value.samples;
       const entry = { id, title: scenario.title, status: 'EXECUTED', samples,
         provenance: { os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
@@ -195,7 +200,7 @@ export async function runPackaged(config) {
           durationSec: (performance.now() - start) / 1000, asarSha256,
           environment: process.env.GITHUB_ACTIONS === 'true' ? 'hosted CI VM' : 'operator host',
           display: process.env.XDG_SESSION_TYPE || (process.env.DISPLAY ? 'X11' : 'unspecified'),
-          instrumentation: 'Playwright main-process inspector + renderer observer',
+          instrumentation: id === 'PA01' ? 'Playwright main-process inspector' : 'Playwright main-process inspector + renderer observer',
           instrumentedLoginUiMs, ...result.value?.evidence } };
       report.scenarios[report.scenarios.findIndex(s => s.id === id)] = entry;
       requireFact(validateReport(report).ok, 'REPORT_INVALID');
@@ -206,6 +211,19 @@ export async function runPackaged(config) {
     await measure('PA01');
     stage = 'PA08_HISTORY';
     await measure('PA08', async end => {
+      historyProgress = { responses: 0, statusCounts: {}, uniqueMessages: 0, newestVisible: false, oldestVisible: false,
+        profilerAvailable: false };
+      let profiler;
+      const metricNames = new Set(['LayoutDuration','RecalcStyleDuration','ScriptDuration','TaskDuration',
+        'JSHeapUsedSize','JSHeapTotalSize','Nodes','Documents','JSEventListeners']);
+      const metrics = async () => Object.fromEntries((await profiler.send('Performance.getMetrics')).metrics
+        .filter(m => metricNames.has(m.name) && Number.isFinite(m.value)).map(m => [m.name, m.value]));
+      try {
+        profiler = await page.context().newCDPSession(page);
+        await profiler.send('Performance.enable');
+        historyProgress.rendererBefore = await metrics();
+        historyProgress.profilerAvailable = true;
+      } catch { historyProgress.profilerAvailable = false; }
       const inViewport = async id => {
         const locator = page.locator(`.msg-list .msg[data-id="${id}"]`);
         await locator.scrollIntoViewIfNeeded();
@@ -218,17 +236,22 @@ export async function runPackaged(config) {
       const seen = new Set();
       const pending = new Set();
       let invalidResponse = false;
+      let responseFailure = null;
       const onResponse = response => {
         const url = new URL(response.url());
         if (url.origin !== c.origin || url.pathname !== `/api/channels/${c.historyChannel}/messages`) return;
         const task = (async () => {
+          historyProgress.responses++;
+          historyProgress.statusCounts[response.status()] = (historyProgress.statusCounts[response.status()] || 0) + 1;
           requireFact(response.status() === 200, 'HISTORY_HTTP_STATUS');
           const data = await response.json();
           requireFact(Array.isArray(data.messages), 'HISTORY_RESPONSE_SHAPE');
           for (const message of data.messages) {
             if (typeof message._id === 'string' && message._id.startsWith(c.messagePrefix)) seen.add(message._id);
           }
-        })().catch(() => { invalidResponse = true; });
+          historyProgress.uniqueMessages = seen.size;
+        })().catch(error => { invalidResponse = true;
+          responseFailure = ['HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE'].includes(error?.message) ? error.message : 'HISTORY_RESPONSE_INVALID'; });
         pending.add(task);
         void task.finally(() => pending.delete(task));
       };
@@ -246,14 +269,16 @@ export async function runPackaged(config) {
         await selectChannel(c.historyChannel);
         await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}10000"]`).waitFor({ state: 'visible' });
         await inViewport(`${c.messagePrefix}10000`);
+        historyProgress.newestVisible = true;
         const firstPageVisibleMs = performance.now() - loadStart;
         let traversalMs = null;
         let direction = 0;
         while (performance.now() < end) {
-          requireFact(!invalidResponse, 'HISTORY_RESPONSE_INVALID');
+          requireFact(!invalidResponse, responseFailure || 'HISTORY_RESPONSE_INVALID');
           if (seen.size === 10000 && traversalMs === null) {
             await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}00001"]`).waitFor({ state: 'visible' });
             await inViewport(`${c.messagePrefix}00001`);
+            historyProgress.oldestVisible = true;
             traversalMs = performance.now() - loadStart;
           }
           await page.locator('#messages-area').evaluate((el, down) => {
@@ -275,7 +300,13 @@ export async function runPackaged(config) {
           longTaskDurationsMs: observed.longTasks, persistedFixtureCount: c.seededMessages,
           scrollMethod: 'actual product scroll handler; authenticated network responses; no registry calls',
         } };
-      } finally { page.off('response', onResponse); }
+      } finally {
+        page.off('response', onResponse);
+        if (profiler) {
+          try { historyProgress.rendererAfter = await metrics(); } catch { historyProgress.profilerAfterUnavailable = true; }
+          await profiler.detach().catch(() => {});
+        }
+      }
     });
     stage = 'SUBSET_COMPLETE';
     writeAttempt('EXECUTED');
@@ -306,6 +337,8 @@ export async function runPackaged(config) {
     }
     const closedCodes = new Set(['PACKAGED_SECURITY_PRECONDITION','PRODUCT_ORIGIN','AUTHENTICATION_REJECTED',
       'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE',
+      'HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID','HISTORY_TRAVERSAL_INCOMPLETE',
+      'HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING','HISTORY_DRIVER_TIMEOUT',
       'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
     const code = closedCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'DRIVER_TIMEOUT' : 'DRIVER_OR_RUNTIME_FAILURE';
     writeAttempt('FAIL', code);
