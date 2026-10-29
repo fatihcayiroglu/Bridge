@@ -4,6 +4,7 @@
 # No --no-sandbox, no fake Electron window, no XWayland fallback.
 # This is HEADLESS compositor evidence, not a physical desktop UX test.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/ci-linux-wayland-protocol.sh"
 
 APP=/opt/Bridge/bridge
 test -x "${APP}" || { echo "Missing installed DEB executable" >&2; exit 1; }
@@ -15,9 +16,10 @@ APP_PID=""
 cleanup() {
   [[ -z "${APP_PID}" ]] || { kill "${APP_PID}" 2>/dev/null || true; wait "${APP_PID}" 2>/dev/null || true; }
   [[ -z "${COMPOSITOR_PID}" ]] || { kill "${COMPOSITOR_PID}" 2>/dev/null || true; wait "${COMPOSITOR_PID}" 2>/dev/null || true; }
+  # Closed counts only: no renderer titles, URLs or user text in CI output.
   if [[ -f "${ROOT}/app.log" ]]; then
-    echo "Wayland protocol surface evidence:"
-    grep -E -- 'xdg_surface@[0-9]+\.get_toplevel|xdg_toplevel@[0-9]+\.set_title' "${ROOT}/app.log" | head -8 || true
+    printf 'wayland-toplevel-size-requests=%s\n' "$(grep -Ec 'xdg_toplevel[@#][0-9]+\.set_(min|max)_size\(' "${ROOT}/app.log" || true)"
+    printf 'wayland-configure-acks=%s\n' "$(grep -Ec 'xdg_surface[@#][0-9]+\.ack_configure\(' "${ROOT}/app.log" || true)"
   fi
   rm -rf "${ROOT}"
 }
@@ -58,8 +60,7 @@ for i in {1..60}; do
   # Weston 13 / Wayland debug prints protocol object IDs as #23, not @23.
   # Require the top-level window's real size request AND its compositor
   # configure acknowledgement. Neither can come from a mocked process.
-  if grep -Eq -- 'xdg_toplevel#[0-9]+\.set_(min|max)_size\(' "${ROOT}/app.log" \
-    && grep -Eq -- 'xdg_surface#[0-9]+\.ack_configure\(' "${ROOT}/app.log"; then
+  if wayland_protocol_ready "${ROOT}/app.log"; then
     echo "PASS: installed Bridge created a real xdg-toplevel surface on headless Weston/Wayland, sandbox enabled, X11 DISPLAY unset"
     exit 0
   fi

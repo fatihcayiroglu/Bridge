@@ -47,6 +47,12 @@ jobs:
         run: cd electron && npm ci --no-audit --no-fund
       - name: Linux Electron contract suite (no unconditional skip)
         run: cd electron && npm test -- --runInBand --ci
+      - name: Native Wayland same-surface protocol controls (4 valid / 13 invalid / 1 privacy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n electron/scripts/ci-linux-wayland-protocol.sh electron/scripts/ci-linux-wayland-protocol.test.sh electron/scripts/ci-linux-wayland-smoke.sh
+          bash electron/scripts/ci-linux-wayland-protocol.test.sh
       - name: Compile packaged Electron source
         run: cd electron && npm run compile
       - name: Build Linux x64 AppImage and DEB without publishing
