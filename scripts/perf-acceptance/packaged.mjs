@@ -21,6 +21,17 @@ export function validateIdentity(identity) {
   'PACKAGED_SECURITY_PRECONDITION');
 }
 
+// Allowlist only fixed, boolean facts. Never serialize input values, URLs, DOM text,
+// selectors, credentials, screenshots or stack traces into acceptance artifacts.
+export function closedAuthInputGeometry(data) {
+  if (!data || typeof data !== 'object') return { unavailable: true };
+  const names = ['buttonPresent', 'buttonEnabled', 'buttonVisible',
+    'buttonCenterInViewport', 'hitIsLoginButton', 'documentFocused'];
+  const result = {};
+  for (const name of names) result[name] = data[name] === true;
+  return result;
+}
+
 export function isolatedRequestAllowed(rawUrl, method, origin) {
   try {
     const url = new URL(rawUrl);
@@ -80,12 +91,17 @@ export async function runPackaged(config) {
   let authInteraction = null;
   let nativeFocusFacts = null;
   let loginRequests = 0;
+  // A resolved Playwright click is not proof that the native input reached the
+  // renderer. Record only closed, non-sensitive facts about the transition.
+  const authInputTransition = { clickResolved: false, mainFrameNavigations: 0,
+    domContentLoaded: 0, beforeClick: null, afterClick: null, onFailure: null };
+  let captureAuthInput = null;
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
     blockedExternalRequests, networkFailures, runtimeErrors,
     historyProgress, authInteraction, loginRequests, nativeFocusFacts,
-    bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
+    authInputTransition, bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
     const { _electron } = requireE2e('playwright');
@@ -95,6 +111,35 @@ export async function runPackaged(config) {
     stage = 'PRODUCT_WINDOW';
     const page = await application.firstWindow();
     pageRef = page;
+    page.on('framenavigated', frame => {
+      if (frame === page.mainFrame()) authInputTransition.mainFrameNavigations++;
+    });
+    page.on('domcontentloaded', () => { authInputTransition.domContentLoaded++; });
+    captureAuthInput = async () => {
+      try {
+        return closedAuthInputGeometry(await page.evaluate(() => {
+          const button = document.querySelector('#login-form [data-auth-action="login"]');
+          const docFocused = document.hasFocus();
+          if (!(button instanceof HTMLElement)) return {
+            buttonPresent: false, documentFocused: docFocused,
+          };
+          const box = button.getBoundingClientRect();
+          const x = box.left + box.width / 2;
+          const y = box.top + box.height / 2;
+          const inViewport = box.width > 0 && box.height > 0 &&
+            x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
+          const top = inViewport ? document.elementFromPoint(x, y) : null;
+          return {
+            buttonPresent: true, buttonEnabled: !button.hasAttribute('disabled'),
+            buttonVisible: box.width > 0 && box.height > 0 &&
+              getComputedStyle(button).visibility !== 'hidden',
+            buttonCenterInViewport: inViewport,
+            hitIsLoginButton: Boolean(top && (top === button || button.contains(top))),
+            documentFocused: docFocused,
+          };
+        }));
+      } catch { return { unavailable: true }; }
+    };
     await page.route('**/*', route => {
       const request = route.request();
       if (isolatedRequestAllowed(request.url(), request.method(), c.origin)) return route.continue();
@@ -195,7 +240,10 @@ export async function runPackaged(config) {
     const login = page.waitForResponse(r => new URL(r.url()).pathname === '/api/login' && r.request().method() === 'POST')
       .then(response => ({ response }), () => ({ unavailable: true }));
     stage = 'AUTH_SUBMIT';
+    authInputTransition.beforeClick = await captureAuthInput();
     await page.locator('#login-form [data-auth-action="login"]').click();
+    authInputTransition.clickResolved = true;
+    authInputTransition.afterClick = await captureAuthInput();
     stage = 'AUTH_RESPONSE';
     const loginResult = await login;
     requireFact(!loginResult.unavailable, 'AUTH_RESPONSE_UNAVAILABLE');
@@ -410,6 +458,7 @@ export async function runPackaged(config) {
     // WebDriver errors can include typed credentials. Never publish messages,
     // stacks, traces, screenshots or browser storage from authentication.
     if (pageRef && !pageRef.isClosed()) {
+      if (captureAuthInput) authInputTransition.onFailure = await captureAuthInput();
       try {
         authInteraction = await pageRef.evaluate(() => {
           const state = window.__bridgePerfAuth;

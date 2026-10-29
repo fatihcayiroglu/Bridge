@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateConfig, normalizeMetrics, validateIdentity, isolatedRequestAllowed } from './perf-acceptance/packaged.mjs';
+import { validateConfig, normalizeMetrics, validateIdentity, isolatedRequestAllowed, closedAuthInputGeometry } from './perf-acceptance/packaged.mjs';
 import { SCENARIOS } from './perf-acceptance/scenarios.mjs';
 import { requireDisposable } from './perf-acceptance/disposable.mjs';
 
@@ -77,4 +77,18 @@ test('fixture credentials and API traffic cannot be submitted to another install
   assert.equal(isolatedRequestAllowed('https://other.example/submit', 'POST', origin), false);
   assert.equal(isolatedRequestAllowed('https://u:p@other.example/font.woff', 'GET', origin), false);
   assert.equal(isolatedRequestAllowed('https://static.example/font.woff', 'GET', origin), true);
+});
+
+test('auth input transition evidence uses closed boolean geometry and never leaks user data', () => {
+  const benign = { buttonPresent: true, buttonEnabled: true, buttonVisible: true,
+    buttonCenterInViewport: true, hitIsLoginButton: false, documentFocused: true };
+  const malicious = { ...benign, username: 'sensitive-username', password: 'private-password',
+    token: 'private-token', url: 'https://private.example/path', text: 'private-text',
+    buttonVisible: 'private-value' };
+  const safe = closedAuthInputGeometry(malicious);
+  assert.deepEqual(safe, { ...benign, buttonVisible: false });
+  assert.equal(Object.keys(safe).length, 6);
+  assert.doesNotMatch(JSON.stringify(safe), /private|sensitive|example|username|password|token|url|text/);
+  assert.deepEqual(closedAuthInputGeometry(null), { unavailable: true });
+  assert.deepEqual(closedAuthInputGeometry('sensitive-secret'), { unavailable: true });
 });
