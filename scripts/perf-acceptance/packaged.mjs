@@ -359,6 +359,7 @@ export async function runPackaged(config) {
           return { frames: s.frames, longTasks: s.longTasks, skippedPeak: s.skippedPeak, mountedPeak: s.mountedPeak };
         });
         requireFact(observed.frames.length >= 3 && observed.frames.every(Number.isFinite), 'SCROLL_SAMPLES_MISSING');
+        requireFact(observed.skippedPeak > 0, 'CONTAINMENT_NOT_EXERCISED');
         requireFact(observed.mountedPeak > 0 && observed.mountedPeak <= 240, 'HISTORY_DOM_WINDOW_UNBOUNDED');
         return { samples: observed.frames.map(frameTimeMs => ({ frameTimeMs })), evidence: {
           firstPageVisibleMs, traversalMs, uniqueMessagesObserved: seen.size,
