@@ -3,6 +3,7 @@ name: P7 Packaged Desktop Performance Subset (NOT full acceptance)
 on:
   pull_request:
     paths:
+      - 'server/**'
       - 'scripts/perf-acceptance/**'
       - 'scripts/perf-acceptance.test.js'
       - 'scripts/perf-packaged.test.mjs'
