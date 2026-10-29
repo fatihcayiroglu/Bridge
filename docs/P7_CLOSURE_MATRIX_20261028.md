@@ -105,3 +105,46 @@ does lockfile audit by itself prove installation/runtime compatibility.
 The reconciliation preserves Claude commit `0dec6400cb4ac817949be160e7f0814a77665041` in history. Its additional observations remain historical evidence: #572 local report tests 11 and local PG16 migration tests 5/5; prior iOS failures 40779920476 (`b884c80a`) and 40782641256 (`b0cecdac`); #573 job 123146241077 observed Weston 14.0.2 with no `wl_seat` and `xdg_wm_base` v5 while the native window passed. A missing seat alone therefore does not establish the earlier failure cause. These imported local/historical observations were not independently re-executed here.
 
 #553 advanced independently to `5b0656084ac52e8669aff29afe849fc5cb6fe37c` during recovery. The `aa4ae68f` failure above remains exact-head historical evidence; the new head needs separate first-attempt results. Its typing work is preserved and is not duplicated on this branch.
+
+## 8. Implementation checkpoint — 2026-10-29 (supersedes earlier current-status rows)
+
+All PRs below remain draft and unmerged. Main remains unchanged. Do not attach
+parent/earlier-head results to a newer head or equate subset CI with P7 closure.
+
+| Requirement | Implementation/head | Exact evidence | Acceptance state |
+| --- | --- | --- | --- |
+| Scheduled expiry preflight | #578 `ac756d901d5fe48861481ed99f3eb4800ddcb0e1`, base #576 | Run 40789715107 / job 123171605660 PASS: 97/97 unit + 7/7 actual PG16/Redis, zero failed/skipped; types/strict types/build PASS; PG 160015, Redis PONG | Verified subset. Atomic check/write race, other producers and full D2 OPEN. Prior 2017f242 / 40789305382: 90 PASS, 7 FAIL, zero skipped, PG steps NOT EXECUTED; unit fixture incorrectly configured unconnected Redis authority. Original failure retained; real Redis gate unchanged. |
+| Voice expiry preflight | #581 `e7c5e386e3d795197e87c347a69e438cde33f78b`, base #578 | First attempt 40791289811 / job 123176851972 PASS: 8 unit suites / 140 tests + 8/8 actual PG16/Redis tests, zero failed/skipped; types/strict types/build PASS | Actual authenticated multipart HTTP expiry refusal with real auth middleware and signed fixture JWT. No file/DB row on expired channel. No interactive login, native audio/codec or durable object-cleanup claim; atomic race remains OPEN. |
+| Closure ancestry + portable no-skips CLI | #579 qualified `4f51c38daccc4543e1449ba102670c9a32ae77de` | First attempt 40789254214: four locked-graph audit jobs 123170077936/950/970/8020 and Windows/Linux CLI jobs 123170077905/648 PASS | Retains #574 and Claude #575 commit 0dec6400 in history. Low findings remain (7/6/6/0); not zero vulnerabilities. This subsequent matrix update needs its own first CI. |
+| Original #575 latest state | `0dec6400cb4ac817949be160e7f0814a77665041` | QG 40787731090 / audit 123165041501 FAIL: 13 findings (7 low, 3 moderate, 3 high); other eight jobs NOT EXECUTED/conditional | Original still lacks #574; child #579 does not rewrite it or make production main green. Original 449e0c77 failure also retained. |
+| Packaged idle/history executor | #580 `36e556116789ffcc6d3d898dbee2768cdfdd053f`, base #577 | Real Svelte/backend/DEB build and 10000-row PG16 fixture achieved on earlier executor heads; actual PA01/PA08 measurements still NOT EXECUTED at checkpoint | New exact-head runtime CI pending. First failures: 1604a53f / 40790339178 installed-app/sandbox assertion; c6e132d5 / 40790877387 legacy members._id fixture; 263db217 / 40791304645 missing mandatory production METRICS_SECRET. Fixes retain assertions, provision real sandbox, use migrated composite membership, supply secret and keep TLS/auth/60s startup bound. Eight gaming/media scenarios stay NOT EXECUTED. |
+| iOS browser prerequisites | #553 previous `5b0656084ac52e8669aff29afe849fc5cb6fe37c` | Run 40788142507 / job 123166389549 FAIL at native-xcuitest-session: ABORT_ERR, no cases, **0 PASS / 0 product FAIL / 3 NOT EXECUTED** | Driver deadline 480000ms. Before-input Appium evidence has repeated ECONNREFUSED on loopback WDA port 8100; XCTest starts near the deadline. No causal fix established and no timeout increase/rerun. Binary 40788142487, pilot 40788142419, backend 40788142432 PASS cannot replace native journeys. |
+| iOS latest independent work | #553 advanced to `ff31737b150cbb9e85c59fbb41c20dc05727bef8` | New exact-head results require separate inspection | Claude's work preserved; not duplicated/overwritten. The aa4ae68f and 5b065608 failures stay historical. |
+
+The four audit job IDs above in full are 123170077936 (E2E), 123170077950
+(root), 123170077970 (Electron), 123170078020 (server); CLI 123170077905
+(Windows), 123170077648 (Linux). These audit the locked graph, not installed
+runtime parity on every OS.
+
+Hash-verified originals preserved locally (artifact names, no credentials):
+
+- 40789715107 artifact 12860728261: SHA-256
+  `3f9a6b2901513d58157a90113fc56ab4c23df7356c3e1ae939c4cb56601ee466`.
+- 40791289811 artifact 12860929333: SHA-256
+  `bdd50555fb64514909890ce4c735e799c87d074a51a608d99d9b3b0854009ff3`.
+- Original unit failure 40789305382 artifact 12860204102: SHA-256
+  `74fab4a4a8446da8d647620c079ced931e97741c768a5c5dd0e195da98221423`.
+- iOS 40788142507 artifact 12861496495: SHA-256
+  `cebe6a0d279545df0d92ba8ec7eae9bcc3fa7213dca282a4c36ecf030207a8b0`.
+- #416 original 40110110689 Linux package artifact 12566661109: SHA-256
+  `7b63c63b18c2bb1c1d454f50094021864e15eefac77ed951f19453f175dc9e4a`.
+  Preserved before its hosted 2026-10-31 expiry. It is a first-failure package,
+  not a reproduced/fixed Wayland result.
+
+#209 remains OPEN: original HOT/COLD and ANR failures are not superseded by a
+later emulator green or new RN auth test. #416 remains OPEN: seat absence can
+explain GTK warnings but is not proven to cause the missing toplevel. Perf X11
+execution is separate from native Wayland acceptance. Physical devices/API37,
+real gaming/SFU/capture and startup SLA acceptance remain NOT EXECUTED without
+their own evidence. Retention/erasure/legal-hold, signing domains/identities and
+release-scope decisions remain with the owner; no choice is silently enacted.
