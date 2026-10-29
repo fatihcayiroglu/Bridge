@@ -669,13 +669,13 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
 
   it('keeps the newest row anchored if virtualized layout growth emits scroll before resize', () => {
     const observers = installWindowObservers();
+    messages = [makeMessage()];
+    mountList();
     let height = 900;
     Object.defineProperties(host, {
       scrollHeight: { configurable: true, get: () => height },
       clientHeight: { configurable: true, value: 600 },
     });
-    messages = [makeMessage()];
-    mountList();
     const list = host.querySelector('.msg-list')!;
 
     // A visible newest row, just inside the 120px bottom-intent threshold.
