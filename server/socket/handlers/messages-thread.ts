@@ -9,6 +9,7 @@ import logger from '../../lib/logger';
 import { Threads, Members } from '../../db/repositories';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import { isolateSocketHandler } from '../handlerIsolation';
+import { channelContentAvailability } from '../../lib/channelContentAvailability';
 
 
 export function registerThreadSocketEvents(
@@ -50,6 +51,9 @@ export function registerThreadSocketEvents(
       if (!member) return;
       const perms = await resolvePermissions(_user._id, thread.serverId, thread.channelId).catch(() => 0);
       if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY)) return;
+      // Fresh subscriptions must verify the parent channel's durable lifecycle.
+      // Denial leaves the selected room intact and sends no content or join ACK.
+      if (await channelContentAvailability(thread.channelId, thread.serverId) !== 'live') return;
       if (generation !== joinGeneration) return;
       for (const room of socket.rooms) {
         if (room.startsWith('thread:')) socket.leave(room);

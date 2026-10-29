@@ -35,15 +35,18 @@ jest.mock('../lib/storageAdapter', () => ({ getPrivateStorageAdapter: () => stor
 const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() };
 jest.mock('../lib/logger', () => ({ __esModule: true, default: logger, createLogger: () => logger }));
 
-import { recordOf, recordsOf } from './helpers/narrow';
+import { recordOf } from './helpers/narrow';
 import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import db from '../db/loader';
 import router from '../routes/voicemsg';
+import * as aiPolicy from '../lib/aiServerPolicy';
+import { Channels, Messages } from '../db/repositories';
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-vm-tx-'));
 const WEBM = path.join(T, 'a.webm');
@@ -61,16 +64,18 @@ function app() {
   return a;
 }
 
+let actor = '';
 async function seed() {
-  await db.users.insert({ _id: 'u1', username: 'u1', displayName: 'U1', tokenVersion: 0 });
-  await db.servers.insert({ _id: 's1', ownerId: 'u1', name: 'S' });
-  await db.members.insert({ userId: 'u1', serverId: 's1', roles: [] });
+  actor = randomUUID();
+  await db.users.insert({ _id: actor, username: actor, displayName: 'U1', tokenVersion: 0 });
+  await db.servers.insert({ _id: 's1', ownerId: actor, name: 'S' });
+  await db.members.insert({ userId: actor, serverId: 's1', roles: [] });
   await db.channels.insert({ _id: 'c1', serverId: 's1', name: 'c', type: 'text' });
 }
 
 const post = () => request(app())
   .post('/api/voice-messages')
-  .set('Authorization', `Bearer ${tok('u1')}`)
+  .set('Authorization', `Bearer ${tok(actor)}`)
   .field('channelId', 'c1').field('serverId', 's1').field('duration', '0')
   .attach('audio', WEBM, { contentType: 'audio/webm' });
 
@@ -158,6 +163,9 @@ describe('a successful transcript is persisted and broadcast', () => {
 
     const vm = recordOf(await db.voiceMessages.findOne({ _id: vmId }), 'vm');
     expect(vm.transcript).toBe('merhaba dunya');
+    expect(vm.displayName).toBe('U1');
+    expect(res.body.msg).toMatchObject({ username: actor, displayName: 'U1' });
+    expect(testIo.to).toHaveBeenCalledWith('channel:c1');
     expect(ioEmit).toHaveBeenCalledWith('message:transcript',
       expect.objectContaining({ transcript: 'merhaba dunya' }));
   });
@@ -282,5 +290,73 @@ describe('P6: the server AI setting governs transcription', () => {
     await post();
     await settle();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('background transcription rechecks channel authority', () => {
+  const expireParent = () => db.channels.update({ _id: 'c1' }, { $set: { expiresAt: Date.now() - 1000, expiryVersion: 1 } });
+  beforeEach(() => {
+    delete process.env.AI_PROVIDER;
+    process.env.GROQ_API_KEY = 'isolated-transcription-fixture';
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'fixture transcript' });
+  });
+
+  it('does not send audio when expiry occurs while server AI policy is being read', async () => {
+    const original = aiPolicy.serverAllowsAi;
+    jest.spyOn(aiPolicy, 'serverAllowsAi').mockImplementationOnce(async serverId => {
+      const allowed = await original(serverId);
+      expect(allowed).toBe(true);
+      await expireParent();
+      return allowed;
+    });
+    const response = await post();
+    expect(response.status).toBe(200); // The original voice write committed while live.
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ioEmit).not.toHaveBeenCalled();
+    expect(recordOf(await db.voiceMessages.findOne({ _id: response.body.vmId }), 'vm').transcript ?? null).toBeNull();
+  });
+
+  it('does not send audio when current parent authority cannot be read', async () => {
+    const original = aiPolicy.serverAllowsAi;
+    jest.spyOn(aiPolicy, 'serverAllowsAi').mockImplementationOnce(async serverId => {
+      const allowed = await original(serverId);
+      jest.spyOn(Channels, 'findById').mockRejectedValue(new Error('isolated lifecycle read failure'));
+      return allowed;
+    });
+    expect((await post()).status).toBe(200);
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ioEmit).not.toHaveBeenCalled();
+  });
+
+  it('does not persist or broadcast a provider result that arrives after expiry', async () => {
+    fetchMock.mockImplementationOnce(async () => {
+      await expireParent();
+      return { ok: true, status: 200, text: async () => 'late transcript fixture' };
+    });
+    const response = await post();
+    expect(response.status).toBe(200);
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(recordOf(await db.voiceMessages.findOne({ _id: response.body.vmId }), 'vm').transcript ?? null).toBeNull();
+    expect(recordOf(await db.messages.findOne({ _id: response.body.msg._id }), 'message').transcript ?? null).toBeNull();
+    expect(ioEmit).not.toHaveBeenCalled();
+  });
+
+  it('preserves a committed transcript but refuses publication after expiry during the final update', async () => {
+    const original = Messages.update.bind(Messages);
+    jest.spyOn(Messages, 'update').mockImplementationOnce(async (...args) => {
+      const saved = await original(...args);
+      await expireParent();
+      return saved;
+    });
+    const response = await post();
+    expect(response.status).toBe(200);
+    await settle();
+    expect(recordOf(await db.voiceMessages.findOne({ _id: response.body.vmId }), 'vm').transcript).toBe('fixture transcript');
+    expect(recordOf(await db.messages.findOne({ _id: response.body.msg._id }), 'message').transcript).toBe('fixture transcript');
+    expect(ioEmit).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,7 @@ import streamingRouter  from './streaming';
 import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { channelRecordIsLive, channelAvailabilityErrors } from '../../lib/channelLiveReadSet';
 import { AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
 import { serverAllowsAi, serversAllowingAi } from '../../lib/aiServerPolicy';
 
@@ -270,7 +271,7 @@ import { callAI, aiFailureForClient } from '../../lib/aiProvider';
 router.get('/suggest-reply/:channelId', authMiddleware, limits.ai(), async (req, res) => {
   const _u = castAuthed(req).user;
   const channel = await Channels.findById(String(req.params.channelId ?? ''));
-  if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
+  if (!channel || !await channelRecordIsLive(channel)) return res.status(404).json({ error: 'Kanal bulunamadı' });
   if (!await Members.findOne(_u.id, channel.serverId))
     return res.status(403).json({ error: 'Üye değilsiniz' });
 
@@ -421,6 +422,8 @@ router.use('/summarize', summarizeRouter);
 router.use('/translate',  translateRouter);
 router.use('/', moderationRouter);
 router.use('/', streamingRouter);
+// P7 D2: an unverifiable channel availability check (here or in a sub-router) answers 503.
+router.use(channelAvailabilityErrors);
 
 export default router;
 

@@ -319,10 +319,12 @@ describe('erişim ve yetki çözümü', () => {
     const socket = makeSocket(); const io = makeIo();
     registerStageHandlers(socket.asSocket, io.asServer, me);
     // Katılım geçtikten SONRA kanal kaybolursa yetki üretilmemelidir. Katılım
-    // kanalı iki kez okur (ilk denetim ve odaya girdikten sonraki yeniden
-    // denetim); kanal ancak ikisinden sonra, yetki çözümünde kaybolur.
-    repos.Channels.findById.mockResolvedValueOnce({ _id: CH, serverId: SRV, type: 'stage' })
-      .mockResolvedValueOnce({ _id: CH, serverId: SRV, type: 'stage' })
+    // iki erişim denetimi yapar (ilk denetim ve odaya girdikten sonraki yeniden
+    // denetim); her biri kanalı iki kez okur (kayıt ve P7 D2 canlılık denetimi).
+    // Kanal ancak bu dört okumadan sonra, yetki çözümünde kaybolur.
+    const stage = { _id: CH, serverId: SRV, type: 'stage' };
+    repos.Channels.findById.mockResolvedValueOnce(stage).mockResolvedValueOnce(stage)
+      .mockResolvedValueOnce(stage).mockResolvedValueOnce(stage)
       .mockResolvedValue(null);
     const result = ack();
 

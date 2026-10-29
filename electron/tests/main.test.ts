@@ -303,6 +303,23 @@ describe('shell chrome', () => {
   });
 });
 
+describe('foreground visibility before renderer readiness', () => {
+  it('presents the ordinary main window without requiring ready-to-show', async () => {
+    const { electron } = await loadMain({ serverOrigin: 'https://chat.example.com' });
+    const win = mainWindowOf(electron);
+    expect(win.options.show).toBe(true);
+    expect(win.options.backgroundColor).toBe('#0c0e1a');
+    expect(win.options.webPreferences).toMatchObject({ nodeIntegration: false, contextIsolation: true, sandbox: true });
+  });
+  it('keeps explicit background launch hidden even before renderer readiness', async () => {
+    const { electron } = await loadMain({ serverOrigin: 'https://chat.example.com', argv: ['--background'] });
+    const win = mainWindowOf(electron);
+    expect(win.options.show).toBe(false);
+    win.emit('ready-to-show');
+    expect(win.show).not.toHaveBeenCalled();
+  });
+});
+
 describe('preloads', () => {
   it('the web app gets notifications and the updater — no server process control', () => {
     jest.isolateModules(() => {

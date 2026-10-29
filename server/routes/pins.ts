@@ -48,6 +48,7 @@ const router       = express.Router();
 import { Channels, Members, Messages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { canViewChannel } from '../lib/permissions';
+import { channelRecordIsLive, channelAvailabilityErrors } from '../lib/channelLiveReadSet';
 
 // ════════════════════════════════════════════════════════════════════════════
 // FAZ J-SONRASI GUVENLIK DUZELTMESI — SUNUCU UYELIGI KANAL GORUNURLUGU DEGILDIR
@@ -78,7 +79,7 @@ import { canViewChannel } from '../lib/permissions';
 router.get('/:cid/pins', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const channel = await Channels.findById(String(req.params.cid ?? ''));
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  if (!channel || !await channelRecordIsLive(channel)) return res.status(404).json({ error: 'Channel not found' });
   const membership = await Members.findOne(_u.id, channel.serverId);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   if (!(await canViewChannel(_u.id, channel.serverId, String(req.params.cid ?? ''))))
@@ -91,7 +92,7 @@ router.get('/:cid/pins', authMiddleware, async (req, res) => {
 router.get('/:cid/files', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const channel = await Channels.findById(String(req.params.cid ?? ''));
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  if (!channel || !await channelRecordIsLive(channel)) return res.status(404).json({ error: 'Channel not found' });
   const membership = await Members.findOne(_u.id, channel.serverId);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   if (!(await canViewChannel(_u.id, channel.serverId, String(req.params.cid ?? ''))))
@@ -108,6 +109,9 @@ router.get('/:cid/files', authMiddleware, async (req, res) => {
   }).sort({ createdAt: -1 }).limit(limit);
   res.json(files.reverse());
 });
+
+// P7 D2: an unverifiable channel availability check answers 503, never content.
+router.use(channelAvailabilityErrors);
 
 export default router;
 
