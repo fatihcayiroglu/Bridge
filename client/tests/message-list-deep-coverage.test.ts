@@ -505,4 +505,220 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
       expect(host.querySelector('.msg-state-cta')).toBeNull();
     });
   });
+
+  function installWindowObservers() {
+    const intersections = new Map<Element, (near: boolean) => void>();
+    const sizes = new Map<Element, (height: number) => void>();
+    const disconnected = vi.fn();
+    const unobserved = vi.fn();
+    const constructed = vi.fn();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private callback: IntersectionObserverCallback) { constructed('intersection'); }
+      observe(node: Element) {
+        intersections.set(node, near => this.callback([{ target: node, isIntersecting: near } as IntersectionObserverEntry], this as unknown as IntersectionObserver));
+      }
+      unobserve(node: Element) { unobserved(node); }
+      disconnect() { disconnected(); }
+    });
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) { constructed('resize'); }
+      observe(node: Element) {
+        sizes.set(node, height => this.callback([{ target: node, borderBoxSize: [{ blockSize: height, inlineSize: 400 }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver));
+      }
+      unobserve(node: Element) { unobserved(node); }
+      disconnect() { disconnected(); }
+    });
+    return { intersections, sizes, disconnected, unobserved, constructed };
+  }
+
+  it('keeps all large-history models but renders only nearby rows and preserves measured rich-row height', () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 500 }, (_, n) => makeMessage({ _id: `window-${n}`, userId: `author-${n % 3}`,
+      content: n === 10 ? '**Rich content**' : `Retained message ${n}` }));
+    mountList();
+    expect(host.querySelectorAll('[data-message-viewport-id]')).toHaveLength(500);
+    expect(host.querySelectorAll('article.msg')).toHaveLength(1); // single roving focus target
+    const row = host.querySelector<HTMLElement>('[data-message-viewport-id="window-10"]')!;
+    observers.intersections.get(row)!(true); flushSync();
+    expect(row.querySelector('strong')?.textContent).toBe('Rich content');
+    observers.sizes.get(row)!(512); flushSync();
+    observers.intersections.get(row)!(false); flushSync();
+    expect(row.querySelector('article')).toBeNull();
+    expect(row.style.height).toBe('512px');
+    expect(messages).toHaveLength(500);
+    observers.intersections.get(row)!(true); flushSync();
+    expect(row.querySelector('strong')?.textContent).toBe('Rich content');
+  });
+
+  it('reveals unmounted Home/End/adjacent keyboard and reply targets without dropping current focus', async () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 500 }, (_, n) => makeMessage({ _id: `nav-${n}` }));
+    mountList();
+    const latest = host.querySelector<HTMLElement>('[data-id="nav-499"]')!;
+    latest.focus();
+    await fireEvent.keyDown(latest, { key: 'Home' });
+    await Promise.resolve(); flushSync(); await Promise.resolve();
+    expect(document.activeElement?.getAttribute('data-id')).toBe('nav-0');
+    const first = document.activeElement as HTMLElement;
+    observers.intersections.get(first.parentElement!)!(false); flushSync();
+    expect(document.activeElement).toBe(first);
+    await fireEvent.keyDown(first, { key: 'ArrowDown' });
+    await Promise.resolve(); flushSync(); await Promise.resolve();
+    expect(document.activeElement?.getAttribute('data-id')).toBe('nav-1');
+    BridgeRegistry.call('jumpToMessage', 'nav-250');
+    await Promise.resolve(); flushSync(); await Promise.resolve();
+    expect(host.querySelector('[data-id="nav-250"]')).toHaveClass('msg-jump-highlight');
+    expect(messages).toHaveLength(500);
+  });
+
+  it('disconnects old row observers on channel changes and ignores late visibility delivery', async () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 210 }, (_, n) => makeMessage({ _id: `old-${n}` }));
+    mountList();
+    const oldRow = host.querySelector<HTMLElement>('[data-message-viewport-id="old-0"]')!;
+    const late = observers.intersections.get(oldRow)!;
+    currentChannel = { _id: 'different-channel' };
+    messages = [makeMessage({ _id: 'new-channel-message', channelId: 'different-channel' })];
+    document.dispatchEvent(new CustomEvent('bridge:channel-selected')); flushSync();
+    late(true); flushSync();
+    expect(oldRow.isConnected).toBe(false);
+    expect(host.querySelector('[data-id="old-0"]')).toBeNull();
+    expect(host.querySelector('[data-id="new-channel-message"]')).toBeInTheDocument();
+    expect(observers.unobserved).toHaveBeenCalledWith(oldRow);
+  });
+
+
+  it('keeps playing media mounted offscreen and releases it only after pause', async () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 210 }, (_, n) => makeMessage({ _id: `media-${n}`,
+      ...(n === 0 ? { fileUrl: 'https://example.test/voice.ogg', fileType: 'audio/ogg' } : {}) }));
+    mountList();
+    const row = host.querySelector<HTMLElement>('[data-message-viewport-id="media-0"]')!;
+    observers.intersections.get(row)!(true); flushSync();
+    const audio = row.querySelector('audio')!;
+    Object.defineProperty(audio, 'paused', { configurable: true, value: false });
+    audio.dispatchEvent(new Event('play')); flushSync();
+    observers.intersections.get(row)!(false); flushSync();
+    expect(row.querySelector('audio')).toBe(audio);
+    Object.defineProperty(audio, 'paused', { configurable: true, value: true });
+    audio.dispatchEvent(new Event('pause'));
+    await Promise.resolve(); flushSync();
+    expect(row.querySelector('audio')).toBeNull();
+    expect(messages[0].fileUrl).toBe('https://example.test/voice.ogg');
+  });
+
+  it('invalidates a pending virtual reply jump when the account owner changes', async () => {
+    installWindowObservers();
+    messages = Array.from({ length: 210 }, (_, n) => makeMessage({ _id: `owner-${n}` }));
+    mountList();
+    BridgeRegistry.call('jumpToMessage', 'owner-0');
+    me = { _id: 'different-account' };
+    messages = [makeMessage({ _id: 'owner-0', content: 'Current account state' })];
+    document.dispatchEvent(new CustomEvent('bridge:messages-updated')); flushSync();
+    await Promise.resolve(); flushSync(); await Promise.resolve();
+    expect(host.querySelector('[data-id="owner-0"]')).not.toHaveClass('msg-jump-highlight');
+    expect(host.textContent).toContain('Current account state');
+  });
+
+
+  it('retains an open action menu when its row leaves the observer viewport', async () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 210 }, (_, n) => makeMessage({ _id: `menu-${n}` }));
+    mountList();
+    const row = host.querySelector<HTMLElement>('[data-message-viewport-id="menu-0"]')!;
+    observers.intersections.get(row)!(true); flushSync();
+    await fireEvent.contextMenu(row.querySelector('article')!, { clientX: 20, clientY: 30 });
+    flushSync();
+    const menu = row.querySelector('[role="menu"]');
+    expect(menu).not.toBeNull();
+    observers.intersections.get(row)!(false); flushSync();
+    expect(row.querySelector('[role="menu"]')).toBe(menu);
+  });
+
+  it('renders the complete history when observer prerequisites are unavailable', () => {
+    vi.stubGlobal('IntersectionObserver', undefined);
+    vi.stubGlobal('ResizeObserver', undefined);
+    messages = Array.from({ length: 210 }, (_, n) => makeMessage({ _id: `fallback-${n}` }));
+    mountList();
+    expect(host.querySelectorAll('article.msg')).toHaveLength(210);
+  });
+
+
+  it('keeps bottom intent through delayed row geometry but respects manual upward scrolling', () => {
+    const observers = installWindowObservers();
+    messages = [makeMessage()];
+    mountList();
+    let height = 900;
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    const list = host.querySelector('.msg-list')!;
+    host.scrollTop = 300;
+    host.dispatchEvent(new Event('scroll'));
+    height = 1200;
+    observers.sizes.get(list)!(height); flushSync();
+    expect(host.scrollTop).toBe(1200);
+    host.scrollTop = 50;
+    host.dispatchEvent(new Event('scroll'));
+    height = 1400;
+    observers.sizes.get(list)!(height); flushSync();
+    expect(host.scrollTop).toBe(50);
+  });
+
+
+  it('keeps the newest row anchored if virtualized layout growth emits scroll before resize', () => {
+    const observers = installWindowObservers();
+    messages = [makeMessage()];
+    mountList();
+    let height = 900;
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    const list = host.querySelector('.msg-list')!;
+
+    // A visible newest row, just inside the 120px bottom-intent threshold.
+    host.scrollTop = 300;
+    host.dispatchEvent(new Event('scroll'));
+    expect(host.scrollTop).toBe(300);
+
+    // A virtual row materializes another 130px. Browser-generated scroll can
+    // arrive before ResizeObserver, but it is not a manual upward gesture.
+    height = 1030;
+    host.dispatchEvent(new Event('scroll'));
+    observers.sizes.get(list)!(height);
+    flushSync();
+    expect(host.scrollTop).toBe(1030);
+
+    // Real upward movement must still win, even when layout later grows.
+    host.scrollTop = 100;
+    host.dispatchEvent(new Event('scroll'));
+    height = 1300;
+    observers.sizes.get(list)!(height);
+    flushSync();
+    expect(host.scrollTop).toBe(100);
+  });
+
+  it('shares row observers and delegates interactions without retaining a destroyed scroll owner', async () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 500 }, (_, n) => makeMessage({ _id: `pool-${n}` }));
+    mountList();
+    expect(observers.constructed.mock.calls.filter(([kind]) => kind === 'intersection')).toHaveLength(1);
+    // One row-size observer, plus the independent bottom-intent list observer.
+    expect(observers.constructed.mock.calls.filter(([kind]) => kind === 'resize')).toHaveLength(2);
+    const row = host.querySelector<HTMLElement>('[data-message-viewport-id="pool-0"]')!;
+    row.dispatchEvent(new Event('bridge:message-reveal')); flushSync();
+    expect(row.querySelector('[data-id="pool-0"]')).toBeInTheDocument();
+    const late = observers.intersections.get(row)!;
+    await unmount(instance!); instance = null;
+    expect(observers.unobserved).toHaveBeenCalledTimes(1000);
+    expect(observers.disconnected).toHaveBeenCalledTimes(3);
+    const detachedMarkup = row.innerHTML;
+    late(true); row.dispatchEvent(new Event('bridge:message-reveal')); flushSync();
+    expect(row.isConnected).toBe(false);
+    expect(host.querySelector('[data-id="pool-0"]')).toBeNull();
+    expect(row.innerHTML).toBe(detachedMarkup);
+  });
+
 });

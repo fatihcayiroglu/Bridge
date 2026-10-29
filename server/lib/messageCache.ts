@@ -25,12 +25,51 @@
 // Cozum: onek bazli gecersiz kilma. Sayfa boyutundan BAGIMSIZ olarak o
 // kanalin tum ilk-sayfa girdileri dusurulur.
 
+//
+// ════════════════════════════════════════════════════════════════════════════
+// OKUMA/GONDERME YARISI (P7 D2 CI'da olculdu)
+// ════════════════════════════════════════════════════════════════════════════
+// Gecersiz kilma tek basina yetmez: veritabanini gonderimden ONCE okuyan bir
+// GET, gonderim commit edip onbellegi dusurdukten SONRA eski sayfasini yazar.
+// Bos kanalda bu sayfa 45 sn yasar (attachments.spec.ts bu yuzden 25 sn
+// bekleyip dustu). Her kanalin bir NESLI vardir: gecersiz kilma onu yeni bir
+// degere cevirir; okuyucu nesli sorgudan ONCE okur, sayfayla birlikte yazar
+// ve yalnizca nesli guncel olan sayfayi sunar. Neslin anahtari sayfa
+// onekinin DISINDADIR, boylece onek silme onu silmez.
+
+import { randomUUID } from 'crypto';
 import { cache } from './redisAdapter';
 import logger from './logger';
+
+/** Neslin yasam suresi: en uzun sayfa TTL'inden (45 sn) cok daha uzun. */
+const GENERATION_TTL_SECONDS = 3600;
 
 /** `routes/messages.ts` ile AYNI onek — tek yerde tutulur ki sapmasin. */
 export function channelMessagesCachePrefix(channelId: string): string {
   return `messages:${channelId}:`;
+}
+
+function generationKey(channelId: string): string {
+  return `messages-gen:${channelId}`;
+}
+
+/** Ilk sayfa onbellek girdisi: yanit + okundugu andaki kanal nesli. */
+export interface CachedChannelPage<T> { generation: string; page: T }
+
+/**
+ * Kanalin guncel nesli. Hic gecersiz kilinmamis (ya da nesli dusmus) kanal
+ * icin '0'. Veritabani sorgusundan ONCE okunmali.
+ */
+export async function channelMessagesGeneration(channelId: string): Promise<string> {
+  const value = await cache.get<string>(generationKey(channelId));
+  return typeof value === 'string' && value ? value : '0';
+}
+
+/** Girdi yalnizca okuyucunun nesliyle yazildiysa sayfayi dondurur. */
+export function currentChannelPage<T>(entry: unknown, generation: string): T | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const { generation: stored, page } = entry as Partial<CachedChannelPage<T>>;
+  return stored === generation && page ? page : null;
 }
 
 /**
@@ -41,10 +80,18 @@ export function channelMessagesCachePrefix(channelId: string): string {
  */
 export async function invalidateChannelMessages(channelId: string): Promise<void> {
   if (!channelId) return;
-  try {
-    await cache.invalidatePattern(channelMessagesCachePrefix(channelId));
-  } catch (err) {
-    logger.debug({ event: 'message_cache.invalidate_failed', channelId, err },
-      '[cache] kanal mesaj onbellegi dusurulemedi');
+  // Once yeni nesil: bu andan sonra baslayan her okuma, yaristaki eski nesille
+  // yazilmis sayfayi gormez. Adimlardan biri basarisiz olsa da digeri denenir.
+  const steps = [
+    () => cache.set(generationKey(channelId), randomUUID(), GENERATION_TTL_SECONDS),
+    () => cache.invalidatePattern(channelMessagesCachePrefix(channelId)),
+  ];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (err) {
+      logger.debug({ event: 'message_cache.invalidate_failed', channelId, err },
+        '[cache] kanal mesaj onbellegi dusurulemedi');
+    }
   }
 }

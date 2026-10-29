@@ -1,0 +1,14 @@
+# P7 expiry/history isolated integration candidate
+
+Parents preserved by an ordinary no-ff merge: message observer candidate662dfb200745d69bb1dee663198c44a00daff4e7 (#586), channel expiry candidate4154b0a5382769ad1726082c225773338f950b93 (#585). Merge commitab684f69de0eb6a9bca6c59e7bd25a5f62a43568. Original drafts/heads/history remain untouched; no main merge/deploy.
+
+This combines #576 primary socket write expiry, #578 scheduled writes, #581 voice uploads, #582 thread reply/nonce replay, #585 subscription generation/expiry and #584/#586 actual history presentation. It is not a merge of every P7/mobile PR, and does not qualify unexecuted native mobile journeys.
+
+Both focused workflows must execute against the same new source: realPG16/Redis D2 tests and actual production HTTPS packaged Electron/Svelte history. Expand the packaged workflow server-path trigger so backend changes cannot bypass its real integration dependency; retain actual source/checkout/UI/ASAR provenance. Include the primary message-send unit suite as well as scheduling/voice/thread/join tests. No fixture credentials, TLS/authentication/security assertions, observation windows or timeouts weakened. Services use fresh disposable databases/accounts and no production data/volumes.
+
+Standalone #585 verified first40844476658/job123348490769:262unit+15 realPG16/Redis,0FAIL/0SKIP, types/strict debt0/build PASS. Standalone #584 verified04e54d5d first40845246463/job123351018844:PA01300.109s+PA08120.401s,10000 actual IDs/200HTTP200,first/last/keyboard,peak200 mounted rows. Resource costs remain high (CPUmean28.344%, working-set sum peak1565MiB, rAFp95100ms); no smoothness/low-resource/startup target claimed. #586 shared-observer first47bccf17 failed one component-suite collection due inheritedproduction resolver; corrected662dfb20 first native CI separately pending. No parent result substitutes for this integrated head.
+
+Integration exact-head CI pending. Complete:false, eight gaming/SFU/media scenarios NOT EXECUTED. Physical/minimum/API37/mobile compatibility, browser-find/assistive reading/rich-media parity, original Android/Wayland causes, D2 atomic cleanup/full writer-room graph and owner lifecycle policies remain OPEN. Keep all candidates draft and P7 OPEN.
+
+
+The integrated native gate also retains the predecessor CSS skipped-rendering assertion alongside the new mounted-row cap; it is not replaced by that cap. Existing successful04e54d5d evidence already records119 genuinely skipped rows. All mandatory10000/120s/endpoint/keyboard/auth/TLS/sandbox assertions remain. This validation hardening is a new commit/first attempt, not a rerun or relabeling of a prior head. Initialb10e08ea D2 CI40848726155/job123362569627 passed361unit+15realPG16/Redis,zero failed/skipped; its performance and auto-triggered Abuse Lab runs are separately retained. New exact-head results remain required.

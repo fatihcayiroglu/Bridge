@@ -461,6 +461,31 @@ describe('socket disconnect / reconnect contract', () => {
     expect(left).toHaveBeenCalledOnce();
   });
 
+  it('voice:evicted (access revoked or channel expired) closes every P2P peer and the microphone; another channel is ignored', async () => {
+    const socket = makeSocket();
+    const rtc = rtcFor(socket);
+    await rtc.joinVoice(CHANNEL, SERVER);
+    const track = rtc.localStream!.getAudioTracks()[0];
+    const close = vi.fn();
+    rtc.peers.set('peer-1', { close } as unknown as RTCPeerConnection);
+    const left = vi.fn();
+    document.addEventListener('bridge:voice-left', left, { once: true });
+
+    handlers['voice:evicted'][0]({ channelId: 'some-other-channel' });
+    expect(rtc.currentChannelId).toBe(CHANNEL);
+    expect(close).not.toHaveBeenCalled();
+
+    handlers['voice:evicted'][0]({ channelId: CHANNEL });
+    expect(close).toHaveBeenCalledOnce();
+    expect(track.readyState).toBe('ended');
+    expect(rtc.peers.size).toBe(0);
+    expect(rtc.localStream).toBeNull();
+    expect(rtc.isInVoice()).toBe(false);
+    expect((left.mock.calls[0][0] as CustomEvent).detail).toEqual({ reason: 'evicted' });
+    // The server already removed the session; the client does not echo a leave.
+    expect(emitted.filter(e => e.event === 'voice:leave')).toHaveLength(0);
+  });
+
   it('aynı Socket.IO object reconnect olduğunda aynı RTC ile yeniden seçim leak olmadan çalışır', async () => {
     const socket = makeSocket();
     const rtc = rtcFor(socket);

@@ -11,7 +11,7 @@
     socket.ts:202-207           typing:update  (+ updateTypingBar)
 
   Backend sözleşmesi:
-    GET /api/channels/:cid/messages?limit=50[&cursor=…]
+    GET /api/channels/:cid/messages?limit=50 (initial), limit=100&cursor=… (older)
       → { messages, hasMore, nextCursor, prevCursor, limit, count }  (eski→yeni sıralı)
     socket: channel:join / message:* / typing:*   (adlar değiştirilmedi)
 
@@ -48,6 +48,9 @@
   interface MessagesResponse { messages?: Message[]; hasMore?: boolean; prevCursor?: string | null; nextCursor?: string | null }
 
   const PAGE_SIZE = 50;
+  // Keep the small first paint; later pages use the existing server maximum
+  // to avoid spending one rate-limit request for every 50 historical rows.
+  const OLDER_PAGE_SIZE = 100;
   const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
   let channelId: string | null = null;
@@ -64,6 +67,7 @@
   type LiveSinceLoad = { added: Set<string>; removed: Set<string>; edited: Map<string, Message> };
   let liveSinceLoad: LiveSinceLoad | null = null;
   let joinedChannel: string | null = null;
+  let joinedSocket: SocketLike | null = null;
   // Faz 10.4: `socketBound` boolean'ı kaldırıldı — yerine `boundSocket`
   // referansı kullanılıyor (bkz. bindSocketEvents). Boolean guard, socket
   // nesnesi değiştiğinde yeniden bağlamayı engelleyerek ölü dinleyici
@@ -83,6 +87,12 @@
 
   function getSocket(): SocketLike | null {
     return BridgeRegistry.get('socket');
+  }
+
+  function emitChannelJoin(socket: SocketLike, target: string): void {
+    socket.emit('channel:join', target);
+    joinedChannel = target;
+    joinedSocket = socket;
   }
 
   function currentHistoryUserId(): string | null {
@@ -236,7 +246,7 @@
     const seq = requestSeq; // yeni kanal seçilirse seq değişir → yanıt atılır
     try {
       const response = await apiFetch<MessagesResponse>(
-        `${getAPI()}/api/channels/${encodeURIComponent(target)}/messages?limit=${PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`,
+        `${getAPI()}/api/channels/${encodeURIComponent(target)}/messages?limit=${OLDER_PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`,
       );
       if (!response.ok) throw new ApiResponseError(response);
       const data = await response.typed();
@@ -267,8 +277,22 @@
 
   // ── Kanal geçişi ───────────────────────────────────────────────────────────
   function onChannelSelected(event: Event): void {
-    const detail = (event as CustomEvent<{ channelId?: string }>).detail;
+    const detail = (event as CustomEvent<{ channelId?: string | null }>).detail;
     const next = detail?.channelId;
+    if (next === null) {
+      requestSeq += 1;
+      channelId = null;
+      liveSinceLoad = null;
+      if (joinedChannel) getSocket()?.emit('channel:leave', joinedChannel);
+      joinedChannel = null;
+      joinedSocket = null;
+      clearTypingTimers();
+      updateTypingBar();
+      BridgeRegistry.call('setMessagesLoading', false);
+      BridgeRegistry.call('setMessagesOffline', false);
+      notifyUpdated();
+      return;
+    }
     if (!next) return;
 
     channelId = next;
@@ -279,8 +303,7 @@
     const socket = getSocket();
     if (socket) {
       if (joinedChannel && joinedChannel !== next) socket.emit('channel:leave', joinedChannel);
-      socket.emit('channel:join', next);
-      joinedChannel = next;
+      emitChannelJoin(socket, next);
     }
 
     void loadMessages(next);
@@ -540,11 +563,10 @@
   // ── Boot ───────────────────────────────────────────────────────────────────
   function onSocketReady(): void {
     bindSocketEvents();
-    // Socket geç bağlandıysa mevcut kanala katıl.
+    // Room membership belongs to this socket object, independently of listeners.
     const socket = getSocket();
-    if (socket && channelId && joinedChannel !== channelId) {
-      socket.emit('channel:join', channelId);
-      joinedChannel = channelId;
+    if (socket && channelId && (joinedChannel !== channelId || joinedSocket !== socket)) {
+      emitChannelJoin(socket, channelId);
     }
   }
 
@@ -558,6 +580,7 @@
     requestSeq += 1;
     channelId = null;
     joinedChannel = null;
+    joinedSocket = null;
     lastForegroundRefreshAt = 0;
     liveSinceLoad = null;
     BridgeRegistry.call('setMessagesOffline', false);
@@ -586,7 +609,7 @@
     if (lastForegroundRefreshAt && now - lastForegroundRefreshAt < FOREGROUND_EVENT_COALESCE_MS) return;
     lastForegroundRefreshAt = now;
     const socket = getSocket() as (SocketLike & { connected?: boolean }) | null;
-    if (socket?.connected === true) socket.emit('channel:join', channelId);
+    if (socket?.connected === true) emitChannelJoin(socket, channelId);
     log.info('Foreground resume: active channel history is being reconciled');
     void loadMessages(channelId);
   }
@@ -606,8 +629,7 @@
   function onSocketReconnected(): void {
     const socket = getSocket();
     if (!socket || !channelId) return;
-    socket.emit('channel:join', channelId);
-    joinedChannel = channelId;
+    emitChannelJoin(socket, channelId);
     lastForegroundRefreshAt = Date.now();
     log.info('Yeniden bağlanma sonrası mesajlar senkronize ediliyor');
     void loadMessages(channelId);
@@ -627,8 +649,8 @@
     const channel = BridgeRegistry.call<{ _id?: string } | null>('getCurrentChannel');
     if (channel?._id) {
       channelId = channel._id;
-      getSocket()?.emit('channel:join', channel._id);
-      joinedChannel = channel._id;
+      const socket = getSocket();
+      if (socket) emitChannelJoin(socket, channel._id);
       void loadMessages(channel._id);
     }
   });
@@ -643,6 +665,7 @@
     requestSeq += 1;
     channelId = null;
     joinedChannel = null;
+    joinedSocket = null;
     document.removeEventListener('bridge:channel-selected', onChannelSelected);
     document.removeEventListener('bridge:socket-ready', onSocketReady);
     document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
