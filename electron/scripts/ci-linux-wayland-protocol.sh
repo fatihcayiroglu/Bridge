@@ -53,9 +53,9 @@ wayland_protocol_ready() {
   ' "${log}" 2>/dev/null
 }
 
-// Emit only fixed metric names and integer counts. Do not copy raw Wayland,
-// compositor, GTK, Electron or renderer messages into public CI transcripts.
-// The private capture is removed by the smoke script's EXIT trap.
+# Emit only fixed metric names and integer counts. Do not copy raw Wayland,
+# compositor, GTK, Electron or renderer messages into public CI transcripts.
+# The private capture is removed by the smoke script's EXIT trap.
 wayland_protocol_summary() {
   local protocol_log="${1:?protocol log required}"
   if [[ ! -r "${protocol_log}" ]]; then
