@@ -510,21 +510,25 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
     const intersections = new Map<Element, (near: boolean) => void>();
     const sizes = new Map<Element, (height: number) => void>();
     const disconnected = vi.fn();
+    const unobserved = vi.fn();
+    const constructed = vi.fn();
     vi.stubGlobal('IntersectionObserver', class {
-      constructor(private callback: IntersectionObserverCallback) {}
+      constructor(private callback: IntersectionObserverCallback) { constructed('intersection'); }
       observe(node: Element) {
         intersections.set(node, near => this.callback([{ target: node, isIntersecting: near } as IntersectionObserverEntry], this as unknown as IntersectionObserver));
       }
+      unobserve(node: Element) { unobserved(node); }
       disconnect() { disconnected(); }
     });
     vi.stubGlobal('ResizeObserver', class {
-      constructor(private callback: ResizeObserverCallback) {}
+      constructor(private callback: ResizeObserverCallback) { constructed('resize'); }
       observe(node: Element) {
         sizes.set(node, height => this.callback([{ target: node, borderBoxSize: [{ blockSize: height, inlineSize: 400 }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver));
       }
+      unobserve(node: Element) { unobserved(node); }
       disconnect() { disconnected(); }
     });
-    return { intersections, sizes, disconnected };
+    return { intersections, sizes, disconnected, unobserved, constructed };
   }
 
   it('keeps all large-history models but renders only nearby rows and preserves measured rich-row height', () => {
@@ -580,7 +584,7 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
     expect(oldRow.isConnected).toBe(false);
     expect(host.querySelector('[data-id="old-0"]')).toBeNull();
     expect(host.querySelector('[data-id="new-channel-message"]')).toBeInTheDocument();
-    expect(observers.disconnected).toHaveBeenCalledTimes(420);
+    expect(observers.unobserved).toHaveBeenCalledWith(oldRow);
   });
 
 
@@ -660,6 +664,28 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
     height = 1400;
     observers.sizes.get(list)!(height); flushSync();
     expect(host.scrollTop).toBe(50);
+  });
+
+
+  it('shares row observers and delegates interactions without retaining a destroyed scroll owner', async () => {
+    const observers = installWindowObservers();
+    messages = Array.from({ length: 500 }, (_, n) => makeMessage({ _id: `pool-${n}` }));
+    mountList();
+    expect(observers.constructed.mock.calls.filter(([kind]) => kind === 'intersection')).toHaveLength(1);
+    // One row-size observer, plus the independent bottom-intent list observer.
+    expect(observers.constructed.mock.calls.filter(([kind]) => kind === 'resize')).toHaveLength(2);
+    const row = host.querySelector<HTMLElement>('[data-message-viewport-id="pool-0"]')!;
+    row.dispatchEvent(new Event('bridge:message-reveal')); flushSync();
+    expect(row.querySelector('[data-id="pool-0"]')).toBeInTheDocument();
+    const late = observers.intersections.get(row)!;
+    await unmount(instance!); instance = null;
+    expect(observers.unobserved).toHaveBeenCalledTimes(1000);
+    expect(observers.disconnected).toHaveBeenCalledTimes(3);
+    const detachedMarkup = row.innerHTML;
+    late(true); row.dispatchEvent(new Event('bridge:message-reveal')); flushSync();
+    expect(row.isConnected).toBe(false);
+    expect(host.querySelector('[data-id="pool-0"]')).toBeNull();
+    expect(row.innerHTML).toBe(detachedMarkup);
   });
 
 });
