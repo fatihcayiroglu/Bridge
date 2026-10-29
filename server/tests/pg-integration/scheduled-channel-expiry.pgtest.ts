@@ -42,7 +42,7 @@ async function seed(): Promise<Fixture> {
     [f.channel, f.server, 'scheduled', Date.now()]);
   await ScheduledMessages.insert({ _id: f.schedule, channelId: f.channel, serverId: f.server,
     userId: f.user, username: `d2-${f.user}`, displayName: 'D2 test owner',
-    avatarColor: '#5865f2', content: `Scheduled ${f.schedule}`, sendAt: Date.now() - 1000 });
+    avatarColor: '#0e7490', content: `Scheduled ${f.schedule}`, sendAt: Date.now() - 1000 });
   return f;
 }
 

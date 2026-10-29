@@ -75,10 +75,15 @@ export function broadcastPersistedMessage(io: MessageBroadcaster | null | undefi
  * five creators that skipped this), then it is broadcast. Without `io` (jobs
  * before the socket server exists) the cache is still invalidated.
  */
-export async function publishPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): Promise<void> {
+export async function publishPersistedMessage(
+  io: MessageBroadcaster | null | undefined,
+  message: ChannelActivityMessage | null | undefined,
+  beforeBroadcast?: () => Promise<boolean>,
+): Promise<void> {
   const channelId = typeof message?.channelId === 'string' ? message.channelId : '';
   if (!channelId) return;
   await invalidateChannelMessages(channelId);
+  if (beforeBroadcast && await beforeBroadcast() !== true) return;
   broadcastPersistedMessage(io, message);
 }
 
