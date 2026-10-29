@@ -35,7 +35,8 @@ creation, not all mutations of channel-related data.
 | Socket bridge forwarding | `Messages.create` | Source/receiver repeated preflight; [bridge audit](P7_D2_BRIDGE_WRITE_AUDIT_20261029.md); atomic race OPEN |
 | Poll socket creation | `Messages.create` | Receiving-channel enforcement OPEN |
 | `routes/voicemsg.ts` | `Messages.create` plus voice/upload state | OPEN; check before side effects and final commit required |
-| `routes/bots.ts`, `lib/botInteractionReply.ts` | `Messages.create` | OPEN |
+| Incoming webhook in `routes/bots.ts` | `Messages.create` | Repeated preflight and final guarded publication; [audit](P7_D2_WEBHOOK_WRITE_AUDIT_20261029.md); atomic race OPEN |
+| `lib/botInteractionReply.ts` | `Messages.create` | OPEN |
 | `plugins/actions.ts` | `Messages.create` | OPEN |
 | `jobs/autoModeration.ts`, `lib/automodRuntime.ts` | `Messages.create` | System/log destination checks OPEN |
 | `routes/channelPerms/helpers.ts` | `Messages.create` | Audit/log destination checks OPEN |
