@@ -66,6 +66,10 @@ jobs:
       - name: Executor/report integrity contracts, zero skipped tests
         run: node --test scripts/perf-acceptance.test.js scripts/perf-packaged.test.mjs
       - name: Message rendering and keyboard component regression, zero skipped tests
+        env:
+          # jsdom/Vitest must use its test resolver, not production browser
+          # builtin externalization. Actual packaged build/runtime stays production.
+          NODE_ENV: test
         run: |
           (cd client && node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/message-renderer-deep-coverage.test.ts tests/message-renderer-dialogs-embeds.test.ts tests/message-list-deep-coverage.test.ts tests/message-action-sheet.test.ts tests/mount-shims-lifecycle.test.ts tests/Phase9Messaging.test.ts tests/renderer.test.ts --reporter=json --outputFile=../message-rendering-results.json)
           node scripts/require-no-skipped-tests.js message-rendering-results.json --label "message rendering regression"
