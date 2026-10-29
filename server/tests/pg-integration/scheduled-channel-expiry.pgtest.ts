@@ -2,6 +2,11 @@
  * establish an expiry configuration API, authenticated E2E or atomic writes. */
 import { randomUUID } from 'crypto';
 import type { Server } from 'socket.io';
+import express from 'express';
+import request from 'supertest';
+import jwt from 'jsonwebtoken';
+import fs from 'fs';
+import { uploadRoot } from '../../lib/runtimePaths';
 
 if (!process.env.PG_TEST_URL) throw new Error('PG_TEST_URL is required');
 process.env.REDIS_URL = process.env.REDIS_TEST_URL || process.env.REDIS_URL;
@@ -11,6 +16,7 @@ const db = require('../../db/loader').default as typeof import('../../db/postgre
 const { Messages, ScheduledMessages } = require('../../db/repositories') as typeof import('../../db/repositories');
 const adapter = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
 const contentPolicy = require('../../lib/messageContentPolicy') as typeof import('../../lib/messageContentPolicy');
+const voiceRouter = require('../../routes/voicemsg');
 const { startScheduledJob, stopScheduledJob, _dispatchDueForTest: dispatch } =
   require('../../jobs/scheduledMessages') as typeof import('../../jobs/scheduledMessages');
 const q = (sql: string, values: unknown[] = []) => db._pool.query(sql, values);
@@ -66,6 +72,7 @@ afterEach(async () => {
   for (const f of fixtures.splice(0)) {
     await q('DELETE FROM channel_expiry_tombstones WHERE "channelId"=$1', [f.channel]);
     await q('DELETE FROM scheduled_msgs WHERE _id=$1', [f.schedule]);
+    await q('DELETE FROM voice_messages WHERE "channelId"=$1', [f.channel]);
     await q('DELETE FROM messages WHERE "channelId"=$1', [f.channel]);
     await q('DELETE FROM channels WHERE _id=$1', [f.channel]);
     await q('DELETE FROM members WHERE "serverId"=$1', [f.server]);
@@ -101,6 +108,23 @@ describe('scheduled channel expiry against real PostgreSQL and Redis', () => {
     await expire(f);
     await dispatch();
     await expectRefused(f);
+  });
+
+  it('actual authenticated voice HTTP route refuses expiry before file or DB writes', async () => {
+    const f = await seed();
+    await expire(f);
+    const app = express();
+    app.use('/api/voice-messages', voiceRouter);
+    const token = jwt.sign({ id: f.user, v: 0 }, process.env.JWT_SECRET!, { expiresIn: '1m' });
+    const files = () => fs.readdirSync(uploadRoot()).filter(name => name.startsWith('vm_')).sort();
+    const before = files();
+    const response = await request(app).post('/api/voice-messages').set('Authorization', `Bearer ${token}`)
+      .field('serverId', f.server).field('channelId', f.channel).field('duration', '0')
+      .attach('audio', Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), { filename: 'fixture.webm', contentType: 'audio/webm' });
+    expect(response.status).toBe(404);
+    expect((await q('SELECT _id FROM voice_messages WHERE "channelId"=$1', [f.channel])).rows).toHaveLength(0);
+    expect((await q('SELECT _id FROM messages WHERE "channelId"=$1', [f.channel])).rows).toHaveLength(0);
+    expect(files()).toEqual(before);
   });
 
   it('tombstone is terminal even if the channel row still appears permanent', async () => {
