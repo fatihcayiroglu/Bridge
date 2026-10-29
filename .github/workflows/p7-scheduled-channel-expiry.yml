@@ -67,7 +67,7 @@ jobs:
           REDIS_URL: ''
           REDIS_TEST_URL: ''
         run: |
-          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts tests/channel-activity.test.ts tests/messages-send.test.ts tests/socket-channel-join-visibility.test.ts tests/socket-channel-join-expiry.test.ts tests/voicemsg.test.ts tests/voicemsg-failure-branches.test.ts tests/voicemsg-transcription-provider.test.ts --json --outputFile=d2-unit-results.json
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts tests/channel-activity.test.ts tests/messages-send.test.ts tests/webhook-channel-expiry.test.ts tests/bots.test.ts tests/socket-channel-join-visibility.test.ts tests/socket-channel-join-expiry.test.ts tests/voicemsg.test.ts tests/voicemsg-failure-branches.test.ts tests/voicemsg-transcription-provider.test.ts --json --outputFile=d2-unit-results.json
           node ../scripts/require-no-skipped-tests.js d2-unit-results.json --label "D2 scheduling unit regression"
           node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/threads.test.ts tests/threads-forum-authorization-branches.test.ts tests/thread-reply-send-policy.test.ts tests/thread-socket.test.ts --json --outputFile=d2-thread-unit-results.json
           node ../scripts/require-no-skipped-tests.js d2-thread-unit-results.json --label "D2 thread reply regression"
@@ -97,11 +97,11 @@ jobs:
         run: |
           node node_modules/ts-node/dist/bin.js --project tsconfig.json db/postgres/index.ts
           node node_modules/ts-node/dist/bin.js --project tsconfig.json db/migrate-postgres.ts up
-      - name: Actual scheduled dispatch and bridge integration, zero skipped tests
+      - name: Actual scheduled dispatch, bridge and webhook integration, zero skipped tests
         working-directory: server
         run: |
-          node node_modules/jest/bin/jest.js --config jest.pg.config.js --runInBand --runTestsByPath tests/pg-integration/scheduled-channel-expiry.pgtest.ts tests/pg-integration/bridge-channel-expiry.pgtest.ts --json --outputFile=d2-pg16-results.json
-          node ../scripts/require-no-skipped-tests.js d2-pg16-results.json --label "D2 PostgreSQL 16 scheduled dispatch and bridges"
+          node node_modules/jest/bin/jest.js --config jest.pg.config.js --runInBand --runTestsByPath tests/pg-integration/scheduled-channel-expiry.pgtest.ts tests/pg-integration/bridge-channel-expiry.pgtest.ts tests/pg-integration/webhook-channel-expiry.pgtest.ts --json --outputFile=d2-pg16-results.json
+          node ../scripts/require-no-skipped-tests.js d2-pg16-results.json --label "D2 PostgreSQL 16 scheduled dispatch, bridges and webhooks"
       - name: Preserve first-attempt test evidence
         if: always()
         uses: actions/upload-artifact@v4
