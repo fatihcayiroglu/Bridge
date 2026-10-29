@@ -45,6 +45,7 @@
   let firstUnreadMessageId = $state<string | null>(null);
   let unreadJumpBusy = $state(false);
 
+  let layoutObserver: ResizeObserver | null = null;
   let scroller: HTMLElement | null = null;   // #messages-area
   let stickToBottom = true;                   // kullanıcı dipteyse yeni mesajda kaydır
   let loadingOlder = false;
@@ -324,6 +325,14 @@
   onMount(() => {
     scroller = document.getElementById('messages-area');
     scroller?.addEventListener('scroll', onScroll, { passive: true });
+    // Virtual rows and late-loading media can change geometry after model
+    // synchronization. Preserve bottom intent through that actual resize;
+    // manual upward scrolling must continue to win.
+    const list = scroller?.querySelector('.msg-list');
+    if (list && typeof ResizeObserver !== 'undefined') {
+      layoutObserver = new ResizeObserver(() => { if (scroller && stickToBottom) scrollToBottom(); });
+      layoutObserver.observe(list);
+    }
     document.addEventListener('bridge:messages-updated', onMessagesUpdated);
     document.addEventListener('bridge:members-updated', syncAlone);
     document.addEventListener('bridge:channel-selected', onChannelSelected);
@@ -387,6 +396,7 @@
   }
 
   onDestroy(() => {
+    layoutObserver?.disconnect(); layoutObserver = null;
     scroller?.removeEventListener('scroll', onScroll);
     // Relinquish the DOM owner before any pending page promise/RAF settles.
     // Otherwise an unmounted panel can still move a recycled shell scroller.

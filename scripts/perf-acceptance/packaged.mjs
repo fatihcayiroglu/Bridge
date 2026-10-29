@@ -216,7 +216,7 @@ export async function runPackaged(config) {
       await application.evaluate(({ app }) => app.getAppMetrics());
       const historyCodes = new Set(['HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID',
         'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING',
-        'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED','HISTORY_DOM_WINDOW_UNBOUNDED','UI_IDENTITY','HISTORY_DOM_WINDOW_UNBOUNDED']);
+        'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED','HISTORY_DOM_WINDOW_UNBOUNDED','UI_IDENTITY']);
       const work = activity ? activity(end).then(value => ({ value }), error => ({ failed: true,
         code: historyCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'HISTORY_DRIVER_TIMEOUT' : 'HISTORY_ACTIVITY_FAILED' })) : Promise.resolve({});
       while (performance.now() < end) {
@@ -273,11 +273,16 @@ export async function runPackaged(config) {
           await locator.waitFor({ state: 'visible' });
         }
         await locator.scrollIntoViewIfNeeded();
-        requireFact(await locator.evaluate(el => {
+        const geometry = await locator.evaluate(el => {
           const r = el.getBoundingClientRect();
-          const view = document.getElementById('messages-area').getBoundingClientRect();
-          return r.width > 0 && r.height > 0 && r.bottom > view.top && r.top < view.bottom;
-        }), 'HISTORY_ENDPOINT_NOT_IN_VIEWPORT');
+          const scroller = document.getElementById('messages-area');
+          const view = scroller.getBoundingClientRect();
+          return { width: r.width, height: r.height, top: r.top, bottom: r.bottom,
+            viewportTop: view.top, viewportBottom: view.bottom, scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight };
+        });
+        historyProgress.lastViewportCheck = { endpoint: id.endsWith('00001') ? 'oldest' : 'newest', ...geometry };
+        requireFact(geometry.width > 0 && geometry.height > 0 && geometry.bottom > geometry.viewportTop && geometry.top < geometry.viewportBottom,
+          'HISTORY_ENDPOINT_NOT_IN_VIEWPORT');
       };
       const seen = new Set();
       const pending = new Set();

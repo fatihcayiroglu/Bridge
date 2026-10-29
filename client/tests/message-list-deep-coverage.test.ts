@@ -639,4 +639,27 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
     expect(host.querySelectorAll('article.msg')).toHaveLength(210);
   });
 
+
+  it('keeps bottom intent through delayed row geometry but respects manual upward scrolling', () => {
+    const observers = installWindowObservers();
+    messages = [makeMessage()];
+    mountList();
+    let height = 900;
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 600 },
+    });
+    const list = host.querySelector('.msg-list')!;
+    host.scrollTop = 300;
+    host.dispatchEvent(new Event('scroll'));
+    height = 1200;
+    observers.sizes.get(list)!(height); flushSync();
+    expect(host.scrollTop).toBe(1200);
+    host.scrollTop = 50;
+    host.dispatchEvent(new Event('scroll'));
+    height = 1400;
+    observers.sizes.get(list)!(height); flushSync();
+    expect(host.scrollTop).toBe(50);
+  });
+
 });
