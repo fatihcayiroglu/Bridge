@@ -46,7 +46,7 @@ import { randomUUID } from 'crypto';
 import db from '../db/loader';
 import router from '../routes/voicemsg';
 import * as aiPolicy from '../lib/aiServerPolicy';
-import { Channels, Messages } from '../db/repositories';
+import { Channels, Messages, VoiceMessages } from '../db/repositories';
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-vm-tx-'));
 const WEBM = path.join(T, 'a.webm');
@@ -400,6 +400,63 @@ describe('committed voice-message response is not a storage rollback', () => {
     const writtenPath = store.uploadFile.mock.calls[0]?.[0] as string | undefined;
     expect(writtenPath).toBeTruthy();
     expect(fs.existsSync(writtenPath as string)).toBe(false); // Remote-only local copy.
+  });
+
+  it('preserves live bytes when chat insert commits but its acknowledgement is lost', async () => {
+    const original = Messages.create.bind(Messages);
+    jest.spyOn(Messages, 'create').mockImplementationOnce(async (...args) => {
+      await original(...args);
+      throw new Error('simulated lost chat insert acknowledgement');
+    });
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('simulated lost chat insert acknowledgement');
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(1);
+    expect(await db.messages.find({ channelId: 'c1', type: 'voice_message' })).toHaveLength(1);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'voicemsg.chat_commit_confirmed_after_error' }), expect.any(String));
+  });
+
+  it('preserves bytes when the chat commit cannot be verified after a write error', async () => {
+    jest.spyOn(Messages, 'create').mockRejectedValueOnce(new Error('simulated ambiguous chat write'));
+    jest.spyOn(Messages, 'findById').mockRejectedValueOnce(new Error('read database unavailable'));
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('simulated ambiguous chat write');
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(1);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'voicemsg.chat_commit_unverifiable' }), expect.any(String));
+  });
+
+  it('rolls back a confirmed voice row when voice insert commits before a lost acknowledgement', async () => {
+    const original = VoiceMessages.insert.bind(VoiceMessages);
+    jest.spyOn(VoiceMessages, 'insert').mockImplementationOnce(async (...args) => {
+      await original(...args);
+      throw new Error('simulated lost voice insert acknowledgement');
+    });
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('simulated lost voice insert acknowledgement');
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(0);
+    expect(await db.messages.find({ channelId: 'c1', type: 'voice_message' })).toHaveLength(0);
+    expect(store.deleteFile).toHaveBeenCalledTimes(1);
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
+  it('retains bytes if the voice row cannot be read after an ambiguous insert failure', async () => {
+    jest.spyOn(VoiceMessages, 'insert').mockRejectedValueOnce(new Error('simulated ambiguous voice write'));
+    jest.spyOn(VoiceMessages, 'findOne').mockRejectedValueOnce(new Error('read database unavailable'));
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('simulated ambiguous voice write');
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'voicemsg.voice_commit_unverifiable' }), expect.any(String));
   });
 
   it('still rolls back uncommitted voice bytes if the chat-message insert fails', async () => {
