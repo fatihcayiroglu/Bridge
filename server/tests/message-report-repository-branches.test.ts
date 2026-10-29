@@ -27,6 +27,7 @@ const messageReports = {
 jest.mock('../db/loader', () => ({ __esModule: true, default: { messageReports } }));
 
 import MessageReports from '../db/repositories/MessageReportRepository';
+import { captureReportEvidence } from '../lib/reportEvidence';
 
 const SRV = 'srv-1';
 const REPORT = 'rep-1';
@@ -34,6 +35,7 @@ const REPORT = 'rep-1';
 const input = {
   serverId: SRV, channelId: 'ch-1', messageId: 'm-1', reporterId: 'u-1',
   reason: 'spam' as const, detail: 'çok tekrar',
+  evidence: captureReportEvidence({ content: 'rapor edilen', contentFormat: 1, userId: 'u-2', createdAt: 5 }, 10),
 };
 
 function chain(rows: Record<string, unknown>[]) {

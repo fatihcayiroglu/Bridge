@@ -21,6 +21,7 @@ import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 // Path: server/routes/channels/ → server/socket/handlers/voice.ts
 import { getVoiceRoomPeers }         from '../../socket/handlers/voice';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { channelLiveForMedia } from '../../lib/channelContentAvailability';
 
 const router = Router({ mergeParams: true });
 
@@ -77,7 +78,9 @@ router.post(
         return void res.status(400).json({ error: 'selfMute veya selfDeaf gerekli.' });
 
       const channel = await Channels.findById(channelId);
-      if (!channel) return void res.status(404).json({ error: 'Kanal bulunamadı.' });
+      // An expired or tombstoned channel answers like a missing one (P7 D2).
+      if (!channel || !await channelLiveForMedia(channelId, String(channel.serverId ?? '')))
+        return void res.status(404).json({ error: 'Kanal bulunamadı.' });
 
       const membership = await Members.findOne(userId, channel.serverId);
       if (!membership) return void res.status(403).json({ error: 'Yetkisiz.' });
@@ -148,7 +151,9 @@ router.get(
       const { id: userId } = castAuthed(req).user;
 
       const channel = await Channels.findById(channelId);
-      if (!channel) return void res.status(404).json({ error: 'Kanal bulunamadı.' });
+      // An expired or tombstoned channel answers like a missing one (P7 D2).
+      if (!channel || !await channelLiveForMedia(channelId, String(channel.serverId ?? '')))
+        return void res.status(404).json({ error: 'Kanal bulunamadı.' });
 
       const membership = await Members.findOne(userId, channel.serverId);
       if (!membership) return void res.status(403).json({ error: 'Yetkisiz.' });

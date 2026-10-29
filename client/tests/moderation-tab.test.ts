@@ -541,3 +541,116 @@ describe('erişilebilirlik ve boş durumlar', () => {
     release(ok());
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// P7 B5 (#336) — THE QUEUE SHOWS WHAT WAS REPORTED
+// ════════════════════════════════════════════════════════════════════════════
+// The server sends the snapshot it took when the report was filed (`evidence`)
+// and how the message differs now (`currentState`). The queue shows the snapshot
+// first, so the reported author cannot change what the moderator reviews.
+describe('rapor kuyruğu — raporlanan içerik', () => {
+  const PERM_MANAGE_MESSAGES = 1 << 9;
+  const reportRow = (over: Record<string, unknown> = {}) => ({
+    id: 'r1', messageId: 'm1', channelId: 'c1', reason: 'harassment', createdAt: 1,
+    channel: { _id: 'c1', name: 'genel' },
+    message: { displayName: 'Abuser', preview: 'totally benign now' },
+    evidence: { state: 'captured', text: 'abusive original text', truncated: false, authorName: 'Abuser', messageType: 'normal' },
+    currentState: 'edited',
+    reporter: { _id: 'u2', displayName: 'Reporter' },
+    ...over,
+  });
+  const withReports = (reports: unknown[]) => vi.fn(async (url: string) =>
+    String(url).includes('/reports') ? ok({ reports }) : ok([]));
+  const content = () => document.querySelector('.mod-report-content')?.textContent ?? '';
+  const stateLine = () => document.querySelector('.mod-report-state')?.textContent ?? '';
+  const jump = () => byText(t('pin_jump'));
+
+  beforeEach(() => { myPerms = PERM_MANAGE_MESSAGES; });
+
+  it('an edited message: the reported text first, the new text below it', async () => {
+    apiMock = withReports([reportRow()]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    expect(content()).not.toContain('totally benign now');
+    expect(stateLine()).toBe(t('moderation_report_edited_since'));
+    expect(document.querySelector('.mod-report-now')?.textContent)
+      .toBe(t('moderation_report_now', undefined, { text: 'totally benign now' }));
+    expect(jump()?.disabled).toBe(false);
+  });
+
+  it('a soft-deleted message shows the report-time text and cannot jump into hidden history', async () => {
+    apiMock = withReports([reportRow({ currentState: 'deleted', message: { displayName: 'Abuser', preview: '[Mesaj silindi]' } })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    expect(content()).not.toContain('[Mesaj silindi]');
+    expect(stateLine()).toBe(t('moderation_report_deleted_since'));
+    expect(document.querySelector('.mod-report-now')).toBeNull();
+    expect(jump()?.disabled).toBe(true);
+  });
+
+  it('a removed message: the snapshot, and no jump to a message that is gone', async () => {
+    apiMock = withReports([reportRow({ currentState: 'removed', message: { displayName: 'Abuser', preview: '' } })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    expect(stateLine()).toBe(t('moderation_report_removed'));
+    expect(jump()?.disabled).toBe(true);
+  });
+
+  it('a report whose channel expired or was deleted: the snapshot, a "channel gone" label, no jump (P7 D2)', async () => {
+    apiMock = withReports([reportRow({
+      channel: { _id: 'c1', name: null, available: false },
+      currentState: 'removed', message: { displayName: 'Abuser', preview: '' },
+    })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    const meta = document.querySelector('.mod-report-meta')?.textContent ?? '';
+    expect(meta).toContain(t('moderation_report_channel_gone'));
+    expect(meta).not.toContain('#c1');
+    expect(jump()?.disabled).toBe(true);
+  });
+
+  it('an unchanged message shows no state line', async () => {
+    apiMock = withReports([reportRow({ currentState: 'unchanged', message: { displayName: 'Abuser', preview: 'abusive original text' } })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    expect(document.querySelector('.mod-report-state')).toBeNull();
+    expect(jump()?.disabled).toBe(false);
+  });
+
+  it('a report filed before snapshots shows the current message and says so', async () => {
+    apiMock = withReports([reportRow({ evidence: { state: 'not_captured' }, currentState: 'unknown' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('totally benign now'));
+    expect(stateLine()).toBe(t('moderation_report_no_snapshot'));
+  });
+
+  it('an encrypted message says the server cannot read it', async () => {
+    apiMock = withReports([reportRow({ evidence: { state: 'captured', text: '', messageType: 'e2ee', authorName: 'Abuser' }, currentState: 'unchanged' })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain(t('moderation_report_encrypted')));
+  });
+
+  it('an attachment-only message names the file; a cut text says it was shortened', async () => {
+    apiMock = withReports([
+      reportRow({ evidence: { state: 'captured', text: '', messageType: 'file', fileName: 'proof.png', authorName: 'Abuser' }, currentState: 'unchanged' }),
+      reportRow({ id: 'r2', messageId: 'm2', evidence: { state: 'captured', text: 'long text', truncated: true, authorName: 'Abuser' }, currentState: 'unchanged' }),
+    ]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelectorAll('.mod-report-content')).toHaveLength(2));
+    const [file, cut] = [...document.querySelectorAll('.mod-report-content')].map(n => n.textContent ?? '');
+    expect(file).toContain(t('moderation_report_attachment', undefined, { name: 'proof.png' }));
+    expect(cut).toContain(t('moderation_report_truncated'));
+  });
+
+  it('the snapshot author name wins over the current one; a cleared snapshot says so', async () => {
+    apiMock = withReports([
+      reportRow({ message: { displayName: 'Renamed Later', preview: 'x' }, currentState: 'unchanged' }),
+      reportRow({ id: 'r2', messageId: 'm2', evidence: { state: 'scrubbed' }, currentState: 'unknown' }),
+    ]);
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelectorAll('.mod-report-content')).toHaveLength(2));
+    const [named, cleared] = [...document.querySelectorAll('.mod-report-content')].map(n => n.textContent ?? '');
+    expect(named).toContain('Abuser:');
+    expect(cleared).toContain(t('moderation_report_evidence_cleared'));
+  });
+});

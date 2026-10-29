@@ -53,6 +53,21 @@ describe('versioned migration chain (P5 SH-01)', () => {
     expect(fs.existsSync(path.join(migrationsDir(), files[0]!))).toBe(true);
   });
 
+  it('gives every migration a unique three-digit prefix with a down script (no parallel-branch collisions)', () => {
+    // Two branches once both added "085_*". The runner keys on full file names,
+    // so both would apply, but numbering, rollback order and review all assume
+    // one migration per number. A collision must be renumbered before merge.
+    const files = listMigrationFiles();
+    const prefixes = files.map(f => /^(\d{3})_[a-z0-9_]+\.sql$/.exec(f)?.[1]);
+    expect(prefixes.every(Boolean)).toBe(true);
+    const seen = new Map<string, string[]>();
+    files.forEach((f, i) => seen.set(prefixes[i]!, [...(seen.get(prefixes[i]!) ?? []), f]));
+    expect([...seen.values()].filter(names => names.length > 1)).toEqual([]);
+    for (const f of files) {
+      expect(fs.existsSync(path.join(migrationsDir(), 'rollback', f.replace(/\.sql$/, '.down.sql')))).toBe(true);
+    }
+  });
+
   it('applies only pending files, in order, each in its own transaction with durable metadata', async () => {
     const dir = tmpChain({ '002_b.sql': 'SQL B', '001_a.sql': 'SQL A', '003_c.sql': 'SQL C', 'README.md': 'x' });
     const db = fakeDb(['001_a.sql']);

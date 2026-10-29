@@ -13,7 +13,12 @@
 // This module is the decision, not the effect: it maps an event to what the channel list and
 // server rail must do, so the rules are testable without a DOM or a socket.
 
-export type AccessEvent = 'membership:revoked' | 'channel:access-revoked' | 'permissions:updated';
+// P7 D2: `channel:expired` carries only the serverId (a private channel's id is not
+// broadcast to members who cannot see it); the reload drops the expired channel.
+// `channels:changed` (server id only) follows any channel or category create/update/delete by
+// another member or device; the list reloads through the permission-filtered endpoint.
+export type AccessEvent = 'membership:revoked' | 'channel:access-revoked' | 'permissions:updated' | 'channel:expired'
+  | 'channels:changed';
 
 export interface AccessContext {
   /** Server the user is looking at right now (null on home / DMs). */
@@ -59,8 +64,16 @@ export function decideAccessReaction(event: AccessEvent, payload: unknown, conte
     return { reloadServers: false, reloadChannelsOf: serverId, notice: wasOpen ? 'channel-access-lost' : null };
   }
 
-  // permissions:updated — channels may have appeared or disappeared.
+  // permissions:updated / channel:expired / channels:changed — channels may have appeared or disappeared.
   return { reloadServers: false, reloadChannelsOf: serverId, notice: null };
+}
+
+/**
+ * After the reload a `channel:expired` event triggered: was the channel the user had open
+ * the one that went away? Only then is the user told why their view changed.
+ */
+export function openChannelExpired(openBefore: string | null, channelIdsAfter: readonly string[]): boolean {
+  return openBefore !== null && openBefore !== '' && !channelIdsAfter.includes(openBefore);
 }
 
 /**
@@ -71,4 +84,43 @@ export function decideAccessReaction(event: AccessEvent, payload: unknown, conte
 export function activeChannelSurvives(activeChannelId: string | null, channelIds: readonly string[]): boolean {
   if (!activeChannelId) return true;
   return channelIds.includes(activeChannelId);
+}
+
+/**
+ * P7 D2: an Android/iOS WebView suspended in the background, or a client that
+ * was offline, can miss `channel:expired` (and access changes) entirely; the
+ * socket may even stay "connected". After a foreground resume or a socket
+ * reconnect the current server's list is therefore fetched again, which also
+ * drops a vanished open channel and purges its local copies. Native and
+ * browser lifecycle events often fire together; near-duplicates coalesce.
+ */
+export const RESUME_RELOAD_COALESCE_MS = 2_000;
+/**
+ * A browser tab that was merely hidden keeps its socket; only a hidden period
+ * long enough for a mobile WebView to be suspended triggers a refetch on
+ * `visibilitychange`. Native app resume, bfcache restore and socket reconnect
+ * always refetch.
+ */
+export const RESUME_HIDDEN_MIN_MS = 30_000;
+
+export function resumeReloadDue(serverId: string | null, lastReloadAt: number, now: number): boolean {
+  if (!serverId) return false;
+  return lastReloadAt === 0 || now - lastReloadAt >= RESUME_RELOAD_COALESCE_MS;
+}
+
+/** Trailing window that folds a burst of `channels:changed` events into one list refetch. */
+export const CHANNELS_CHANGED_COALESCE_MS = 150;
+/**
+ * Every member of a server receives the same event at the same moment, and the mutation just
+ * invalidated the server's 30 s list cache. A random extra delay of up to this much spreads the
+ * refetches, so the first one repopulates the cache and the rest mostly hit it instead of all
+ * members querying PostgreSQL in the same instant.
+ */
+export const CHANNELS_CHANGED_JITTER_MS = 1850;
+
+/** Delay before the coalesced refetch; `random` is injectable for tests. */
+export function channelsChangedDelay(random: () => number = Math.random): number {
+  const r = random();
+  const unit = Number.isFinite(r) ? Math.min(Math.max(r, 0), 1) : 0;
+  return CHANNELS_CHANGED_COALESCE_MS + Math.floor(unit * CHANNELS_CHANGED_JITTER_MS);
 }

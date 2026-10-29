@@ -140,6 +140,7 @@ import { BridgeRegistry }            from './core/bridge-registry.ts';
 import './core/empty-server-start-svelte.ts';
 
 import { createLogger } from './core/logger.ts';
+import { sweepErasedLocalAccounts } from './core/local-first/account-erasure.ts';
 // Faz 12 sonrası — I18N GERÇEKTEN BAĞLANDI.
 // `index.html` 11 düğümde `data-i18n` taşıyor ve 10 dil için tam çeviri
 // tabloları mevcuttu, ama bu nitelikleri okuyan tek satır bile yoktu: dil
@@ -308,6 +309,9 @@ export const bootReady: Promise<void> = errorBoundary.wrap(async () => {
   // önce uygulanır ki kullanıcı yanlış dilde bir kare görmesin.
   initI18nDom();
   BridgeState.initState();
+  // P7: finish any local-first erasure of a deleted account that a crash or
+  // reload interrupted, and drop records a late write landed after it.
+  void sweepErasedLocalAccounts();
   // Sprint 82: Yeni özellikler
   // Faz 12 — DÜRÜSTLÜK DÜZELTMESİ: burada `initA11yWcagAA()` çağrılıyor ve
   // yorumu "WCAG 2.1 AA — skip-link, landmark, reduced-motion" vaat ediyordu.

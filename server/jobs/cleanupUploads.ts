@@ -2,9 +2,10 @@
 // dosyalarını siler.
 //
 // Sunucu başladıktan 5 dakika sonra bir kez çalışır, ardından her 24 saatte bir
-// tekrar eder.  Yarış koşulunu önlemek için yalnızca MAX_FILE_AGE_MS'den eski
-// dosyalar dikkate alınır — yeni yüklenen ama henüz mesaja bağlanmamış bir dosya
-// bu süre geçmeden silinmez.
+// tekrar eder. Yalnızca MAX_FILE_AGE_MS'den eski dosyalar adaydır; yeni
+// yüklenen ama henüz mesaja bağlanmamış dosyalar bu süre boyunca korunur.
+// Yaş ve ilk referans snapshot'ı silme yetkisi değildir: migration 091'in
+// kalıcı rezervasyonu son referans kontrolünü yazarlara karşı kilitler.
 //
 // CDN_PROVIDER desteği (Sprint 53):
 //   CDN_PROVIDER=local   → disk (varsayılan)
@@ -26,9 +27,11 @@ import logger from '../lib/logger';
 import { getPrivateStorageAdapter, getPrivateStorageProvider } from '../lib/storageAdapter';
 import { Messages, Dms } from '../db/repositories';
 import db from '../db/loader';
+import { reserveUploadReleaseKeys } from '../lib/uploadReleaseFence';
 
 const MAX_FILE_AGE_MS  = 10 * 60 * 1000;       // 10 dk — upload→DB insert yarış penceresi
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;  // 24 saat
+const RELEASE_BATCH_SIZE = 50;
 
 // ════════════════════════════════════════════════════════════════════════════
 // YÜKLEMELERE REFERANS VEREN TÜM SÜTUNLAR
@@ -223,6 +226,7 @@ export async function runCleanup(): Promise<void> {
   const now     = Date.now();
   let   deleted = 0;
   let   skipped = 0; // lastModifiedMs bilinmeyen uzak dosyalar
+  const candidates: typeof objects = [];
 
   for (const obj of objects) {
     // ── KAPSAM KISITI: iş YALNIZCA kendi alanını temizler ────────────────────
@@ -249,13 +253,33 @@ export async function runCleanup(): Promise<void> {
       continue;
     }
 
+    candidates.push(obj);
+  }
+
+  for (let offset = 0; offset < candidates.length; offset += RELEASE_BATCH_SIZE) {
+    const batch = candidates.slice(offset, offset + RELEASE_BATCH_SIZE);
+    let referencedNow: Set<string>;
     try {
-      await adapter.deleteFile(obj.key);
-      await removeUploadOwnership(obj.key);
-      deleted++;
+      // The earlier snapshot is only a prefilter. Migration 091's durable row
+      // locks serialize this final reference scan with every attachment writer.
+      // COMMIT precedes storage I/O; a crash or failed delete keeps the key
+      // reserved, so stale sends cannot resurrect a reference to missing bytes.
+      referencedNow = await reserveUploadReleaseKeys(db._pool, batch.map(obj => canonicalOwnershipKey(obj.key)));
     } catch (err) {
-      // Yarış koşulunda dosya zaten silinmiş olabilir — hata değil
-      logger.warn({ err, key: obj.key }, '[cleanup] Dosya silinemedi — atlandı.');
+      logger.error({ err, provider, event: 'cleanup.release_reservation_failed' },
+        '[cleanup] Upload deletion could not be reserved; no further objects deleted.');
+      return;
+    }
+    for (const obj of batch) {
+      if (referencedNow.has(canonicalOwnershipKey(obj.key))) continue;
+      try {
+        await adapter.deleteFile(obj.key);
+        await removeUploadOwnership(obj.key);
+        deleted++;
+      } catch (err) {
+        // The durable reservation survives; a subsequent job can retry safely.
+        logger.warn({ err, key: obj.key }, '[cleanup] Dosya silinemedi — atlandı.');
+      }
     }
   }
 

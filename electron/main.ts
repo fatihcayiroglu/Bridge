@@ -300,9 +300,20 @@ function openConnectWindow(): void {
   connectWindow.setMenu(null);
   connectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   connectWindow.webContents.on('will-navigate', (event) => event.preventDefault());
-  void connectWindow.loadFile(connectPagePath());
-  connectWindow.once('ready-to-show', () => connectWindow?.show());
-  connectWindow.on('closed', () => { connectWindow = null; });
+  const window = connectWindow;
+  let revealed = false;
+  const reveal = (): void => {
+    if (revealed || window.isDestroyed() || connectWindow !== window) return;
+    revealed = true;
+    window.show();
+  };
+  // A hidden Wayland page can finish loading without producing first paint.
+  // Either successful load or first paint may reveal this exact window once.
+  // Register both before navigation so a fast local file load cannot be missed.
+  window.once('ready-to-show', reveal);
+  window.webContents.once('did-finish-load', reveal);
+  void window.loadFile(connectPagePath());
+  window.on('closed', () => { if (connectWindow === window) connectWindow = null; });
 }
 
 // ─── MAIN WINDOW ──────────────────────────────────────────────
@@ -342,6 +353,7 @@ function installSessionPolicies(): void {
 }
 
 function createMainWindow(): void {
+  const startInBackground = process.argv.includes(BACKGROUND_ARG);
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -360,10 +372,11 @@ function createMainWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
     },
     icon: assetPath('icon.png'),
-    show: false,
+    // A normal foreground launch must present its native shell even if the
+    // remote page never reaches its first paint. Keep explicit tray launch hidden.
+    show: !startInBackground,
   });
 
-  const startInBackground = process.argv.includes(BACKGROUND_ARG);
   mainWindow.once('ready-to-show', () => { if (!startInBackground) mainWindow?.show(); });
   mainWindow.webContents.on('did-finish-load', () => {
     appPageLoaded = isSameAppOrigin(mainWindow?.webContents.getURL() ?? '');

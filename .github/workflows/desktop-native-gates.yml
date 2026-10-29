@@ -47,6 +47,12 @@ jobs:
         run: cd electron && npm ci --no-audit --no-fund
       - name: Linux Electron contract suite (no unconditional skip)
         run: cd electron && npm test -- --runInBand --ci
+      - name: Native Wayland same-surface protocol controls (4 valid / 13 invalid / 2 privacy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n electron/scripts/ci-linux-wayland-protocol.sh electron/scripts/ci-linux-wayland-protocol.test.sh electron/scripts/ci-linux-wayland-smoke.sh
+          bash electron/scripts/ci-linux-wayland-protocol.test.sh
       - name: Compile packaged Electron source
         run: cd electron && npm run compile
       - name: Build Linux x64 AppImage and DEB without publishing
@@ -101,8 +107,21 @@ jobs:
       # The script checks an actual xdg-toplevel protocol request, not just PID.
       - name: Install Weston Wayland compositor
         run: sudo apt-get install -y --no-install-recommends weston
-      - name: Installed Linux native Wayland surface smoke (headless Weston)
-        run: dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+      # Each run owns a fresh Weston socket, user profile and process.
+      # This is one strict six-session acceptance gate, NOT rerunning failures.
+      # Do not replace the real native xdg-toplevel/configure assertions.
+      - name: Installed Linux native Wayland surface smoke (6 independent sessions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          completed=0
+          for session in 1 2 3 4 5 6; do
+            echo "Required native Wayland first-run session ${session}/6"
+            dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+            completed=$((completed + 1))
+          done
+          test "${completed}" -eq 6
+          echo "PASS: six independent installed-DEB native Wayland sessions, zero ignored failures"
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

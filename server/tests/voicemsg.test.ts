@@ -36,6 +36,7 @@ import { authMiddleware } from '../middleware/auth';
 import voicemsgRouter from '../routes/voicemsg';
 import { getPrivateStorageAdapter } from '../lib/storageAdapter';
 import { PERMS } from '../lib/permissions';
+import * as writeGuard from '../lib/channelWriteGuard';
 
 import { uploadRoot } from '../lib/runtimePaths';
 function buildApp() {
@@ -57,6 +58,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
+  jest.restoreAllMocks();
   const mockStore = getPrivateStorageAdapter() as unknown as { uploadFile: jest.Mock };
   for (const [localPath] of mockStore.uploadFile.mock?.calls ?? []) {
     try {
@@ -149,6 +151,55 @@ describe('Voice Messages Routes', () => {
   });
 
   describe('POST /api/voice-messages — upload', () => {
+    const audioRequest = () => request(app).post('/api/voice-messages')
+      .set('Authorization', `Bearer ${ownerToken}`).field('channelId', channelId)
+      .field('serverId', serverId).field('duration', '0')
+      .attach('audio', FAKE_WEBM, { contentType: 'audio/webm' });
+
+    it('expired channel refuses before private storage or DB writes', async () => {
+      await db.channels.update({ _id: channelId }, { $set: { expiresAt: Date.now() - 1, expiryVersion: 1 } });
+      expect((await audioRequest()).status).toBe(404);
+      expect(mockPrivateStore.uploadFile).not.toHaveBeenCalled();
+      expect(await db.voiceMessages.count({})).toBe(0);
+      expect(await db.messages.count({})).toBe(0);
+    });
+
+    it('unverifiable channel refuses without uploading or persisting', async () => {
+      jest.spyOn(writeGuard, 'channelWriteAvailability').mockResolvedValue('unverifiable');
+      expect((await audioRequest()).status).toBe(503);
+      expect(mockPrivateStore.uploadFile).not.toHaveBeenCalled();
+      expect(await db.voiceMessages.count({})).toBe(0);
+      expect(await db.messages.count({})).toBe(0);
+    });
+
+    it('a still-live expiring channel keeps the ordinary voice upload behavior', async () => {
+      await db.channels.update({ _id: channelId }, { $set: { expiresAt: Date.now() + 120000, expiryVersion: 1 } });
+      expect((await audioRequest()).status).toBe(200);
+      expect(mockPrivateStore.uploadFile).toHaveBeenCalledTimes(1);
+      expect(await db.voiceMessages.count({})).toBe(1);
+      expect(await db.messages.count({})).toBe(1);
+    });
+
+    it('expiry during private upload rolls back only the new object before DB references', async () => {
+      mockPrivateStore.uploadFile.mockImplementationOnce(async (localPath: string) => {
+        await db.channels.update({ _id: channelId }, { $set: { expiresAt: Date.now() - 1, expiryVersion: 1 } });
+        return { url: `/uploads/${path.basename(localPath)}`, key: null, provider: 'local' as const };
+      });
+      expect((await audioRequest()).status).toBe(404);
+      expect(mockPrivateStore.deleteFile).toHaveBeenCalledTimes(1);
+      expect(await db.voiceMessages.count({})).toBe(0);
+      expect(await db.messages.count({})).toBe(0);
+      expect(await db.channels.findOne({ _id: channelId })).not.toBeNull();
+    });
+
+    it('lost authority after upload rolls back the new object and returns unavailable', async () => {
+      jest.spyOn(writeGuard, 'channelWriteAvailability').mockResolvedValueOnce('live').mockResolvedValue('unverifiable');
+      expect((await audioRequest()).status).toBe(503);
+      expect(mockPrivateStore.deleteFile).toHaveBeenCalledTimes(1);
+      expect(await db.voiceMessages.count({})).toBe(0);
+      expect(await db.messages.count({})).toBe(0);
+    });
+
     it('dosya olmadan 400 döner', async () => {
       const res = await request(app)
         .post('/api/voice-messages')
