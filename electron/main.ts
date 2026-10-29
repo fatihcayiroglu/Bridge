@@ -342,6 +342,7 @@ function installSessionPolicies(): void {
 }
 
 function createMainWindow(): void {
+  const startInBackground = process.argv.includes(BACKGROUND_ARG);
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -360,10 +361,11 @@ function createMainWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
     },
     icon: assetPath('icon.png'),
-    show: false,
+    // A normal foreground launch must present its native shell even if the
+    // remote page never reaches its first paint. Keep explicit tray launch hidden.
+    show: !startInBackground,
   });
 
-  const startInBackground = process.argv.includes(BACKGROUND_ARG);
   mainWindow.once('ready-to-show', () => { if (!startInBackground) mainWindow?.show(); });
   mainWindow.webContents.on('did-finish-load', () => {
     appPageLoaded = isSameAppOrigin(mainWindow?.webContents.getURL() ?? '');
