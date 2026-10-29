@@ -39,6 +39,8 @@ jest.mock('../routes/roles', () => ({
 }));
 
 import threadsRouter from '../routes/threads';
+import { Threads } from '../db/repositories';
+import * as channelAvailability from '../lib/channelContentAvailability';
 const mockedRoles = require('../routes/roles');
 
 function makeToken(userId: string) {
@@ -323,6 +325,64 @@ describe('Thread mesajları', () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/timed out/i);
+  });
+});
+
+describe('Thread read lifecycle preflight', () => {
+  it.each([
+    ['missing', 404],
+    ['unavailable', 503],
+  ] as const)('returns %s denial before fetching replies or forum listings', async (availability, status) => {
+    const threadId = 'thread-lifecycle-preflight';
+    await db.channels.update({ _id: channel._id }, { $set: { type: 'forum' } });
+    await db.threads.insert({
+      _id: threadId, channelId: channel._id, serverId: server._id,
+      name: 'Private lifecycle title', firstMessage: 'Private lifecycle preview',
+      createdBy: user._id, createdAt: 1, lastMessageAt: 1, messageCount: 1,
+    });
+    await db.threadMessages.insert({
+      _id: 'thread-lifecycle-reply', threadId, channelId: channel._id, serverId: server._id,
+      userId: user._id, content: 'Private lifecycle reply', createdAt: 1,
+    });
+    const preflight = jest.spyOn(channelAvailability, 'channelContentAvailability').mockResolvedValue(availability);
+    const replies = jest.spyOn(Threads, 'findMessages');
+    const listing = jest.spyOn(Threads, 'findByChannel');
+    const parentCreation = jest.spyOn(Threads, 'createForParentAtomic');
+    const nonceLookup = jest.spyOn(Threads, 'findMessageByClientNonce');
+    const replyInsertion = jest.spyOn(Threads, 'insertMessageIdempotent');
+    try {
+      for (const path of [
+        `/api/threads/${threadId}`,
+        `/api/threads/${threadId}/messages`,
+        `/api/threads/channel/${channel._id}`,
+      ]) {
+        const blocked = await request(app).get(path).set('Authorization', `Bearer ${token}`);
+        expect({ path, status: blocked.status }).toEqual({ path, status });
+        expect(JSON.stringify(blocked.body)).not.toContain('Private lifecycle');
+      }
+      for (const { path, body } of [
+        { path: '/api/threads', body: { parentMessageId: parentMsg._id } },
+        { path: '/api/threads', body: { channelId: channel._id, name: 'Private lifecycle forum' } },
+        { path: `/api/threads/${threadId}/messages`, body: { content: 'retry', clientNonce: 'lifecycle-nonce' } },
+      ]) {
+        const blocked = await request(app).post(path).set('Authorization', `Bearer ${token}`).send(body);
+        expect({ path, status: blocked.status }).toEqual({ path, status });
+        expect(JSON.stringify(blocked.body)).not.toContain('Private lifecycle');
+      }
+      expect(preflight).toHaveBeenCalledWith(channel._id, server._id);
+      expect(replies).not.toHaveBeenCalled();
+      expect(listing).not.toHaveBeenCalled();
+      expect(parentCreation).not.toHaveBeenCalled();
+      expect(nonceLookup).not.toHaveBeenCalled();
+      expect(replyInsertion).not.toHaveBeenCalled();
+    } finally {
+      preflight.mockRestore();
+      replies.mockRestore();
+      listing.mockRestore();
+      parentCreation.mockRestore();
+      nonceLookup.mockRestore();
+      replyInsertion.mockRestore();
+    }
   });
 });
 
