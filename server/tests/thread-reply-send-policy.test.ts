@@ -41,8 +41,10 @@ import threadsRouter from '../routes/threads';
 import { invalidatePerms } from '../lib/permCache';
 import { ABUSE_POLICY } from '../lib/abusePolicy';
 import { DEFAULT_PERMISSIONS, PERMS } from '../lib/permissions';
-import { Automod } from '../db/repositories';
+import { Automod, Threads } from '../db/repositories';
 import { errorHandler } from '../middleware/errorHandler';
+import * as writeGuard from '../lib/channelWriteGuard';
+import * as contentPolicy from '../lib/messageContentPolicy';
 
 type Emitted = { ev: string; data: Record<string, unknown>; to?: string };
 
@@ -115,6 +117,62 @@ function threadReply(content: string, as = member, clientNonce?: string) {
 
 const storedReplies = async () => (await mockDb.threadMessages.find({ threadId: 'thread-1' })).length;
 const replyBroadcasts = () => io.emitted.filter(e => e.ev === 'thread:message:new');
+
+describe('thread reply expiry and replay boundaries', () => {
+  afterEach(() => jest.restoreAllMocks());
+  const expire = () => mockDb.channels.update({ _id: channel._id },
+    { $set: { expiresAt: Date.now() - 1, expiryVersion: 1 } });
+
+  it('refuses new replies on expired channels', async () => {
+    await expire();
+    expect((await threadReply('expired reply')).status).toBe(404);
+    expect(await storedReplies()).toBe(0);
+    expect(replyBroadcasts()).toHaveLength(0);
+  });
+
+  it('does not return an earlier nonce response after channel expiry', async () => {
+    expect((await threadReply('original reply', member, 'expiry-nonce-1')).status).toBe(200);
+    await expire();
+    const replay = await threadReply('original reply', member, 'expiry-nonce-1');
+    expect(replay.status).toBe(404);
+    expect(replay.body).toEqual({ error: 'Channel unavailable' });
+    expect(await storedReplies()).toBe(1);
+    expect(replyBroadcasts()).toHaveLength(1);
+  });
+
+  it('rechecks expiry after asynchronous nonce lookup before returning the row', async () => {
+    await threadReply('lookup reply', member, 'expiry-nonce-2');
+    const original = Threads.findMessageByClientNonce.bind(Threads);
+    jest.spyOn(Threads, 'findMessageByClientNonce').mockImplementationOnce(async (...args) => {
+      const row = await original(...args);
+      await expire();
+      return row;
+    });
+    const replay = await threadReply('lookup reply', member, 'expiry-nonce-2');
+    expect(replay.status).toBe(404);
+    expect(replay.body).toEqual({ error: 'Channel unavailable' });
+    expect(await storedReplies()).toBe(1);
+  });
+
+  it('rechecks after actual content verification before inserting', async () => {
+    const original = contentPolicy.checkMessageContent;
+    jest.spyOn(contentPolicy, 'checkMessageContent').mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      await expire();
+      return result;
+    });
+    expect((await threadReply('expires during verification')).status).toBe(404);
+    expect(await storedReplies()).toBe(0);
+    expect(replyBroadcasts()).toHaveLength(0);
+  });
+
+  it('unverifiable authority refuses a reply without inserting or broadcasting', async () => {
+    jest.spyOn(writeGuard, 'channelWriteAvailability').mockResolvedValue('unverifiable');
+    expect((await threadReply('authority outage')).status).toBe(503);
+    expect(await storedReplies()).toBe(0);
+    expect(replyBroadcasts()).toHaveLength(0);
+  });
+});
 
 async function blockWord(word: string, action = 'delete') {
   await mockDb.automodRules.insert({

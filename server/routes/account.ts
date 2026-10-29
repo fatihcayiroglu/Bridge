@@ -87,7 +87,12 @@ const EXPORT_SOURCES: Array<{ key: string; table: string; column: string; column
   { key: 'boosts',             table: 'server_boosts',      column: 'userId' },
   { key: 'ownedServers',       table: 'servers',            column: 'ownerId' },
   { key: 'scheduledMessages',  table: 'scheduled_msgs',     column: 'userId' },
-  { key: 'messageReports',     table: 'message_reports',    column: 'reporterId' },
+  // P7 B5: an allowlist. A report's evidence snapshot (migration 085) is the
+  // REPORTED author's message and name — another person's data, shown only to
+  // the channel's moderators — so it is not part of the reporter's export.
+  { key: 'messageReports',     table: 'message_reports',    column: 'reporterId',
+    columns: ['_id', 'serverId', 'channelId', 'messageId', 'reporterId', 'reason', 'detail',
+              'status', 'createdAt', 'resolvedAt', 'resolvedBy', 'resolution'] },
 ];
 
 // GET /api/account/portable-export — P7 C1 (identity subset only).
@@ -241,9 +246,13 @@ router.get('/export', authMiddleware, limits.write(), requireStepUp('account.exp
       if (!present.has(src.table)) { data[src.key] = []; continue; }
       const cols = await tableColumns(p, src.table);
       if (!cols.has(src.column)) { data[src.key] = []; continue; }
-      // KAPSAM: her sorgu ÇAĞIRANIN kimliğiyle daraltılır.
+      // KAPSAM: her sorgu ÇAĞIRANIN kimliğiyle daraltılır. `columns` varsa yalnızca
+      // o sütunlar seçilir (sabit liste; kullanıcı girdisi değil).
+      const projection = src.columns
+        ? src.columns.filter(c => cols.has(c)).map(c => `"${c}"`).join(', ')
+        : '*';
       const { rows } = await p.query(
-        `SELECT * FROM "${src.table}" WHERE "${src.column}" = $1 LIMIT 50000`, [_u.id],
+        `SELECT ${projection} FROM "${src.table}" WHERE "${src.column}" = $1 LIMIT 50000`, [_u.id],
       );
       data[src.key] = rows;
     }

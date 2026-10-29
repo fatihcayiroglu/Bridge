@@ -28,13 +28,18 @@ RUN('gerçek PostgreSQL — okunmamış kanal etkinliği', () => {
     await q(`DELETE FROM servers WHERE _id LIKE $1`, [`${P}-%`]);
     await q(`DELETE FROM users WHERE _id LIKE $1`, [`${P}-%`]);
   };
-  const channel = (id: string, serverId: string, type = 'text') =>
-    q(`INSERT INTO channels (_id, "serverId", name, type, "createdAt") VALUES ($1, $2, $1, $3, 1)`, [`${P}-${id}`, serverId, type]);
+  // A message carries its channel's real server, as every production writer
+  // does; the D2 write barrier (migration 086) rejects a mismatched tenant.
+  const channelServer = new Map<string, string>();
+  const channel = (id: string, serverId: string, type = 'text') => {
+    channelServer.set(id, serverId);
+    return q(`INSERT INTO channels (_id, "serverId", name, type, "createdAt") VALUES ($1, $2, $1, $3, 1)`, [`${P}-${id}`, serverId, type]);
+  };
   const message = (id: string, channelId: string, userId: string, createdAt: number, deletedAt: number | null = null) =>
     q(
       `INSERT INTO messages (_id, "channelId", "serverId", "userId", username, "displayName", content, "createdAt", "deletedAt")
        VALUES ($1, $2, $3, $4, 'u', 'U', 'm', $5, $6)`,
-      [`${P}-${id}`, `${P}-${channelId}`, `${P}-srv`, userId, createdAt, deletedAt],
+      [`${P}-${id}`, `${P}-${channelId}`, channelServer.get(channelId) ?? `${P}-srv`, userId, createdAt, deletedAt],
     );
 
   beforeAll(async () => {

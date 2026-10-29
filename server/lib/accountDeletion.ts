@@ -99,6 +99,12 @@ export async function eraseAccountData(
   let plan: ErasurePlan = { assetUrls: [], channelIds: [], repliesScrubbed: 0 };
 
   await transaction(async (client: Queryable) => {
+    // Serialize with report creation before touching messages or reports. A report
+    // holds FOR SHARE on this row through its INSERT; erasure takes FOR UPDATE
+    // first, then anonymizes every report before deleting the user. On a crash,
+    // PostgreSQL rolls back the entire transaction and releases the row lock.
+    const locked = await client.query(`SELECT _id FROM users WHERE _id = $1 FOR UPDATE`, [userId]);
+    if (locked.rows.length !== 1) throw new Error('Account already erased');
     // Kişinin GÖRÜNÜMÜ (ad/avatar) kimlik bağıyla birlikte gider — satırlar hâlâ
     // `userId` ile bulunabilirken (lib/accountErasure.ts).
     plan = await prepareAuthorErasure(client, userId, present, (table) => tableColumns(p, table));

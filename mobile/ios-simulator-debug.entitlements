@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists-1.0.dtd">
+<!--
+  CI Debug simulator build only (.github/workflows/mobile-ios.yml). An ad hoc
+  signature needs an explicit Keychain group: the native local-encryption
+  plugin stores per-account keys with no access group, so iOS uses the app's
+  first group. This grants exactly the app's own group, nothing shared.
+  Release/device builds are signed with the team's provisioning profile and
+  do not use this file.
+-->
+<plist version="1.0">
+<dict>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+</dict>
+</plist>

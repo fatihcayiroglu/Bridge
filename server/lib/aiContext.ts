@@ -25,6 +25,7 @@
 import { Channels, Messages } from '../db/repositories';
 import { resolvePermissions, hasPermission, PERMS } from './permissions';
 import { serverAllowsAi, AI_DISABLED_FOR_SERVER, AI_DISABLED_FOR_SERVER_MESSAGE } from './aiServerPolicy';
+import { channelRecordIsLive } from './channelLiveReadSet';
 
 export interface AiChannelMessage { id: string; userId: string; author: string; content: string; createdAt?: number }
 
@@ -46,6 +47,10 @@ export async function readChannelForAi(
 ): Promise<AiChannelRead> {
   const channel = await Channels.findById(channelId).catch(() => null) as { _id: string; serverId: string } | null;
   if (!channel) return { ok: false, status: 404, error: 'Kanal bulunamadı' };
+  // P7 D2: an expired or tombstoned channel is gone; an unverifiable check feeds nothing to AI.
+  let live: boolean;
+  try { live = await channelRecordIsLive(channel); } catch { return { ok: false, status: 503, error: 'Kanal bağlamı okunamadı' }; }
+  if (!live) return { ok: false, status: 404, error: 'Kanal bulunamadı' };
   const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY)) {
     return { ok: false, status: 403, error: 'Bu kanalın geçmişini görüntüleme izniniz yok.' };

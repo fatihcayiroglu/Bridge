@@ -3,6 +3,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import logger from '../lib/logger';
+import { isChannelWriteDenied } from '../lib/channelWriteBarrier';
 
 export interface HttpError extends Error {
   status?: number;
@@ -57,6 +58,14 @@ export function errorHandler(
   _next: NextFunction,
 ): void {
   if (res.headersSent) return;
+
+  // P7 D2: the PostgreSQL write barrier (migration 086) refused a write to an
+  // expired, tombstoned or tenant-mismatched channel. Same answer as a
+  // missing channel; nothing about the reason is disclosed.
+  if (isChannelWriteDenied(err)) {
+    res.status(404).json({ error: 'Channel not found' });
+    return;
+  }
 
   const explicit = err.status && err.status >= 400 && err.status < 600 ? err.status : null;
   // Acikca belirtilmis bir durum kodu HER ZAMAN kazanir; yalnizca

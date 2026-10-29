@@ -10,6 +10,15 @@
 
 process.env.NODE_ENV = 'test';
 
+// This suite models filesystem/repository policy; real reservation locks and
+// writer interleavings execute in upload-cleanup-reservations-s3.pgtest.ts.
+const mockReserveRelease = jest.fn(async (_pool: unknown, _keys: readonly string[]) => new Set<string>());
+jest.mock('../lib/uploadReleaseFence', () => ({
+  reserveUploadReleaseKeys: (pool: unknown, keys: readonly string[]) => mockReserveRelease(pool, keys),
+}));
+beforeEach(() => { mockReserveRelease.mockReset().mockResolvedValue(new Set<string>()); });
+
+
 import type { StorageAdapter, StorageObject } from '../lib/storageAdapter';
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
@@ -543,5 +552,44 @@ describe('temizlik kapsami — varlik siniflari', () => {
     mockObjects = [makeOldObject('kayip.png'), makeOldObject('var.png')];
     await expect(runCleanup()).resolves.toBeUndefined();   // firlatmaz
     expect(mockDeleteFile).toHaveBeenCalledTimes(2);       // digeri devam eder
+  });
+});
+
+describe('durable release coordination boundary', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPoolQuery = null;
+    mockObjects = [makeOldObject('collector-orphan.png')];
+    mockChannelMessages = [];
+    mockDmMessages = [];
+    mockGroupDmMessages = [];
+    mockGroupDmFindError = null;
+  });
+
+  it('retains an object referenced after the initial snapshot', async () => {
+    mockReserveRelease.mockResolvedValueOnce(new Set(['uploads/collector-orphan.png']));
+    await runCleanup();
+    expect(mockReserveRelease).toHaveBeenCalledWith(undefined, ['uploads/collector-orphan.png']);
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+  });
+
+  it('never deletes when a durable reservation cannot be established', async () => {
+    mockReserveRelease.mockRejectedValueOnce(new Error('reservation unavailable'));
+    await runCleanup();
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'cleanup.release_reservation_failed' }), expect.any(String));
+  });
+
+  it('bounds every reservation batch while covering each eligible object once', async () => {
+    mockObjects = Array.from({ length: 123 }, (_, i) => makeOldObject(`collector-${i}.png`));
+    await runCleanup();
+    const batches = mockReserveRelease.mock.calls.map(call => call[1]);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.every(keys => keys.length > 0 && keys.length <= 50)).toBe(true);
+    const reserved = batches.flat();
+    expect(new Set(reserved).size).toBe(123);
+    expect(reserved).toEqual(mockObjects.map(obj => `uploads/${obj.key}`));
+    expect(mockDeleteFile).toHaveBeenCalledTimes(123);
   });
 });

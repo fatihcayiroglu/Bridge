@@ -114,6 +114,9 @@ jest.mock('../lib/_optional-require', () => ({
 import { sendChannelMessage, registerSendHandlers } from '../socket/handlers/messages-send';
 import { Bridges, Channels, Messages, Notifications } from '../db/repositories';
 import { requireDoc } from './helpers/mockDb';
+import * as contentPolicy from '../lib/messageContentPolicy';
+import * as writePolicy from '../lib/channelWriteGuard';
+import * as liveChannels from '../lib/channelLiveReadSet';
 
 // ── Yardımcılar ────────────────────────────────────────────────
 
@@ -234,6 +237,45 @@ describe('sendChannelMessage', () => {
     expect(mockGetCachedPerms).toHaveBeenCalledWith(
       user._id, server._id, expect.any(Function), channel._id,
     );
+  });
+
+  it('ACKs a committed row before propagating a failed publication check, without fan-out', async () => {
+    const check = jest.spyOn(liveChannels, 'liveChannelSet').mockRejectedValueOnce(new Error('availability unavailable'));
+    try {
+      await expect(sendChannelMessage(
+        { channelId: channel._id, serverId: server._id, content: 'durable before outage', ackId: 'outage-ack' },
+        socket as never, io as never, user, new Map(),
+      )).rejects.toThrow('availability unavailable');
+      const saved = await mockDb.messages.findOne({ channelId: channel._id });
+      expect(saved).toMatchObject({ content: 'durable before outage' });
+      expect(mockSendAck).toHaveBeenCalledWith(socket, 'outage-ack', expect.objectContaining({ messageId: saved!._id }));
+      expect(io._emitted).toEqual([]);
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+      expect(mockPluginEmit).not.toHaveBeenCalled();
+      expect(mockProcessNotifications).not.toHaveBeenCalled();
+    } finally { check.mockRestore(); }
+  });
+
+  it('does not broadcast a link preview completed after channel expiry', async () => {
+    let finishPreview!: (value: unknown) => void;
+    mockExtractUrls.mockReturnValue(['https://example.com/deferred']);
+    mockFetchLinkPreview.mockReturnValue(new Promise(resolve => { finishPreview = resolve; }));
+    await sendChannelMessage(
+      { channelId: channel._id, serverId: server._id, content: 'https://example.com/deferred' },
+      socket as never, io as never, user, new Map(),
+    );
+    expect(findEmitted(io._emitted, 'message:new')).toBeDefined();
+    const check = jest.spyOn(liveChannels, 'liveChannelSet').mockResolvedValueOnce(new Set());
+    try {
+      finishPreview({ url: 'https://example.com/deferred', title: 'Deferred fixture' });
+      await new Promise<void>(resolve => { setImmediate(resolve); });
+      expect(check).toHaveBeenCalledWith([{ channelId: channel._id, serverId: server._id }]);
+      expect(findEmitted(io._emitted, 'message:embedUpdate')).toBeUndefined();
+    } finally {
+      check.mockRestore();
+      mockExtractUrls.mockReturnValue([]);
+      mockFetchLinkPreview.mockReset();
+    }
   });
 
   // P1 multi-node harness PG-06r: the INSERT committed but its reply was lost.
@@ -790,6 +832,115 @@ describe('sendChannelMessage', () => {
     expect((bridgeEvt!.data as { content: string }).content).toContain('TestBridge');
   });
 
+  describe('bridge expiry boundaries', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    async function destination(overrides: Record<string, unknown> = {}) {
+      const targetServer = makeServer(user._id);
+      const target = makeChannel(targetServer._id, overrides);
+      await mockDb.servers.insert(targetServer);
+      await mockDb.channels.insert(target);
+      await Bridges.insert({
+        _id: `bridge-${target._id}`, sourceChannelId: channel._id, sourceServerId: server._id,
+        targetChannelId: target._id, targetServerId: targetServer._id, active: true, label: 'Expiry control',
+      });
+      return target;
+    }
+
+    async function send() {
+      await sendChannelMessage(
+        { channelId: channel._id, serverId: server._id, content: 'Bridge expiry fixture' },
+        socket as never, io as never, user, new Map(),
+      );
+      expect(await mockDb.messages.find({ channelId: channel._id })).toHaveLength(1);
+    }
+
+    async function expectNoCopy(target: { _id: string }) {
+      expect(await mockDb.messages.find({ channelId: target._id })).toHaveLength(0);
+      expect(io._emitted.filter(e =>
+        e._target === `channel:${target._id}` || e._target === `watch:${target._id}`)).toHaveLength(0);
+    }
+
+    it('refuses an expired receiving channel and still forwards to a permanent sibling', async () => {
+      const expired = await destination({ expiresAt: 1, expiryVersion: 1 });
+      const permanent = await destination();
+      await send();
+      await expectNoCopy(expired);
+      expect(await mockDb.messages.find({ channelId: permanent._id })).toHaveLength(1);
+      expect(io._emitted.filter(e => e.ev === 'message:new' && e._target === `channel:${permanent._id}`)).toHaveLength(1);
+    });
+
+    it('refuses corrupt receiving expiry metadata', async () => {
+      const target = await destination({ expiresAt: Date.now() + 60_000, expiryVersion: 0 });
+      await send();
+      await expectNoCopy(target);
+    });
+
+    it('refuses unverifiable receiving authority without losing the source', async () => {
+      const target = await destination();
+      const original = writePolicy.channelWriteAvailability;
+      jest.spyOn(writePolicy, 'channelWriteAvailability').mockImplementation((db, ch, env) =>
+        ch?._id === target._id ? Promise.resolve('unverifiable') : original(db, ch, env));
+      await send();
+      await expectNoCopy(target);
+    });
+
+    it('rechecks receiving expiry after actual asynchronous target moderation', async () => {
+      const target = await destination();
+      const original = contentPolicy.machineContentRefused;
+      jest.spyOn(contentPolicy, 'machineContentRefused').mockImplementationOnce(async (...args) => {
+        const result = await original(...args);
+        await mockDb.channels.update({ _id: target._id }, { $set: { expiresAt: 1, expiryVersion: 1 } });
+        return result;
+      });
+      await send();
+      await expectNoCopy(target);
+    });
+
+    it('does not export the source after it expires during target moderation', async () => {
+      const target = await destination();
+      const original = contentPolicy.machineContentRefused;
+      jest.spyOn(contentPolicy, 'machineContentRefused').mockImplementationOnce(async (...args) => {
+        const result = await original(...args);
+        await mockDb.channels.update({ _id: channel._id }, { $set: { expiresAt: 1, expiryVersion: 1 } });
+        return result;
+      });
+      await send();
+      await expectNoCopy(target);
+    });
+
+    it('suppresses publication when expiry follows real copy persistence without deleting that copy', async () => {
+      const target = await destination();
+      const original = Messages.create.bind(Messages);
+      jest.spyOn(Messages, 'create').mockImplementation(async data => {
+        const saved = await original(data);
+        if (data.channelId === target._id)
+          await mockDb.channels.update({ _id: target._id }, { $set: { expiresAt: 1, expiryVersion: 1 } });
+        return saved;
+      });
+      await send();
+      expect(await mockDb.messages.find({ channelId: target._id })).toHaveLength(1);
+      expect(io._emitted.filter(e =>
+        e._target === `channel:${target._id}` || e._target === `watch:${target._id}`)).toHaveLength(0);
+    });
+
+    it('rechecks expiry after asynchronous receiving-history cache invalidation', async () => {
+      const target = await destination();
+      mockInvalidatePattern.mockImplementation(async (pattern: string) => {
+        if (pattern.includes(target._id))
+          await mockDb.channels.update({ _id: target._id }, { $set: { expiresAt: 1, expiryVersion: 1 } });
+      });
+      try {
+        await send();
+        expect(await mockDb.messages.find({ channelId: target._id })).toHaveLength(1);
+        expect(io._emitted.filter(e =>
+          e._target === `channel:${target._id}` || e._target === `watch:${target._id}`)).toHaveLength(0);
+      } finally {
+        mockInvalidatePattern.mockResolvedValue(undefined);
+      }
+    });
+  });
+
   it('bridge uses a safe default label and never forwards file references across tenants', async () => {
     const targetServer=makeServer('bridge-target-owner'); const targetChannel=makeChannel(targetServer._id,{name:'target'});
     await mockDb.servers.insert(targetServer); await mockDb.channels.insert(targetChannel);
@@ -1315,6 +1466,29 @@ describe('sendChannelMessage', () => {
     )).rejects.toThrow('message store down');
     expect(findEmitted(io._emitted, 'message:new')).toBeUndefined();
     expect(mockProcessNotifications).not.toHaveBeenCalled();
+  });
+
+  it('P7 D2: süresi dolmuş kanala yazma reddedilir ve hiçbir şey kalıcı olmaz', async () => {
+    await mockDb.channels.update({ _id: channel._id }, { $set: { expiresAt: Date.now() - 1000, expiryVersion: 1 } });
+    await sendChannelMessage(
+      { channelId: channel._id, serverId: server._id, content: 'must not land', ackId: 'ack-exp', _tmpId: 'tmp-exp' },
+      socket as never, io as never, user, new Map(),
+    );
+    expect(findEmitted(socket._emitted, 'error:message')?.data).toMatchObject({
+      event: 'message:send', code: 'CHANNEL_NOT_FOUND', ackId: 'ack-exp', tmpId: 'tmp-exp',
+    });
+    expect(await mockDb.messages.count({ channelId: channel._id })).toBe(0);
+    expect(findEmitted(io._emitted, 'message:new')).toBeUndefined();
+    expect(mockProcessNotifications).not.toHaveBeenCalled();
+  });
+
+  it('P7 D2: henüz dolmamış süreli kanal ve süresiz kanal yazmayı kabul eder (negatif kontrol)', async () => {
+    await mockDb.channels.update({ _id: channel._id }, { $set: { expiresAt: Date.now() + 3_600_000, expiryVersion: 1 } });
+    await sendChannelMessage(
+      { channelId: channel._id, serverId: server._id, content: 'still open' },
+      socket as never, io as never, user, new Map(),
+    );
+    expect(await mockDb.messages.count({ channelId: channel._id })).toBe(1);
   });
 
   it('kanal canonical server scope içinde bulunamazsa CHANNEL_NOT_FOUND döner', async () => {

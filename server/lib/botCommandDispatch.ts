@@ -2,6 +2,7 @@ import type { HandlerServer } from '../socket/handler-contracts';
 import { Bots } from '../db/repositories';
 import { readPersistedCommandArray } from './botCommands';
 import logger from './logger';
+import { liveChannelSet } from './channelLiveReadSet';
 
 export interface SlashDispatchMessage {
   _id: string;
@@ -28,6 +29,9 @@ export async function dispatchRegisteredBotCommand(io: HandlerServer, message: S
   if (!name) return 0;
   try {
     const bots = await Bots.findInstalledForServer(message.serverId);
+    // Discovery is asynchronous. A message admitted/committed before expiry
+    // must not disclose its command arguments to a bot after that boundary.
+    if (!(await liveChannelSet([{ channelId: message.channelId, serverId: message.serverId }])).has(message.channelId)) return 0;
     let delivered = 0;
     for (const bot of bots) {
       const commands = readPersistedCommandArray(bot.slashCommands);
