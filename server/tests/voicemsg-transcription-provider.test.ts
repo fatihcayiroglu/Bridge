@@ -390,7 +390,8 @@ describe('committed voice-message response is not a storage rollback', () => {
     const voices = await db.voiceMessages.find({ channelId: 'c1' });
     expect(messages).toHaveLength(1);
     expect(voices).toHaveLength(1);
-    expect(messages[0].fileUrl).toBe(voices[0].url);
+    expect(recordOf(messages[0], 'committed chat message').fileUrl)
+      .toBe(recordOf(voices[0], 'committed voice row').url);
     expect(store.deleteFile).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'voicemsg.response_after_commit_failed' }),
