@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'server/**'
+      - 'electron/main.ts'
       - 'client/js/core/MessageLoader.svelte'
       - 'scripts/require-no-skipped-tests.js'
       - '.github/workflows/p7-scheduled-channel-expiry.yml'

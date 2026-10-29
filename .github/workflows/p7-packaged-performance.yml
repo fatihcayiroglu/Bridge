@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'server/**'
+      - 'electron/main.ts'
+      - 'electron/tests/main.test.ts'
       - 'scripts/perf-acceptance/**'
       - 'scripts/perf-acceptance.test.js'
       - 'scripts/perf-packaged.test.mjs'
@@ -75,6 +77,13 @@ jobs:
         run: |
           (cd client && node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/message-renderer-deep-coverage.test.ts tests/message-renderer-dialogs-embeds.test.ts tests/message-list-deep-coverage.test.ts tests/message-action-sheet.test.ts tests/mount-shims-lifecycle.test.ts tests/Phase9Messaging.test.ts tests/renderer.test.ts tests/message-loader-deep-coverage.test.ts tests/local-first-history-loader.test.ts --reporter=json --outputFile=../message-rendering-results.json)
           node scripts/require-no-skipped-tests.js message-rendering-results.json --label "message rendering regression"
+      - name: Actual Electron main-process regressions, zero skipped tests
+        working-directory: electron
+        env:
+          NODE_ENV: test
+        run: |
+          node node_modules/jest/bin/jest.js --config jest.electron.config.ts --runInBand --json --outputFile=../electron-main-results.json
+          node ../scripts/require-no-skipped-tests.js ../electron-main-results.json --label "Electron foreground/background regression"
       - name: Build actual Svelte UI, backend and packaged Electron DEB
         run: |
           node scripts/build.js
@@ -161,6 +170,7 @@ jobs:
             ${{ runner.temp }}/perf-evidence/resources.jsonl
             ${{ runner.temp }}/perf-evidence/attempt.json
             message-rendering-results.json
+            electron-main-results.json
           if-no-files-found: warn
       - name: Stop only fixture processes
         if: always()
