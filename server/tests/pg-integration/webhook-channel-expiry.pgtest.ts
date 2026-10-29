@@ -10,6 +10,7 @@ const db = require('../../db/loader').default as typeof import('../../db/postgre
 const { Channels, Messages } = require('../../db/repositories') as typeof import('../../db/repositories');
 const adapter = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
 const policy = require('../../lib/messageContentPolicy') as typeof import('../../lib/messageContentPolicy');
+const authority = require('../../lib/channelWriteGuard') as typeof import('../../lib/channelWriteGuard');
 const router = require('../../routes/bots');
 const q = (sql: string, values: unknown[] = []) => db._pool.query(sql, values);
 const events: string[] = [];
@@ -114,6 +115,18 @@ it('expiry during actual Redis invalidation suppresses success and both events',
     await original(prefix); await expire(f);
   });
   await refused(f, 1);
+});
+
+it('expiry after the caller final query is still refused by publication authority and the HTTP response', async () => {
+  const f = await seed(); const original = authority.channelWriteAvailability;
+  let queries = 0;
+  jest.spyOn(authority, 'channelWriteAvailability').mockImplementation(async (...args) => {
+    const state = await original(...args);
+    if (++queries === 3) await expire(f);
+    return state;
+  });
+  await refused(f, 1);
+  expect(queries).toBe(3);
 });
 
 it('a valid token does not grant another tenant channel authority', async () => {

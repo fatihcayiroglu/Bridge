@@ -21,6 +21,7 @@
 import { Channels, Members } from '../db/repositories';
 import { MAX_WATCHED_CHANNELS, MESSAGE_CHANNEL_TYPES } from '../db/queries/activityUnread';
 import { invalidateChannelMessages } from './messageCache';
+import { liveChannelSet } from './channelLiveReadSet';
 import { canViewChannel } from './permissions';
 import { newRequestId, runWithRequestContext } from './requestContext';
 
@@ -34,6 +35,7 @@ export interface ChannelActivityMessage {
   serverId?: unknown;
   userId?: unknown;
   createdAt?: unknown;
+  bridgedFrom?: unknown;
 }
 
 interface ActivityEmitter {
@@ -57,16 +59,40 @@ export function announceChannelActivity(io: ActivityEmitter | null | undefined, 
 
 type MessageBroadcaster = ActivityEmitter;
 
+/** Includes the source of a deferred bridge/crosspost, not only its destination. */
+export async function persistedMessageIsLive(message: ChannelActivityMessage | null | undefined): Promise<boolean> {
+  const channelId = typeof message?.channelId === 'string' ? message.channelId : '';
+  const serverId = typeof message?.serverId === 'string' ? message.serverId : '';
+  if (!channelId || !serverId) return false;
+  const pairs = [{ channelId, serverId }];
+  if (message?.bridgedFrom !== undefined && message.bridgedFrom !== null) {
+    const source = message.bridgedFrom;
+    if (typeof source !== 'object' || Array.isArray(source) ||
+        !('channelId' in source) || !('serverId' in source) ||
+        typeof source.channelId !== 'string' || !source.channelId ||
+        typeof source.serverId !== 'string' || !source.serverId) return false;
+    pairs.push({ channelId: source.channelId, serverId: source.serverId });
+  }
+  const live = await liveChannelSet(pairs);
+  return pairs.every(pair => live.has(pair.channelId));
+}
+
 /**
  * A persisted message reaches the people in its channel (`message:new`) and the
  * people watching the server (`channel:activity`). For callers that have already
- * invalidated the channel history cache.
+ * invalidated the channel history cache. A committed row is not authority to
+ * publish later: the database clock and tombstone are checked again immediately
+ * before delivery. False means the channel is no longer available; a database
+ * failure throws without emitting. With no io, true still proves availability
+ * for an HTTP caller returning the persisted row.
  */
-export function broadcastPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): void {
+export async function broadcastPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): Promise<boolean> {
   const channelId = typeof message?.channelId === 'string' ? message.channelId : '';
-  if (!io || !channelId) return;
+  if (!await persistedMessageIsLive(message)) return false;
+  if (!io) return true;
   io.to(`channel:${channelId}`).emit('message:new', message);
   announceChannelActivity(io, message);
+  return true;
 }
 
 /**
@@ -79,12 +105,12 @@ export async function publishPersistedMessage(
   io: MessageBroadcaster | null | undefined,
   message: ChannelActivityMessage | null | undefined,
   beforeBroadcast?: () => Promise<boolean>,
-): Promise<void> {
+): Promise<boolean> {
   const channelId = typeof message?.channelId === 'string' ? message.channelId : '';
-  if (!channelId) return;
+  if (!channelId) return false;
   await invalidateChannelMessages(channelId);
-  if (beforeBroadcast && await beforeBroadcast() !== true) return;
-  broadcastPersistedMessage(io, message);
+  if (beforeBroadcast && await beforeBroadcast() !== true) return false;
+  return broadcastPersistedMessage(io, message);
 }
 
 interface WatchingSocket {

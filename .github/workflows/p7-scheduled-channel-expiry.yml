@@ -97,11 +97,11 @@ jobs:
         run: |
           node node_modules/ts-node/dist/bin.js --project tsconfig.json db/postgres/index.ts
           node node_modules/ts-node/dist/bin.js --project tsconfig.json db/migrate-postgres.ts up
-      - name: Actual scheduled dispatch, bridge and webhook integration, zero skipped tests
+      - name: Actual D2 lifecycle, writers, retention and recovery, zero skipped tests
         working-directory: server
         run: |
-          node node_modules/jest/bin/jest.js --config jest.pg.config.js --runInBand --runTestsByPath tests/pg-integration/scheduled-channel-expiry.pgtest.ts tests/pg-integration/bridge-channel-expiry.pgtest.ts tests/pg-integration/webhook-channel-expiry.pgtest.ts --json --outputFile=d2-pg16-results.json
-          node ../scripts/require-no-skipped-tests.js d2-pg16-results.json --label "D2 PostgreSQL 16 scheduled dispatch, bridges and webhooks"
+          node node_modules/jest/bin/jest.js --config jest.pg.config.js --runInBand --runTestsByPath tests/pg-integration/scheduled-channel-expiry.pgtest.ts tests/pg-integration/bridge-channel-expiry.pgtest.ts tests/pg-integration/webhook-channel-expiry.pgtest.ts tests/pg-integration/channel-write-barrier.pgtest.ts tests/pg-integration/channel-expiry-worker.pgtest.ts tests/pg-integration/channel-object-release.pgtest.ts tests/pg-integration/channel-copy-migration.pgtest.ts tests/pg-integration/channel-bridge-source-expiry.pgtest.ts tests/pg-integration/upload-release-reservations.pgtest.ts tests/pg-integration/scheduled-expiry-terminal.pgtest.ts tests/pg-integration/report-evidence.pgtest.ts tests/pg-integration/report-retention.pgtest.ts tests/pg-integration/thread-channel-read-expiry.pgtest.ts tests/pg-integration/ai-semantic-pins-expiry.pgtest.ts tests/pg-integration/channel-expiry-config.pgtest.ts tests/pg-integration/channel-delete-last-permanent.pgtest.ts tests/pg-integration/channel-thread-socket-expiry.pgtest.ts tests/pg-integration/channel-publication-expiry.pgtest.ts tests/pg-integration/media-channel-expiry.pgtest.ts tests/pg-integration/search-saved-inbox-expiry.pgtest.ts tests/pg-integration/channel-read-expiry-guard.pgtest.ts tests/pg-integration/channel-expiry-migration.pgtest.ts --json --outputFile=d2-pg16-results.json
+          node ../scripts/require-no-skipped-tests.js d2-pg16-results.json --label "D2 PostgreSQL 16 lifecycle and recovery"
       - name: Preserve first-attempt test evidence
         if: always()
         uses: actions/upload-artifact@v4

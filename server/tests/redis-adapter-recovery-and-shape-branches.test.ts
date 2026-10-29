@@ -198,15 +198,19 @@ describe('connection lifecycle', () => {
     expect(adapter.redisClient()).toBeNull();
   });
 
-  it('the connection log redacts the password from the URL', async () => {
+  it('the connection log omits configuration URLs and credentials entirely', async () => {
     const adapter = load();
     await adapter.applyAdapter({ adapter: jest.fn() });
-    // The redaction is deliberately blunt: whatever it leaves behind, the
-    // password must not be in it.
-    const connected = log.info.mock.calls.find(([obj]: any[]) => obj?.event === 'redis.connected')!;
-    expect(String((connected[0] as { url: string }).url)).not.toContain('secret');
-    expect(String((connected[0] as { url: string }).url)).toContain('***@localhost:6379');
-    await adapter.disconnect();
+    try {
+      const connected = log.info.mock.calls.find(([obj]: any[]) => obj?.event === 'redis.connected')!;
+      expect(connected).toBeDefined();
+      for (const value of ['secret', 'localhost', '6379']) {
+        expect(JSON.stringify(connected[0])).not.toContain(value);
+      }
+      expect(connected[0]).not.toHaveProperty('url');
+    } finally {
+      await adapter.disconnect();
+    }
   });
 });
 

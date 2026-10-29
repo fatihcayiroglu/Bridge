@@ -15,10 +15,12 @@ const mockRepos = {
 };
 const mockCanView = jest.fn();
 const mockInvalidate = jest.fn();
+const mockLiveChannels = jest.fn();
 
 jest.mock('../db/repositories', () => mockRepos);
 jest.mock('../lib/permissions', () => ({ canViewChannel: (...args: unknown[]) => mockCanView(...args) }));
 jest.mock('../lib/messageCache', () => ({ invalidateChannelMessages: (...args: unknown[]) => mockInvalidate(...args) }));
+jest.mock('../lib/channelLiveReadSet', () => ({ liveChannelSet: (...args: unknown[]) => mockLiveChannels(...args) }));
 
 import {
   announceChannelActivity,
@@ -49,6 +51,7 @@ const message = {
 beforeEach(() => {
   jest.clearAllMocks();
   mockInvalidate.mockResolvedValue(undefined);
+  mockLiveChannels.mockResolvedValue(new Set(['c1']));
 });
 
 describe('channel:activity carries no message content', () => {
@@ -74,9 +77,10 @@ describe('channel:activity carries no message content', () => {
 });
 
 describe('publishing a persisted message', () => {
-  it('broadcast: the full message to the channel room, the content-free signal to watchers', () => {
+  it('broadcast: the full message to the channel room, the content-free signal to watchers', async () => {
     const io = recordingIo();
-    broadcastPersistedMessage(io, message);
+    expect(await broadcastPersistedMessage(io, message)).toBe(true);
+    expect(mockLiveChannels).toHaveBeenCalledWith([{ channelId: 'c1', serverId: 's1' }]);
     expect(io.events.map((e) => [e.room, e.event])).toEqual([['channel:c1', 'message:new'], ['watch:c1', 'channel:activity']]);
     expect(io.events[0]!.payload).toBe(message);
   });
@@ -84,14 +88,16 @@ describe('publishing a persisted message', () => {
   it('publish: invalidates the history page BEFORE anyone can re-read it', async () => {
     const io = recordingIo();
     mockInvalidate.mockImplementation(async () => { io.order.push('invalidate'); });
+    mockLiveChannels.mockImplementation(async () => { io.order.push('live-check'); return new Set(['c1']); });
     await publishPersistedMessage(io, message);
     expect(mockInvalidate).toHaveBeenCalledWith('c1');
-    expect(io.order).toEqual(['invalidate', 'emit:message:new', 'emit:channel:activity']);
+    expect(io.order).toEqual(['invalidate', 'live-check', 'emit:message:new', 'emit:channel:activity']);
   });
 
   it('publish without a socket server still invalidates (jobs that start before io)', async () => {
-    await publishPersistedMessage(null, message);
+    expect(await publishPersistedMessage(null, message)).toBe(true);
     expect(mockInvalidate).toHaveBeenCalledWith('c1');
+    expect(mockLiveChannels).toHaveBeenCalledWith([{ channelId: 'c1', serverId: 's1' }]);
   });
 
   it('final publication authority runs after invalidation and before both live events', async () => {
@@ -122,6 +128,58 @@ describe('publishing a persisted message', () => {
     const io = recordingIo();
     await publishPersistedMessage(io, { _id: 'm1' });
     expect(mockInvalidate).not.toHaveBeenCalled();
+    expect(io.events).toEqual([]);
+  });
+
+  it('does not publish when the authoritative check excludes the channel', async () => {
+    const io = recordingIo();
+    mockLiveChannels.mockResolvedValue(new Set());
+    expect(await publishPersistedMessage(io, message)).toBe(false);
+    expect(mockInvalidate).toHaveBeenCalledWith('c1');
+    expect(io.events).toEqual([]);
+  });
+
+  it('fails closed when the fresh database check fails after cache invalidation', async () => {
+    const io = recordingIo();
+    mockLiveChannels.mockRejectedValue(new Error('database unavailable'));
+    await expect(publishPersistedMessage(io, message)).rejects.toThrow('database unavailable');
+    expect(mockInvalidate).toHaveBeenCalledWith('c1');
+    expect(io.events).toEqual([]);
+  });
+
+  it('does not publish a row without a tenant', async () => {
+    const io = recordingIo();
+    expect(await broadcastPersistedMessage(io, { _id: 'm1', channelId: 'c1' })).toBe(false);
+    expect(mockLiveChannels).not.toHaveBeenCalled();
+    expect(io.events).toEqual([]);
+  });
+
+  it('checks both tenants before publishing a copied message', async () => {
+    const io = recordingIo();
+    const copied = { ...message, bridgedFrom: { channelId: 'source', serverId: 'source-server' } };
+    mockLiveChannels.mockResolvedValue(new Set(['c1', 'source']));
+    expect(await publishPersistedMessage(io, copied)).toBe(true);
+    expect(mockLiveChannels).toHaveBeenCalledWith([
+      { channelId: 'c1', serverId: 's1' }, { channelId: 'source', serverId: 'source-server' },
+    ]);
+    expect(io.events[0]?.payload).toBe(copied);
+  });
+
+  it.each([['c1'], ['source']])('withholds a copy unless both channels are live (%j)', async live => {
+    const io = recordingIo();
+    mockLiveChannels.mockResolvedValue(new Set([live]));
+    expect(await publishPersistedMessage(io, { ...message, bridgedFrom: { channelId: 'source', serverId: 'source-server' } })).toBe(false);
+    expect(io.events).toEqual([]);
+  });
+
+  it.each([
+    'not-an-object', 7, [], {}, { channelId: 'source' }, { serverId: 'source-server' },
+    { channelId: 7, serverId: 'source-server' }, { channelId: '', serverId: 'source-server' },
+    { channelId: 'source', serverId: 7 }, { channelId: 'source', serverId: '' },
+  ].map(bridgedFrom => ({ bridgedFrom })))('withholds malformed source metadata $bridgedFrom', async ({ bridgedFrom }) => {
+    const io = recordingIo();
+    expect(await broadcastPersistedMessage(io, { ...message, bridgedFrom })).toBe(false);
+    expect(mockLiveChannels).not.toHaveBeenCalled();
     expect(io.events).toEqual([]);
   });
 });
@@ -214,8 +272,8 @@ describe('channel activity — malformed rows are not announced', () => {
     expect(payload.createdAt).toBeGreaterThanOrEqual(before);
   });
 
-  it('broadcastPersistedMessage stays silent for a row with no channel', () => {
-    broadcastPersistedMessage(io, { _id: 'm1', serverId: 's1' } as never);
+  it('broadcastPersistedMessage stays silent for a row with no channel', async () => {
+    expect(await broadcastPersistedMessage(io, { _id: 'm1', serverId: 's1' } as never)).toBe(false);
     expect(io.to).not.toHaveBeenCalled();
   });
 

@@ -147,6 +147,18 @@ describe('ChannelRepository behavior coverage', () => {
     });
   });
 
+  test('findByServer omits expired channels and fails closed on corrupt expiry metadata (P7 D2)', async () => {
+    const now = Date.now();
+    await db.channels.insert({ _id: 'perm', serverId: 'sx', name: 'p', order: 0 } as any);
+    await db.channels.insert({ _id: 'active', serverId: 'sx', name: 'a', order: 1, expiresAt: now + 60_000, expiryVersion: 1 } as any);
+    await db.channels.insert({ _id: 'gone', serverId: 'sx', name: 'g', order: 2, expiresAt: now - 1, expiryVersion: 1 } as any);
+    await db.channels.insert({ _id: 'corrupt', serverId: 'sx', name: 'c', order: 3, expiresAt: now + 60_000, expiryVersion: 0 } as any);
+    expect((await ChannelRepository.findByServer('sx')).map((x: any) => x._id)).toEqual(['perm', 'active']);
+    // findWhere (discovery counts, onboarding, server profile, semantic, push) follows the same rule.
+    const where = await ChannelRepository.findWhere({ serverId: 'sx' });
+    expect(where.map((x: any) => x._id).sort()).toEqual(['active', 'perm']);
+  });
+
   test('basic channel/category repository methods remain tenant-scoped', async () => {
     await db.channels.insert({ _id: 'c1', serverId: 's1', name: 'one', order: 2 } as any);
     await db.channels.insert({ _id: 'c2', serverId: 's1', name: 'two', order: 1 } as any);
@@ -201,7 +213,7 @@ describe('ChannelRepository behavior coverage', () => {
       ].map(([table_name,column_name])=>({table_name,column_name}));
       const client = pgClient((sql) => {
         if (/SELECT _id FROM channels WHERE _id=.*FOR UPDATE/.test(sql)) return { rows:[{_id:'c1'}] };
-        if (/SELECT _id FROM channels WHERE "serverId"=.*FOR UPDATE/.test(sql)) return { rows:[{_id:'c1'},{_id:'c2'}] };
+        if (/FROM channels c WHERE c\."serverId"=.*FOR UPDATE OF c/.test(sql)) return { rows:[{_id:'c1',live:true},{_id:'c2',live:true}] };
         if (/information_schema\.columns/.test(sql)) return { rows:columns };
         if (/SELECT _id FROM threads/.test(sql)) return { rows:[{_id:'t1'},{_id:'t2'}] };
         return { rows:[], rowCount:1 };
@@ -218,12 +230,15 @@ describe('ChannelRepository behavior coverage', () => {
     });
 
     test.each([
-      ['not_found', [], [{_id:'c1'},{_id:'c2'}]],
-      ['last_channel', [{_id:'c1'}], [{_id:'c1'}]],
+      ['not_found', [], [{_id:'c1',live:true},{_id:'c2',live:true}]],
+      ['last_channel', [{_id:'c1'}], [{_id:'c1',live:true}]],
+      // P7 D2: an expired/tombstoned target is already gone; an expired sibling does not survive for the server.
+      ['not_found', [{_id:'c1'}], [{_id:'c1',live:false},{_id:'c2',live:true}]],
+      ['last_channel', [{_id:'c1'}], [{_id:'c1',live:true},{_id:'c2',live:false}]],
     ])('deleteGraphAtomic returns %s without graph mutation', async (expected, lockedRows, siblingRows) => {
       const client=pgClient((sql)=>{
         if (/WHERE _id=.*FOR UPDATE/.test(sql)) return {rows:lockedRows as any[]};
-        if (/WHERE "serverId"=.*FOR UPDATE/.test(sql)) return {rows:siblingRows as any[]};
+        if (/WHERE c\."serverId"=.*FOR UPDATE/.test(sql)) return {rows:siblingRows as any[]};
         return {rows:[]};
       });
       (db as any)._pool={connect:jest.fn(async()=>client)};
@@ -234,7 +249,7 @@ describe('ChannelRepository behavior coverage', () => {
     test('deleteGraphAtomic preserves original delete failure when rollback also fails', async () => {
       const client=pgClient((sql)=>{
         if (/WHERE _id=.*FOR UPDATE/.test(sql)) return {rows:[{_id:'c1'}]};
-        if (/WHERE "serverId"=.*FOR UPDATE/.test(sql)) return {rows:[{_id:'c1'},{_id:'c2'}]};
+        if (/WHERE c\."serverId"=.*FOR UPDATE/.test(sql)) return {rows:[{_id:'c1',live:true},{_id:'c2',live:true}]};
         if (/information_schema\.columns/.test(sql)) return {rows:[{table_name:'messages',column_name:'channelId'}]};
         if (/DELETE FROM "messages"/.test(sql)) throw new Error('child delete failed');
         if (sql==='ROLLBACK') throw new Error('rollback failed');

@@ -661,7 +661,14 @@ test('message reports are durable, permission-scoped, duplicate-safe and idempot
   assert.match(messages, /MessageReports\.create/);
 
   assert.match(moderation, /router\.get\('\/reports'/);
-  assert.match(moderation, /resolveEffectivePermissions\(_u\.id, serverId, channelId\)/);
+  // P7 D2 x B5 (migrations 088/090): a live channel's permissions decide (VIEW_CHANNELS
+  // + MANAGE_MESSAGES there, or ADMIN); a gone channel's reports need ADMIN unless 090
+  // recorded the channel as 'open', on both routes, so a deleted private channel never
+  // widens who reads it.
+  assert.match(moderation, /resolveEffectivePermissions\(userId, serverId, live \? channelId : null\)/);
+  assert.match(moderation, /const visible = live \|\| reportChannelVisibility\(report\) === 'open';/);
+  assert.match(moderation, /return visible && hasPermission\(perms, PERMS\.VIEW_CHANNELS\) && hasPermission\(perms, PERMS\.MANAGE_MESSAGES\)/);
+  assert.equal((moderation.match(/await canModerateReport\(_u\.id, serverId, channelId, channel\.live, (row|report)\)/g) ?? []).length, 2);
   assert.match(moderation, /PERMS\.MANAGE_MESSAGES/);
   assert.match(moderation, /router\.put\('\/reports\/:reportId'/);
   assert.match(moderation, /result\.kind === 'updated'/);
@@ -866,7 +873,8 @@ test('all production message mutations invalidate every cached first-page varian
   assert.match(cacheOwner, /channelMessagesCachePrefix/);
   assert.match(cacheOwner, /cache\.invalidatePattern\(channelMessagesCachePrefix\(channelId\)\)/);
 
-  assert.match(send, /await invalidateChannelMessages\(String\(channelId\)\)/);
+  assert.match(send, /published = await publishPersistedMessage\(io, publicMsg\)/,
+    'Normal sends must use the shared cache-invalidating, expiry-guarded publisher');
 
   // Phase 15 moved every persisted-message fan-out onto one publisher. The
   // guarantee is unchanged — a bridge-forwarded message must not leave a stale
@@ -877,9 +885,9 @@ test('all production message mutations invalidate every cached first-page varian
     'bridge-forwarded messages must go through the canonical publisher with final expiry authority');
   assert.match(
     activity,
-    /export async function publishPersistedMessage[\s\S]*?await invalidateChannelMessages\(channelId\);\s*\n\s*if \(beforeBroadcast && await beforeBroadcast\(\) !== true\) return;\s*\n\s*broadcastPersistedMessage\(io, message\);/,
+    /export async function publishPersistedMessage[\s\S]*?await invalidateChannelMessages\(channelId\);\s*\n\s*if \(beforeBroadcast && await beforeBroadcast\(\) !== true\) return false;\s*\n\s*return broadcastPersistedMessage\(io, message\);/,
     'the canonical publisher must invalidate the channel cache BEFORE broadcasting, '
-    + 'then require final authority before broadcasting; no asynchronous work may follow that authority check');
+    + 'then require caller authority and delegate to final source/destination authority before broadcasting');
 
   // Pin and reaction stay in the socket handler; edit and delete moved to ONE owner shared with
   // the HTTP routes (Final21 Phase 16 — the HTTP copies had skipped the cache and the broadcast).

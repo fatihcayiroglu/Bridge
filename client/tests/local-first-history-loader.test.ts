@@ -8,6 +8,7 @@ import MessageLoader from '../js/core/MessageLoader.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import {
   readLocalFirstHistory,
+  clearLocalFirstHistoryChannel,
   replaceLocalFirstHistory,
   resetLocalFirstHistoryRuntimeForTests,
 } from '../js/core/local-first/history-runtime.ts';
@@ -136,6 +137,64 @@ afterEach(() => {
 });
 
 describe('P7 MessageLoader encrypted offline history', () => {
+  it('an explicit cleared selection rejects a delayed response after the expired cache was purged', async () => {
+    const userId = 'expired-response-user';
+    registerState(userId);
+    let resolveResponse!: (value: ReturnType<typeof response>) => void;
+    apiFetchMock.mockImplementation(() => new Promise(resolve => { resolveResponse = resolve; }));
+    render(MessageLoader);
+    select('expired');
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledOnce());
+    currentChannel = null;
+    messages = []; // AppState clears the selected channel and visible messages.
+    document.dispatchEvent(new CustomEvent('bridge:channel-selected', { detail: { channelId: null } }));
+    await clearLocalFirstHistoryChannel(userId, 'expired');
+    let bodyRead = false;
+    resolveResponse({ ok: true, status: 200, headers: new Headers(), typed: async () => {
+      bodyRead = true;
+      return { messages: [{ _id: 'stale', channelId: 'expired', content: 'must stay erased', createdAt: 1 }] };
+    } } as never);
+    await waitFor(() => expect(bodyRead).toBe(true));
+    await waitFor(() => expect(loading).toBe(false));
+    expect(messages).toEqual([]);
+    await expect(readLocalFirstHistory(userId, 'expired')).resolves.toBeNull();
+    expect(BridgeRegistry.call('getActiveChannelId')).toBeNull();
+    expect(socket.emit).toHaveBeenCalledWith('channel:leave', 'expired');
+  });
+
+  it('keeps bare selection notifications compatible and loads a permanent channel after a clear', async () => {
+    registerState('permanent-control-user');
+    apiFetchMock.mockImplementation(async (url: string) => response({ messages: [{
+      _id: url.includes('permanent') ? 'permanent-message' : 'old-message',
+      channelId: url.includes('permanent') ? 'permanent' : 'old', content: 'authorized', createdAt: 1,
+    }] }));
+    render(MessageLoader); select('old');
+    await waitFor(() => expect(loading).toBe(false));
+    document.dispatchEvent(new CustomEvent('bridge:channel-selected'));
+    expect(BridgeRegistry.call('getActiveChannelId')).toBe('old');
+    currentChannel = null; messages = [];
+    document.dispatchEvent(new CustomEvent('bridge:channel-selected', { detail: { channelId: null } }));
+    select('permanent');
+    await waitFor(() => expect(messages.map(row => row._id)).toEqual(['permanent-message']));
+    expect(BridgeRegistry.call('getActiveChannelId')).toBe('permanent');
+    await expect(readLocalFirstHistory('permanent-control-user', 'permanent')).resolves.toMatchObject({ messages: [{ _id: 'permanent-message' }] });
+  });
+
+  it('does not admit a delayed socket message or rejoin after selection is cleared', async () => {
+    registerState('expired-socket-user');
+    apiFetchMock.mockResolvedValue(response({ messages: [] }));
+    render(MessageLoader); select('expired');
+    await waitFor(() => expect(loading).toBe(false));
+    currentChannel = null;
+    document.dispatchEvent(new CustomEvent('bridge:channel-selected', { detail: { channelId: null } }));
+    socket.emit.mockClear();
+    socket.fire('message:new', { _id: 'late-socket', channelId: 'expired', content: 'stale', createdAt: 1 });
+    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    expect(messages).toEqual([]);
+    expect(socket.emit).not.toHaveBeenCalled();
+    await expect(readLocalFirstHistory('expired-socket-user', 'expired')).resolves.toMatchObject({ messages: [] });
+  });
+
   it('renders encrypted cached history on a network failure and labels it stale/offline', async () => {
     const userId = 'offline-user';
     const channelId = 'offline-channel';

@@ -45,8 +45,8 @@
     "desktop:win": "cd electron && npm install && npm run dist:win",
     "desktop:mac": "cd electron && npm install && npm run dist:mac",
     "desktop:linux": "cd electron && npm install && npm run dist:linux",
-    "mobile:add": "npx cap add ios && npx cap add android && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js",
-    "mobile:init": "node mobile/scripts/setup.js && npx cap add ios && npx cap add android && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js && npx cap sync",
+    "mobile:add": "npx cap add ios --packagemanager CocoaPods && npx cap add android && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js",
+    "mobile:init": "node mobile/scripts/setup.js && npx cap add ios --packagemanager CocoaPods && npx cap add android && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js && npx cap sync",
     "typecheck:electron": "npx tsc -p electron/tsconfig.json --noEmit",
     "typecheck:strict-client": "npx tsc -p client/tsconfig.strict.json --noEmit",
     "typecheck:client-bridge5": "npx tsc -p client/tsconfig.bridge5.json --noEmit",
@@ -75,6 +75,7 @@
     "generate:openapi-runtime": "node scripts/generate-openapi-runtime.js"
   },
   "dependencies": {
+    "@bridge/local-first-crypto": "file:mobile/plugins/local-first-crypto",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/node": "^25.9.3",
     "bcryptjs": "^3.0.3",
@@ -86,8 +87,8 @@
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "mediasoup-client": "3.23.1",
-    "multer": "^2.3.0",
-    "nodemailer": "^10.0.1",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.1.4",
     "pg": "^8.21.0",
     "pino": "^10.3.1",
     "redis": "^6.0.0",
@@ -192,6 +193,7 @@
     "body-parser": "2.4.0",
     "socket.io-parser": "4.2.7",
     "qs": "6.17.0",
-    "browserslist": "4.28.8"
+    "browserslist": "4.28.8",
+    "fast-uri": "3.1.9"
   }
 }

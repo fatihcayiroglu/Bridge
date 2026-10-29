@@ -76,6 +76,7 @@ const router = express.Router();
 
 import { Members, Messages, Servers } from '../../db/repositories';
 import { PERMS, hasAllPermissions, resolvePermissions } from '../../lib/permissions';
+import { channelRecordIsLive } from '../../lib/channelLiveReadSet';
 import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { cache } from '../../lib/redisAdapter';
@@ -91,7 +92,8 @@ router.post('/moderate', authMiddleware, limits.ai(), async (req, res) => {
   if (!messageId) return res.status(400).json({ error: 'messageId gerekli' });
 
   const msg = await Messages.findById(messageId);
-  if (!msg) return res.status(404).json({ error: 'Mesaj bulunamadı' });
+  if (!msg || !await channelRecordIsLive({ _id: msg.channelId, serverId: msg.serverId }))
+    return res.status(404).json({ error: 'Mesaj bulunamadı' });
   if (!await Members.findOne(_u.id, msg.serverId))
     return res.status(403).json({ error: 'Üye değilsiniz' });
   const perms = await resolvePermissions(_u.id, msg.serverId, msg.channelId).catch(() => 0);

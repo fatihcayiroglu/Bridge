@@ -12,6 +12,7 @@ import { isMemberTimedOut } from '../lib/memberTimeout';
 import { checkMessageContent } from '../lib/messageContentPolicy';
 import db from '../db/loader';
 import { channelWriteAvailability } from '../lib/channelWriteGuard';
+import { isChannelWriteDenied } from '../lib/channelWriteBarrier';
 
 let _io: SocketServer | null = null;
 let _scheduledInterval: ReturnType<typeof setInterval> | null = null;
@@ -179,6 +180,26 @@ async function dispatchDue(): Promise<void> {
         // within the cache TTL did not see the message they had scheduled.
         await publishPersistedMessage(_io, msg);
       } catch (msgErr) {
+        // BX001 is the authoritative PostgreSQL refusal for an unavailable
+        // channel. Its expiry/tombstone cannot be repaired by waiting: do not
+        // burn the remaining retry budget or re-claim this scheduled post.
+        if (isChannelWriteDenied(msgErr)) {
+          try {
+            await ScheduledMessages.markFailed(scheduled._id, WORKER_ID, 'channel_unavailable', Date.now());
+          } catch (markErr) {
+            // A failed terminal-state write must not poison the rest of this
+            // batch. The lease can only be recovered when persistence returns.
+            logger.error(
+              { event: 'scheduled_msg_mark_failed_persist_fail', id: scheduled._id, err: (markErr as Error).message },
+              'Failed to persist terminal channel refusal for scheduled message',
+            );
+          }
+          logger.warn(
+            { event: 'scheduled_msg_channel_unavailable', id: scheduled._id },
+            'Scheduled message rejected by authoritative channel write barrier',
+          );
+          continue;
+        }
         const err = msgErr as Error;
         const attempts = normalizedAttempts(scheduled.dispatchAttempts);
         const reason = err.message || 'dispatch_failed';

@@ -96,6 +96,10 @@ const RUNNERS = [
 // çalıştırmak yerine KENDİ yapılandırma/komut kaynakları okunur ve belirtilir.
 // Yapılandırma değişirse bu liste de değişmelidir — o yüzden kaynak yazılıdır.
 const CONFIG_OWNERS = [
+  // mobile-ios.yml and quality-gate.yml execute this exact standalone Node suite.
+  { owner: 'iOS harness (node:test)', prefix: 'e2e/ios/', suffixes: ['webdriver-http.test.js'] },
+  // mobile-ios.yml compiles and executes this suite with real Apple frameworks.
+  { owner: 'iOS Keychain (swiftc)', prefix: 'e2e/ios/', suffixes: ['key-vault.test.swift'] },
   // package.json:33 test:release-integrity; quality-gate.yml ve quality-gate.sh
   // bu komutu ayrıca doğrudan çağırır.
   { owner: 'release integrity (node:test)', prefix: 'scripts/', suffixes: ['release-integrity.test.js', 'product-surface-contract.test.js', 'final23-adversarial-contract.test.js', 'backup-tools.test.js', 'require-no-skipped-tests.test.js', 'provision-portable-source-key.test.js', 'portable-trust-registry.test.js', 'check-svelte-boundary.test.js', 'perf-acceptance.test.js'] },
@@ -117,7 +121,7 @@ const CONFIG_OWNERS = [
 const KNOWN_UNOWNED = {};
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', 'build', '_archived_legacy']);
-const TEST_SUFFIXES = ['.test.ts', '.test.tsx', '.test.js', '.spec.ts', '.spec.js', '.pgtest.ts'];
+const TEST_SUFFIXES = ['.test.ts', '.test.tsx', '.test.js', '.spec.ts', '.spec.js', '.pgtest.ts', '.test.swift'];
 
 function walk(dir, out = []) {
   let entries;

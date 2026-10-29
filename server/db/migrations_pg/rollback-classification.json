@@ -170,11 +170,14 @@
   "063_message_reports": {
     "classification": "EXPECTED_DEPENDENCY",
     "kind": "cross-migration-dependency",
-    "expectedDifference": "idx_message_reports_message (created by 071) is lost when 063 drops message_reports and is not recreated by 063's re-up",
+    "expectedDifference": "Isolated 063 down/re-up loses idx_message_reports_message (created by 071) and every object 085 adds to message_reports: COL message_reports.evidenceCapturedAt, evidenceText, evidenceTextTruncated, evidenceAuthorId, evidenceAuthorName, evidenceMessageType, evidenceMessageCreatedAt, evidenceMessageEditedAt, evidenceFileName, evidenceFileType, evidenceScrubbedAt; CON message_reports_evidence_bounds_check and message_reports_evidence_lifecycle_check; the COL message_reports.channelVisibility and CON message_reports_channel_visibility_check that 090 adds; and gains the extra CON message_reports_messageId_fkey that 085 drops and the extra CON message_reports_channelId_fkey that 088 drops. Measured 16 lost / 2 extra on PostgreSQL 16 (P7 B5 #336, P7 D2 088/090).",
     "dependsOn": [
-      "071_delete_cascade_fk_indexes"
+      "071_delete_cascade_fk_indexes",
+      "085_message_report_evidence",
+      "088_message_report_channel_retention",
+      "090_message_report_channel_visibility"
     ],
-    "rationale": "071 adds the referencing-column index for the message_reports.messageId ON DELETE CASCADE foreign key. 063's down drops the whole table, taking 071's index with it; re-applying 063 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since."
+    "rationale": "071 adds the referencing-column index for the message_reports.messageId ON DELETE CASCADE foreign key. 063's down drops the whole table, taking 071's index with it; re-applying 063 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since. P7 B5: 085 adds the report-time evidence columns and their CHECK constraints to message_reports and drops the messageId foreign key; 063's down drops the whole table and its re-up recreates the 063 shape (with the CASCADE foreign key, without the evidence columns). 085 by itself is lossless; ordered rollback unwinds 085 and 071 before 063. P7 D2 (owner decision on #321): 088 drops the channelId ON DELETE CASCADE foreign key so reports outlive an expired or deleted channel; 063's re-up recreates it. 088 by itself is lossless; ordered rollback unwinds 088 before 085, 071 and 063. P7 D2 x B5: 090 adds message_reports.\"channelVisibility\" and its CHECK (who may review a gone channel's reports); 063's down drops the table, its re-up cannot recreate them. 090 by itself is lossless; ordered rollback unwinds 090 before 088, 085, 071 and 063."
   },
   "046_activitypub_message_visibility": {
     "classification": "EXPECTED_DEPENDENCY",
@@ -202,5 +205,14 @@
       "082_portable_import_approval_grant_binding"
     ],
     "rationale": "081 owns the portable_import_approvals table and its down drops that table. The later 082 adds the grant digest column and its hex-format CHECK to that same table, so a standalone 081 rollback destroys objects which 081 cannot recreate. 082 by itself is lossless. The mandatory --ordered rollback proof on real PostgreSQL completed the entire down/up chain with zero missing or extra objects. This declaration does not waive the ordered rollback, column validator, exact-head integration checks or any other migration failure."
+  },
+  "084_channel_expiry_foundation": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "cross-migration-dependency",
+    "expectedDifference": "idx_channels_expires_at and idx_channel_expiry_tombstones_pending (created by 087) are lost when 084 drops channels.\"expiresAt\" and channel_expiry_tombstones, and are not recreated by 084's re-up",
+    "dependsOn": [
+      "087_channel_expiry_worker_index"
+    ],
+    "rationale": "087 indexes columns and a table that 084 owns. Isolated reversal of 084 drops them, which drops 087's two partial indexes with them; re-applying 084 alone cannot recreate objects that belong to 087. Ordered rollback unwinds 087 first, and 087's own isolated cycle is lossless (proven by the gate). 084's down is otherwise unchanged and still refuses while expiry metadata or tombstones exist."
   }
 }
