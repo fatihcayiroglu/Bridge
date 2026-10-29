@@ -24,11 +24,20 @@ wayland_protocol_ready() {
       sub(/^new id xdg_toplevel[@#]/, "", id)
       return id
     }
+    # A successful ACK is not permanent evidence. Retire the entire proof
+    # when its window role or surface is destroyed or reassigned.
+    function retire(s, t) {
+      if (s == "") return
+      t = role[s]
+      if (t != "" && owner[t] == s) delete owner[t]
+      delete role[s]; delete sized[s]; delete configured[s]
+    }
     /xdg_surface[@#][0-9]+\.get_toplevel\(/ {
       s = surf_id($0); t = new_top($0)
       if (s != "" && t != "") {
-        if (role[s] != "") delete owner[role[s]]
-        role[s] = t; owner[t] = s; delete sized[s]
+        if (owner[t] != "" && owner[t] != s) retire(owner[t])
+        retire(s)
+        role[s] = t; owner[t] = s
       }
     }
     /xdg_toplevel[@#][0-9]+\.set_(min|max)_size\(/ {
@@ -37,19 +46,23 @@ wayland_protocol_ready() {
     }
     /xdg_surface[@#][0-9]+\.ack_configure\(/ {
       s = surf_id($0)
-      if (s != "" && role[s] != "" && sized[s]) complete = 1
+      if (s != "" && role[s] != "" && owner[role[s]] == s && sized[s])
+        configured[s] = 1
     }
     /xdg_surface[@#][0-9]+\.(destroy|get_popup)\(/ {
-      s = surf_id($0)
-      if (s != "" && role[s] != "") delete owner[role[s]]
-      delete role[s]; delete sized[s]
+      retire(surf_id($0))
     }
     /xdg_toplevel[@#][0-9]+\.destroy\(/ {
       t = top_id($0); s = owner[t]
-      if (s != "" && role[s] == t) { delete role[s]; delete sized[s] }
+      retire(s)
       delete owner[t]
     }
-    END { exit !complete }
+    END {
+      for (s in configured)
+        if (configured[s] && role[s] != "" && owner[role[s]] == s && sized[s])
+          exit 0
+      exit 1
+    }
   ' "${log}" 2>/dev/null
 }
 
