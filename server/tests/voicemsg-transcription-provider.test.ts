@@ -360,3 +360,56 @@ describe('background transcription rechecks channel authority', () => {
     expect(ioEmit).not.toHaveBeenCalled();
   });
 });
+
+
+describe('committed voice-message response is not a storage rollback', () => {
+  // Exercise the final production handler directly so response serialization
+  // can fail synchronously without a synthetic HTTP retry or process-level hang.
+  const uploadHandler = () => {
+    type Handler = (req: unknown, res: unknown) => Promise<unknown>;
+    const layers = (router as unknown as { stack: Array<{
+      route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: Handler }> };
+    }> }).stack;
+    const route = layers.find(layer => layer.route?.path === '/' && layer.route.methods.post)?.route;
+    const handler = route?.stack.at(-1)?.handle;
+    if (!handler) throw new Error('POST voice-message persistence handler unavailable');
+    return handler;
+  };
+  const injectedRequest = () => ({
+    user: { id: actor },
+    body: { channelId: 'c1', serverId: 's1', duration: '0' },
+    file: { mimetype: 'audio/webm', buffer: Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3]) },
+  });
+
+  it('retains both database rows and remote bytes if the response throws after commit', async () => {
+    const response = { json: jest.fn(() => { throw new Error('simulated reply serialization fault'); }) };
+    await expect(uploadHandler()(injectedRequest(), response)).rejects.toThrow('simulated reply serialization fault');
+    expect(response.json).toHaveBeenCalledTimes(1);
+
+    const messages = await db.messages.find({ channelId: 'c1', type: 'voice_message' });
+    const voices = await db.voiceMessages.find({ channelId: 'c1' });
+    expect(messages).toHaveLength(1);
+    expect(voices).toHaveLength(1);
+    expect(recordOf(messages[0], 'committed chat message').fileUrl)
+      .toBe(recordOf(voices[0], 'committed voice row').url);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'voicemsg.response_after_commit_failed' }),
+      expect.any(String),
+    );
+    const writtenPath = store.uploadFile.mock.calls[0]?.[0] as string | undefined;
+    expect(writtenPath).toBeTruthy();
+    expect(fs.existsSync(writtenPath as string)).toBe(false); // Remote-only local copy.
+  });
+
+  it('still rolls back uncommitted voice bytes if the chat-message insert fails', async () => {
+    jest.spyOn(Messages, 'create').mockRejectedValueOnce(new Error('simulated message insert rejection'));
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response)).rejects.toThrow('simulated message insert rejection');
+
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(0);
+    expect(await db.messages.find({ channelId: 'c1', type: 'voice_message' })).toHaveLength(0);
+    expect(store.deleteFile).toHaveBeenCalledTimes(1);
+    expect(response.json).not.toHaveBeenCalled();
+  });
+});

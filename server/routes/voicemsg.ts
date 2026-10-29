@@ -200,6 +200,9 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
   const store = getPrivateStorageAdapter();
   let result: Awaited<ReturnType<typeof store.uploadFile>> | null = null;
   let vm: Awaited<ReturnType<typeof VoiceMessages.insert>> | null = null;
+  // Once both durable rows exist, HTTP delivery is no longer an upload rollback.
+  // A response serialization/transport exception must not remove live bytes.
+  let messageCommitted = false;
   try {
     // Local modda fiziksel dosya zaten server/uploads altındadır; remote modda
     // transkripsiyon bitene kadar yerel kopyayı koruruz.
@@ -242,6 +245,7 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       reactions: {}, createdAt: Date.now(),
     });
     if (!msg?._id) throw new Error('Message persistence failed');
+    messageCommitted = true;
 
     res.json({ ok: true, msg, vmId: vm._id });
 
@@ -269,6 +273,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       }
     });
   } catch (err) {
+    if (messageCommitted) {
+      // The chat message already references these bytes. A failed HTTP reply
+      // is not authority to delete durable user content. The client can
+      // reconcile an unknown acknowledgement from persisted message history.
+      // Only the throwaway local transcription copy may be removed.
+      if (result?.provider !== 'local') safeUnlink(filePath);
+      logger.error({ event: 'voicemsg.response_after_commit_failed' },
+        'Voice message committed but response could not be delivered');
+      throw err;
+    }
     // İki tablo transaction paylaşmıyor. Voice row yazıldıktan sonra Message
     // insert'i başarısız olursa önce DB referansını geri al; DB rollback
     // başarısızsa fiziksel objeyi korumak fail-closed davranıştır.
