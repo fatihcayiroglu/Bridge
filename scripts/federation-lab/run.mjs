@@ -25,6 +25,7 @@ import { register, mutate, request, rnd, login, makeServer, connectSocket, sendM
 import { makeLabPki, TlsFront } from './lib/tls.mjs';
 import { rsaKeyPair, signAp, postTls, getTls, actorDoc } from './lib/apsign.mjs';
 import { FakeAiProvider, hashEmbed } from './lib/fake-ai.mjs';
+import { VECTOR_EDIT_FIXTURE, VECTOR_EDIT_THRESHOLD, vectorEditGeometry } from './lib/vector-edit-fixture.mjs';
 import { makePortableLabTrust, runPortableTlsSourceReview } from './lib/portable.mjs';
 import { runPortableTlsRoundTrip } from './lib/portable-roundtrip.mjs';
 import { runPortableKeyRotation } from './lib/portable-rotation.mjs';
@@ -911,7 +912,7 @@ const S = {
     const E = lab.embedder;
     const SWEEP_MS = 1500;
     const vecEnv = {
-      PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'ollama', OLLAMA_BASE_URL: E.origin, EMBEDDING_MODEL: 'lab-embed',
+      PGVECTOR_ENABLED: 'true', PGVECTOR_SIMILARITY_THRESHOLD: String(VECTOR_EDIT_THRESHOLD), EMBEDDING_PROVIDER: 'ollama', OLLAMA_BASE_URL: E.origin, EMBEDDING_MODEL: 'lab-embed',
       EMBEDDING_DIMENSION: String(EMBED.dim), EMBED_SWEEP_INTERVAL_MS: String(SWEEP_MS), EMBED_SWEEP_MAX_FAILURES: '2',
     };
     await lab.inst.a.stop();
@@ -930,6 +931,11 @@ const S = {
     check('vector', 'F-VEC-01', 'A boots with pgvector: extension, vector(768) column and both invalidation triggers',
       trg === '2' && sqlA(`SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'messages'::regclass AND attname = 'embedding'`) === 'vector(768)', `triggers ${trg}`);
 
+    const geometry = vectorEditGeometry(EMBED.dim);
+    check('vector', 'F-VEC-01A', 'the edit fixture separates old/new queries at the unchanged production threshold',
+      geometry.valid, JSON.stringify(geometry));
+    if (!geometry.valid) throw new Error('Vector edit fixture does not discriminate old and new content');
+
     const owner = await register(A, 'vecowner'); // its own CSRF budget (H-13)
     const members = [];
     for (const n of ['vec1', 'vec2', 'vec3', 'vec4', 'vec5', 'vec6']) members.push(await register(A, n));
@@ -943,7 +949,7 @@ const S = {
     const say = async (cid, sid, content) => (await sendMessage(sock, { channelId: cid, serverId: sid, content, ackId: `vec-${rnd()}` }).catch(() => null))?.messageId ?? null;
     const T = {
       pub: `wombat ${W('budget')} review`, priv: `wombat ${W('vault')} secret`, off: `wombat ${W('offsrv')} chat`,
-      e2e: `🔒e2e:${W('cipher')}`, edit0: `kangaroo ${W('draft')} plan`, edit1: `kangaroo ${W('final')} plan`, del: `platypus ${W('gone')} note`,
+      e2e: `🔒e2e:${W('cipher')}`, edit0: VECTOR_EDIT_FIXTURE.before, edit1: VECTOR_EDIT_FIXTURE.after, del: `platypus ${W('gone')} note`,
     };
     const e0 = E.requests.length;
     const t0 = Date.now();
@@ -980,19 +986,26 @@ const S = {
       `member ${r5m.status}/${r5m.body?.provider}/${ids(r5m).length}, owner ${r5o.status}/${r5o.body?.provider}/${ids(r5o).length}`);
 
     // Edit: the old vector goes in the same statement; the sweep embeds the new text.
+    // A different authorized actor proves the initial search controls without
+    // warming the post-edit actor's result cache (this is the index journey).
+    const beforeOld = await search(owner, VECTOR_EDIT_FIXTURE.oldQuery);
+    const beforeNew = await search(owner, VECTOR_EDIT_FIXTURE.newQuery);
     const before = sqlA(`SELECT embedding::text FROM messages WHERE _id = '${id.edit}'`);
     const ed = await mutate(A, 'PATCH', `/api/channels/${id.edit}`, owner.token, { content: T.edit1 });
     const want = `[${hashEmbed(T.edit1, EMBED.dim).join(',')}]`;
     const reEmbedded = await eventually(() => {
       try { return Number(sqlA(`SELECT 1 - (embedding <=> '${want}'::vector) FROM messages WHERE _id = '${id.edit}' AND embedding IS NOT NULL`)) > 0.9999; } catch { return false; }
     }, 20_000, 300);
-    // Single-word queries: the old and new wording share no word with each other.
-    const rOld = await search(members[2], W('draft'));
-    const rNew = await search(members[2], W('final'));
+    // Validated vector separation, not merely different word spelling.
+    const rOld = await search(members[2], VECTOR_EDIT_FIXTURE.oldQuery);
+    const rNew = await search(members[2], VECTOR_EDIT_FIXTURE.newQuery);
     check('vector', 'F-VEC-06', 'an edit replaces the vector: the new text is embedded, the old wording no longer finds the message',
-      ed.status === 200 && reEmbedded && before !== sqlA(`SELECT embedding::text FROM messages WHERE _id = '${id.edit}'`)
-        && E.embedPromptsSince(e0).includes(T.edit1) && !ids(rOld).includes(id.edit) && ids(rNew).includes(id.edit),
-      `PATCH ${ed.status}, old-word search ${ids(rOld).length} match(es) via ${rOld.body?.provider}, new-word search via ${rNew.body?.provider}`);
+      beforeOld.status === 200 && beforeNew.status === 200 && String(beforeOld.body?.provider).startsWith('pgvector:')
+        && ids(beforeOld).includes(id.edit) && !ids(beforeNew).includes(id.edit)
+        && ed.status === 200 && reEmbedded && before !== sqlA(`SELECT embedding::text FROM messages WHERE _id = '${id.edit}'`)
+        && E.embedPromptsSince(e0).includes(T.edit1) && !ids(rOld).includes(id.edit) && ids(rNew).includes(id.edit)
+        && String(rNew.body?.provider).startsWith('pgvector:'),
+      `PATCH ${ed.status}, reEmbedded=${reEmbedded}, beforeOld=${ids(beforeOld).includes(id.edit)}, beforeNew=${ids(beforeNew).includes(id.edit)}, oldAfter=${ids(rOld).includes(id.edit)}, newAfter=${ids(rNew).includes(id.edit)}, oldProvider=${rOld.body?.provider}, newProvider=${rNew.body?.provider}`);
 
     // Delete: warm the search cache first, so the post-delete search is a cache hit.
     const q7 = `platypus ${W('gone')}`;
@@ -1046,7 +1059,8 @@ const S = {
 
     // No message text in A's logs; the embedder saw only {model, prompt}, no credentials.
     const logs = ['vector', 'vector-restart'].map((t) => { try { return fs.readFileSync(lab.inst.a.logPath(t), 'utf8'); } catch { return ''; } }).join('\n');
-    const words = ['budget', 'vault', 'offsrv', 'cipher', 'draft', 'final', 'gone', 'afteroff', 'outage'].map(W);
+    const words = [...['budget', 'vault', 'offsrv', 'cipher', 'gone', 'afteroff', 'outage'].map(W),
+      VECTOR_EDIT_FIXTURE.oldQuery, VECTOR_EDIT_FIXTURE.newQuery];
     const embedReqs = E.requests.slice(e0).filter((r) => r.path === '/api/embeddings');
     check('vector', 'F-VEC-12', 'no message text in A\'s logs; embedding requests carry only {model, prompt} and no credentials',
       logs.length > 0 && !words.some((w) => logs.includes(w)) && embedReqs.every((r) => !r.auth && Object.keys(r.body || {}).sort().join() === 'model,prompt'),

@@ -72,6 +72,8 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
+      - name: Vector fixture geometry and actual HTTP embedder controls
+        run: node --test scripts/federation-lab/vector-edit-fixture.test.mjs
       - name: Install infrastructure (PostgreSQL binaries + pgvector, Redis, OpenSSL, libfaketime)
         # P6: vector needs pgvector; retry-outage uses libfaketime only for the
         # Bridge app processes. PostgreSQL/Redis/the harness keep real time.
