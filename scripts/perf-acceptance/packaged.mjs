@@ -77,11 +77,13 @@ export async function runPackaged(config) {
   const networkFailures = [];
   const runtimeErrors = [];
   let historyProgress = null;
+  let authInteraction = null;
+  let loginRequests = 0;
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
     blockedExternalRequests, networkFailures, runtimeErrors,
-    historyProgress,
+    historyProgress, authInteraction, loginRequests,
     bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
@@ -110,6 +112,9 @@ export async function runPackaged(config) {
     page.on('pageerror', error => {
       const allowed = new Set(['TypeError','ReferenceError','SyntaxError','SecurityError','Error']);
       runtimeErrors.push({ type: allowed.has(error.name) ? error.name : 'RUNTIME_ERROR' });
+    });
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/login' && request.method() === 'POST') loginRequests++;
     });
     page.on('response', response => {
       if (new URL(response.url()).pathname === '/api/login' && response.request().method() === 'POST') loginStatus = response.status();
@@ -141,6 +146,24 @@ export async function runPackaged(config) {
     stage = 'AUTH_FORM';
     await page.locator('#l-username').waitFor({ state: 'visible' });
     const instrumentedLoginUiMs = performance.now() - launchStart;
+    // Observe only closed event counts, never input values, event text or URLs.
+    // A successful driver click is not proof that the product delegate ran.
+    await page.evaluate(() => {
+      const counts = { pointerDown: 0, capturedClick: 0, bubbledClick: 0 };
+      const matches = event => event.target instanceof Element &&
+        Boolean(event.target.closest('#login-form [data-auth-action="login"]'));
+      const down = event => { if (matches(event)) counts.pointerDown++; };
+      const capture = event => { if (matches(event)) counts.capturedClick++; };
+      const bubble = event => { if (matches(event)) counts.bubbledClick++; };
+      document.addEventListener('pointerdown', down, true);
+      document.addEventListener('click', capture, true);
+      document.addEventListener('click', bubble);
+      window.__bridgePerfAuth = { counts, stop() {
+        document.removeEventListener('pointerdown', down, true);
+        document.removeEventListener('click', capture, true);
+        document.removeEventListener('click', bubble);
+      } };
+    });
     stage = 'AUTH_USERNAME';
     await page.locator('#l-username').fill(c.username);
     stage = 'AUTH_PASSWORD';
@@ -153,6 +176,9 @@ export async function runPackaged(config) {
     const loginResult = await login;
     requireFact(!loginResult.unavailable, 'AUTH_RESPONSE_UNAVAILABLE');
     requireFact(loginResult.response.status() === 200, 'AUTHENTICATION_REJECTED');
+    authInteraction = await page.evaluate(() => {
+      const state = window.__bridgePerfAuth; state.stop(); return state.counts;
+    });
     stage = 'INITIAL_ONBOARDING';
     // A fresh account may show the ordinary first-use tour. Dismiss only its
     // actual visible Skip button; do not inject a completion key or credentials.
@@ -178,7 +204,8 @@ export async function runPackaged(config) {
       // Prime CPU interval; the first getAppMetrics interval is not a measurement.
       await application.evaluate(({ app }) => app.getAppMetrics());
       const historyCodes = new Set(['HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID',
-        'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING']);
+        'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING',
+        'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED']);
       const work = activity ? activity(end).then(value => ({ value }), error => ({ failed: true,
         code: historyCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'HISTORY_DRIVER_TIMEOUT' : 'HISTORY_ACTIVITY_FAILED' })) : Promise.resolve({});
       while (performance.now() < end) {
@@ -259,7 +286,14 @@ export async function runPackaged(config) {
       try {
         await page.evaluate(() => {
           if (!PerformanceObserver.supportedEntryTypes.includes('longtask')) throw Error('LONGTASK_UNAVAILABLE');
-          const state = window.__bridgePerf = { frames: [], longTasks: [], last: performance.now(), running: true };
+          const state = window.__bridgePerf = { frames: [], longTasks: [], last: performance.now(), running: true,
+            skipped: new Set(), skippedPeak: 0 };
+          state.onContainment = event => {
+            if (!event.target.classList.contains('msg-contained')) return;
+            if (event.skipped) state.skipped.add(event.target); else state.skipped.delete(event.target);
+            state.skippedPeak = Math.max(state.skippedPeak, state.skipped.size);
+          };
+          document.addEventListener('contentvisibilityautostatechange', state.onContainment, true);
           state.observer = new PerformanceObserver(list => state.longTasks.push(...list.getEntries().map(e => e.duration)));
           state.observer.observe({ type: 'longtask' });
           const frame = time => { if (!state.running) return; state.frames.push(time - state.last); state.last = time; requestAnimationFrame(frame); };
@@ -289,19 +323,40 @@ export async function runPackaged(config) {
         }
         await Promise.all([...pending]);
         requireFact(!invalidResponse && seen.size === 10000 && traversalMs !== null, 'HISTORY_TRAVERSAL_INCOMPLETE');
+        await inViewport(`${c.messagePrefix}10000`);
+        await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}10000"]`).focus();
+        await page.keyboard.press('ArrowUp');
+        try {
+          await page.waitForFunction(id => document.activeElement?.getAttribute('data-id') === id,
+            `${c.messagePrefix}09999`, { timeout: 2000 });
+        } catch { throw new Error('HISTORY_KEYBOARD_FAILED'); }
         const observed = await page.evaluate(() => {
           const s = window.__bridgePerf; s.running = false; s.observer.disconnect();
-          return { frames: s.frames, longTasks: s.longTasks };
+          document.removeEventListener('contentvisibilityautostatechange', s.onContainment, true);
+          return { frames: s.frames, longTasks: s.longTasks, skippedPeak: s.skippedPeak };
         });
         requireFact(observed.frames.length >= 3 && observed.frames.every(Number.isFinite), 'SCROLL_SAMPLES_MISSING');
+        requireFact(observed.skippedPeak > 0, 'CONTAINMENT_NOT_EXERCISED');
         return { samples: observed.frames.map(frameTimeMs => ({ frameTimeMs })), evidence: {
           firstPageVisibleMs, traversalMs, uniqueMessagesObserved: seen.size,
           newestAndOldestVisible: true,
+          keyboardNavigation: true, offscreenSkippedPeak: observed.skippedPeak,
           longTaskDurationsMs: observed.longTasks, persistedFixtureCount: c.seededMessages,
           scrollMethod: 'actual product scroll handler; authenticated network responses; no registry calls',
         } };
       } finally {
         page.off('response', onResponse);
+        try {
+          historyProgress.containment = await page.evaluate(() => {
+            const s = window.__bridgePerf;
+            if (s) {
+              s.running = false; s.observer.disconnect();
+              document.removeEventListener('contentvisibilityautostatechange', s.onContainment, true);
+            }
+            return { supported: CSS.supports('content-visibility', 'auto'),
+              eligibleRows: document.querySelectorAll('.msg-contained').length, skippedPeak: s?.skippedPeak ?? 0 };
+          });
+        } catch { historyProgress.containment = { unavailable: true }; }
         if (profiler) {
           try { historyProgress.rendererAfter = await metrics(); } catch { historyProgress.profilerAfterUnavailable = true; }
           await profiler.detach().catch(() => {});
@@ -317,12 +372,21 @@ export async function runPackaged(config) {
     // stacks, traces, screenshots or browser storage from authentication.
     if (pageRef && !pageRef.isClosed()) {
       try {
+        authInteraction = await pageRef.evaluate(() => {
+          const state = window.__bridgePerfAuth;
+          if (!state) return null;
+          state.stop(); return state.counts;
+        });
         failureUi = await pageRef.evaluate(() => {
           const visible = selector => {
             const el = document.querySelector(selector);
             return Boolean(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
           };
-          return { loginFormVisible: visible('#login-form'), usernameVisible: visible('#l-username'),
+          return { documentReady: document.readyState === 'complete',
+            loginButtonCount: document.querySelectorAll('#login-form [data-auth-action="login"]').length,
+            loginButtonDisabled: Boolean(document.querySelector('#login-form [data-auth-action="login"]')?.disabled),
+            authMessagePresent: Boolean(document.querySelector('#auth-msg')?.textContent?.trim()),
+            loginFormVisible: visible('#login-form'), usernameVisible: visible('#l-username'),
             passwordVisible: visible('#l-password'), onboardingVisible: visible('.ow-backdrop'),
             loginFunctionReady: typeof globalThis.login === 'function',
             usernamePopulated: Boolean(document.querySelector('#l-username')?.value),
@@ -339,6 +403,7 @@ export async function runPackaged(config) {
       'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE',
       'HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID','HISTORY_TRAVERSAL_INCOMPLETE',
       'HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING','HISTORY_DRIVER_TIMEOUT',
+      'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED',
       'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
     const code = closedCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'DRIVER_TIMEOUT' : 'DRIVER_OR_RUNTIME_FAILURE';
     writeAttempt('FAIL', code);
