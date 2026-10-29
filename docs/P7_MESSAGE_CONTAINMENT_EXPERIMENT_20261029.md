@@ -26,3 +26,6 @@ Potential risks: estimated unvisited row heights and scroll anchoring; skipped p
 - Actual packaged candidate measurement: pending CI; NOT EXECUTED locally (no native Linux runtime).
 
 P7 remains OPEN. No startup SLA, native mobile compatibility, Wayland fix, durable delivery or complete performance acceptance is claimed. No deployment or main merge.
+
+
+Latest containment head 2a51c5b7f51ab0590fd8f842bef285097003fc97 first run40798429405/job123200421428 FAILed before scenarios: AUTH_RESPONSE/AUTH_RESPONSE_UNAVAILABLE. CI12 executor +105 component tests and actual builds passed, zero skipped; no native containment measurement. Artifact12864139735 SHA2567b6735daabacd9abf8e0e4be6f74913fdae3d2d79141f310918f9736a4a4a122 downloaded/verified. A follow-up observes only login pointerdown/captured-click/bubbled-click counts, request count, document-ready/disabled/message-presence booleans. It changes no product authentication, retries, timeout or event propagation. Values, messages, tokens and raw driver exceptions are never exported. Authentication causality remains OPEN; a later successful run cannot by itself classify the intermittent issue fixed.

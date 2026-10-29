@@ -77,11 +77,13 @@ export async function runPackaged(config) {
   const networkFailures = [];
   const runtimeErrors = [];
   let historyProgress = null;
+  let authInteraction = null;
+  let loginRequests = 0;
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
     blockedExternalRequests, networkFailures, runtimeErrors,
-    historyProgress,
+    historyProgress, authInteraction, loginRequests,
     bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
@@ -110,6 +112,9 @@ export async function runPackaged(config) {
     page.on('pageerror', error => {
       const allowed = new Set(['TypeError','ReferenceError','SyntaxError','SecurityError','Error']);
       runtimeErrors.push({ type: allowed.has(error.name) ? error.name : 'RUNTIME_ERROR' });
+    });
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/login' && request.method() === 'POST') loginRequests++;
     });
     page.on('response', response => {
       if (new URL(response.url()).pathname === '/api/login' && response.request().method() === 'POST') loginStatus = response.status();
@@ -141,6 +146,24 @@ export async function runPackaged(config) {
     stage = 'AUTH_FORM';
     await page.locator('#l-username').waitFor({ state: 'visible' });
     const instrumentedLoginUiMs = performance.now() - launchStart;
+    // Observe only closed event counts, never input values, event text or URLs.
+    // A successful driver click is not proof that the product delegate ran.
+    await page.evaluate(() => {
+      const counts = { pointerDown: 0, capturedClick: 0, bubbledClick: 0 };
+      const matches = event => event.target instanceof Element &&
+        Boolean(event.target.closest('#login-form [data-auth-action="login"]'));
+      const down = event => { if (matches(event)) counts.pointerDown++; };
+      const capture = event => { if (matches(event)) counts.capturedClick++; };
+      const bubble = event => { if (matches(event)) counts.bubbledClick++; };
+      document.addEventListener('pointerdown', down, true);
+      document.addEventListener('click', capture, true);
+      document.addEventListener('click', bubble);
+      window.__bridgePerfAuth = { counts, stop() {
+        document.removeEventListener('pointerdown', down, true);
+        document.removeEventListener('click', capture, true);
+        document.removeEventListener('click', bubble);
+      } };
+    });
     stage = 'AUTH_USERNAME';
     await page.locator('#l-username').fill(c.username);
     stage = 'AUTH_PASSWORD';
@@ -153,6 +176,9 @@ export async function runPackaged(config) {
     const loginResult = await login;
     requireFact(!loginResult.unavailable, 'AUTH_RESPONSE_UNAVAILABLE');
     requireFact(loginResult.response.status() === 200, 'AUTHENTICATION_REJECTED');
+    authInteraction = await page.evaluate(() => {
+      const state = window.__bridgePerfAuth; state.stop(); return state.counts;
+    });
     stage = 'INITIAL_ONBOARDING';
     // A fresh account may show the ordinary first-use tour. Dismiss only its
     // actual visible Skip button; do not inject a completion key or credentials.
@@ -346,12 +372,21 @@ export async function runPackaged(config) {
     // stacks, traces, screenshots or browser storage from authentication.
     if (pageRef && !pageRef.isClosed()) {
       try {
+        authInteraction = await pageRef.evaluate(() => {
+          const state = window.__bridgePerfAuth;
+          if (!state) return null;
+          state.stop(); return state.counts;
+        });
         failureUi = await pageRef.evaluate(() => {
           const visible = selector => {
             const el = document.querySelector(selector);
             return Boolean(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
           };
-          return { loginFormVisible: visible('#login-form'), usernameVisible: visible('#l-username'),
+          return { documentReady: document.readyState === 'complete',
+            loginButtonCount: document.querySelectorAll('#login-form [data-auth-action="login"]').length,
+            loginButtonDisabled: Boolean(document.querySelector('#login-form [data-auth-action="login"]')?.disabled),
+            authMessagePresent: Boolean(document.querySelector('#auth-msg')?.textContent?.trim()),
+            loginFormVisible: visible('#login-form'), usernameVisible: visible('#l-username'),
             passwordVisible: visible('#l-password'), onboardingVisible: visible('.ow-backdrop'),
             loginFunctionReady: typeof globalThis.login === 'function',
             usernamePopulated: Boolean(document.querySelector('#l-username')?.value),
