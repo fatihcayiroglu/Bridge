@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateConfig, normalizeMetrics, validateIdentity } from './perf-acceptance/packaged.mjs';
+import { validateConfig, normalizeMetrics, validateIdentity, isolatedRequestAllowed } from './perf-acceptance/packaged.mjs';
 import { SCENARIOS } from './perf-acceptance/scenarios.mjs';
 import { requireDisposable } from './perf-acceptance/disposable.mjs';
 
@@ -66,4 +66,15 @@ test('a packaged executable with disabled sandbox, unsafe renderer or no real wi
     { windows: [{ sandbox: true, contextIsolation: true, nodeIntegration: true }] }]) {
     assert.throws(() => validateIdentity({ ...good, ...patch }), /PACKAGED_SECURITY_PRECONDITION/);
   }
+});
+
+test('fixture credentials and API traffic cannot be submitted to another installation', () => {
+  const origin = 'https://127.0.0.1:3443';
+  assert.equal(isolatedRequestAllowed(`${origin}/api/login`, 'POST', origin), true);
+  assert.equal(isolatedRequestAllowed(`${origin}/api/me`, 'GET', origin), true);
+  assert.equal(isolatedRequestAllowed('https://other.example/api/login', 'POST', origin), false);
+  assert.equal(isolatedRequestAllowed('https://other.example/api/me', 'GET', origin), false);
+  assert.equal(isolatedRequestAllowed('https://other.example/submit', 'POST', origin), false);
+  assert.equal(isolatedRequestAllowed('https://u:p@other.example/font.woff', 'GET', origin), false);
+  assert.equal(isolatedRequestAllowed('https://static.example/font.woff', 'GET', origin), true);
 });

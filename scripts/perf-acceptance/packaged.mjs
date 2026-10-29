@@ -21,6 +21,15 @@ export function validateIdentity(identity) {
   'PACKAGED_SECURITY_PRECONDITION');
 }
 
+export function isolatedRequestAllowed(rawUrl, method, origin) {
+  try {
+    const url = new URL(rawUrl);
+    if (url.username || url.password) return false;
+    if (url.origin === origin) return true;
+    return ['GET', 'HEAD'].includes(method) && !url.pathname.startsWith('/api/');
+  } catch { return false; }
+}
+
 export function validateConfig(c) {
   requireFact(c?.schema === 1 && /^[a-f0-9]{40}$/.test(c.bridgeCommit), 'CONFIG_PROVENANCE');
   const u = new URL(c.origin);
@@ -64,9 +73,13 @@ export async function runPackaged(config) {
   let loginStatus = null;
   let onboardingDismissed = false;
   let failureUi = null;
+  let blockedExternalRequests = 0;
+  const networkFailures = [];
+  const runtimeErrors = [];
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
+    blockedExternalRequests, networkFailures, runtimeErrors,
     bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
@@ -77,6 +90,25 @@ export async function runPackaged(config) {
     stage = 'PRODUCT_WINDOW';
     const page = await application.firstWindow();
     pageRef = page;
+    await page.route('**/*', route => {
+      const request = route.request();
+      if (isolatedRequestAllowed(request.url(), request.method(), c.origin)) return route.continue();
+      blockedExternalRequests++;
+      return route.abort('blockedbyclient');
+    });
+    const failureCodes = new Set(['net::ERR_CERT_AUTHORITY_INVALID','net::ERR_CONNECTION_REFUSED','net::ERR_FAILED',
+      'net::ERR_BLOCKED_BY_CLIENT','net::ERR_BLOCKED_BY_RESPONSE','net::ERR_ABORTED','net::ERR_SSL_PROTOCOL_ERROR']);
+    page.on('requestfailed', request => {
+      const u = new URL(request.url());
+      if (!u.pathname.startsWith('/api/') && request.resourceType() !== 'script') return;
+      const text = request.failure()?.errorText;
+      networkFailures.push({ kind: u.pathname === '/api/login' ? 'login' : request.resourceType() === 'script' ? 'script' : 'api',
+        code: failureCodes.has(text) ? text : 'NETWORK_FAILURE' });
+    });
+    page.on('pageerror', error => {
+      const allowed = new Set(['TypeError','ReferenceError','SyntaxError','SecurityError','Error']);
+      runtimeErrors.push({ type: allowed.has(error.name) ? error.name : 'RUNTIME_ERROR' });
+    });
     page.on('response', response => {
       if (new URL(response.url()).pathname === '/api/login' && response.request().method() === 'POST') loginStatus = response.status();
     });
@@ -98,6 +130,12 @@ export async function runPackaged(config) {
     validateIdentity(identity);
     const asarSha256 = createHash('sha256').update(fs.readFileSync(identity.appPath)).digest('hex');
     requireFact(new URL(page.url()).origin === c.origin, 'PRODUCT_ORIGIN');
+    stage = 'AUTH_RUNTIME_READY';
+    await page.waitForFunction(() => typeof globalThis.login === 'function');
+    requireFact(await page.evaluate(() => {
+      try { return !globalThis.BRIDGE_API || new URL(globalThis.BRIDGE_API).origin === location.origin; }
+      catch { return false; }
+    }), 'AUTH_ORIGIN_PRECONDITION');
     stage = 'AUTH_FORM';
     await page.locator('#l-username').waitFor({ state: 'visible' });
     const instrumentedLoginUiMs = performance.now() - launchStart;
@@ -105,11 +143,14 @@ export async function runPackaged(config) {
     await page.locator('#l-username').fill(c.username);
     stage = 'AUTH_PASSWORD';
     await page.locator('#l-password').fill(c.password);
-    const login = page.waitForResponse(r => new URL(r.url()).pathname === '/api/login' && r.request().method() === 'POST');
+    const login = page.waitForResponse(r => new URL(r.url()).pathname === '/api/login' && r.request().method() === 'POST')
+      .then(response => ({ response }), () => ({ unavailable: true }));
     stage = 'AUTH_SUBMIT';
     await page.locator('#login-form [data-auth-action="login"]').click();
     stage = 'AUTH_RESPONSE';
-    requireFact((await login).status() === 200, 'AUTHENTICATION_REJECTED');
+    const loginResult = await login;
+    requireFact(!loginResult.unavailable, 'AUTH_RESPONSE_UNAVAILABLE');
+    requireFact(loginResult.response.status() === 200, 'AUTHENTICATION_REJECTED');
     stage = 'INITIAL_ONBOARDING';
     // A fresh account may show the ordinary first-use tour. Dismiss only its
     // actual visible Skip button; do not inject a completion key or credentials.
@@ -252,6 +293,10 @@ export async function runPackaged(config) {
           };
           return { loginFormVisible: visible('#login-form'), usernameVisible: visible('#l-username'),
             passwordVisible: visible('#l-password'), onboardingVisible: visible('.ow-backdrop'),
+            loginFunctionReady: typeof globalThis.login === 'function',
+            usernamePopulated: Boolean(document.querySelector('#l-username')?.value),
+            passwordPopulated: Boolean(document.querySelector('#l-password')?.value),
+            moduleScriptCount: document.querySelectorAll('script[type="module"]').length,
             modalCount: document.querySelectorAll('[role="dialog"][aria-modal="true"]').length,
             serverCount: document.querySelectorAll('.server-icon[data-id]').length,
             channelCount: document.querySelectorAll('.ch-item[data-id]').length,
@@ -260,6 +305,7 @@ export async function runPackaged(config) {
       } catch { failureUi = { unavailable: true }; }
     }
     const closedCodes = new Set(['PACKAGED_SECURITY_PRECONDITION','PRODUCT_ORIGIN','AUTHENTICATION_REJECTED',
+      'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE',
       'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
     const code = closedCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'DRIVER_TIMEOUT' : 'DRIVER_OR_RUNTIME_FAILURE';
     writeAttempt('FAIL', code);

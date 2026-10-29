@@ -158,3 +158,18 @@ first-use tour through its actual Skip button. It does not inject an onboarding
 key, force a click, change authentication or treat an absent tour as tested.
 No screenshots, element text/values, credentials or WebDriver exception messages
 are published. This is diagnostic/precondition work; runtime evidence is pending.
+
+Sixth attempt: `d7a9b159f62f3456cee24a17b4bf4470b0782138`, run 40793572988 /
+job 123184442631 FAIL at **AUTH_RESPONSE / DRIVER_TIMEOUT**. Hash-verified
+artifact 12862453687 SHA-256
+`d5c12500e1970a92647eae30f2e0d1128c4aaeea336fd8585c51d0bdb8d494d4`
+shows one secure packaged window, visible login fields/form, no modal and no
+observed login HTTP response. This does not establish a password or onboarding
+failure. Add a read-only functional auth-readiness and same-origin check before
+typing; capture only closed network failure codes/runtime error types and
+presence booleans. Pending login-response rejection is consumed safely so a
+parallel timeout cannot print a raw driver exception. External API or mutating
+HTTP requests are aborted rather than allowing fixture credentials to target a
+different installation; actual same-origin backend traffic is passed through
+without mocked responses. The egress boundary has a regression test (12 local
+contracts total). No API auth injection/force click/security bypass is used.
