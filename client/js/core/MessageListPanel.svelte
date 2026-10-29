@@ -13,7 +13,7 @@
 -->
 <script lang="ts">
   import { t } from './i18n/reactive.svelte.ts';
-  import { onMount, onDestroy, type Snippet } from 'svelte';
+  import { onMount, onDestroy, tick, type Snippet } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
   import { apiFetch } from './api-fetch.js';
   import { getAPI } from './globals.js';
@@ -22,6 +22,7 @@
   import { safeApiErrorMessage } from './api-error.ts';
   import { queueReactionMessageOperation } from './local-first/message-operation-sync.ts';
   import { toast } from './utils.js';
+  import MessageViewportRow from './MessageViewportRow.svelte';
   import MessageRenderer, { type MessageData } from './MessageRenderer.svelte';
   const log = createLogger('MessageListPanel');
 
@@ -49,6 +50,8 @@
   let loadingOlder = false;
   let jumpTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingJumpId: string | null = null;
+  let navigationOwner = '';
+  let navigationGeneration = 0;
   let lastAutoUnreadJumpId: string | null = null;
 
   const NEAR_BOTTOM_PX = 120;
@@ -73,6 +76,10 @@
     currentChannelType = String(currentChannel?.type ?? '');
     const currentUser = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
     currentUserId = currentUser?._id ?? currentUser?.id ?? null;
+    const nextOwner = `${currentUserId ?? ''}:${currentChannel?._id ?? ''}`;
+    if (nextOwner !== navigationOwner) {
+      navigationOwner = nextOwner; navigationGeneration++; pendingJumpId = null;
+    }
 
     // Sabitleme yetkisini geçerli sunucu için çöz (sunucu başına önbellekli).
     // Kanıtlanana kadar `false` — yetkisiz kullanıcıya ölü kontrol gösterilmez.
@@ -179,9 +186,30 @@
    * Yanıt önizlemesine tıklanınca orijinal mesaja git.
    * Yalnızca yüklü mesajlar için çağrılır (MessageRenderer replySource ile karar verir).
    */
+  // Offscreen rows expose a lightweight anchor. Real navigation reveals the
+  // component before focusing/highlighting it; no registry-only test hook.
+  function revealMessage(messageId: string, use: (target: HTMLElement) => void): boolean {
+    const article = scroller?.querySelector<HTMLElement>(`.msg[data-id="${CSS.escape(messageId)}"]`);
+    if (article) { use(article); return true; }
+    const anchor = scroller?.querySelector<HTMLElement>(`[data-message-viewport-id="${CSS.escape(messageId)}"]`);
+    if (!anchor) return false;
+    anchor.scrollIntoView({ block: 'nearest' });
+    anchor.dispatchEvent(new Event('bridge:message-reveal'));
+    const generation = navigationGeneration;
+    void tick().then(() => {
+      if (generation !== navigationGeneration) return;
+      const target = scroller?.querySelector<HTMLElement>(`.msg[data-id="${CSS.escape(messageId)}"]`);
+      if (target) use(target);
+    });
+    return true;
+  }
+
   function jumpToMessage(messageId: string): void {
     const target = scroller?.querySelector<HTMLElement>(`.msg[data-id="${CSS.escape(messageId)}"]`);
-    if (!target) { pendingJumpId = messageId; return; }
+    if (!target) {
+      if (!revealMessage(messageId, () => jumpToMessage(messageId))) pendingJumpId = messageId;
+      return;
+    }
     pendingJumpId = null;
     stickToBottom = false; // kullanıcıyı yukarı taşıyoruz; yeni mesaj zorla aşağı çekmesin
     const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -197,7 +225,7 @@
   function scrollToUnreadBoundary(messageId: string): boolean {
     const marker = scroller?.querySelector<HTMLElement>(`[data-first-unread="${CSS.escape(messageId)}"]`);
     const target = marker ?? scroller?.querySelector<HTMLElement>(`.msg[data-id="${CSS.escape(messageId)}"]`);
-    if (!target) return false;
+    if (!target) return revealMessage(messageId, () => scrollToUnreadBoundary(messageId));
     stickToBottom = false;
     awayFromBottom = true;
     const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -330,10 +358,13 @@
     if (!target) return;
     activeId = String(target.message._id);
     // Svelte durumu isledikten SONRA odagi tasi.
+    const focusId = activeId;
+    const generation = navigationGeneration;
     queueMicrotask(() => {
-      const el = document.querySelector<HTMLElement>(`.msg[data-id="${CSS.escape(activeId!)}"]`);
-      el?.focus();
-      el?.scrollIntoView({ block: 'nearest' });
+      if (generation !== navigationGeneration) return;
+      if (focusId) revealMessage(focusId, el => {
+        el.focus(); el.scrollIntoView({ block: 'nearest' });
+      });
     });
   }
 
@@ -359,7 +390,7 @@
     scroller?.removeEventListener('scroll', onScroll);
     // Relinquish the DOM owner before any pending page promise/RAF settles.
     // Otherwise an unmounted panel can still move a recycled shell scroller.
-    scroller = null;
+    scroller = null; navigationGeneration++;
     document.removeEventListener('bridge:messages-updated', onMessagesUpdated);
     document.removeEventListener('bridge:members-updated', syncAlone);
     document.removeEventListener('bridge:channel-selected', onChannelSelected);
@@ -420,6 +451,7 @@
     {/if}
 
     {#each grouped as { message, compact } (message._key ?? message._id)}
+      <MessageViewportRow messageId={String(message._id)} enabled={grouped.length > 200} keepFocusTarget={String(message._id) === rovingId} {compact}>
       {#if firstUnreadMessageId === message._id}
         <div class="first-unread-divider" role="separator" aria-label={t("unread_first")} data-first-unread={message._id}>
           <span>{t('markup_yeni_mesajlar_552eaca', "Yeni mesajlar")}</span>
@@ -485,6 +517,7 @@
           });
         }}
       />
+      </MessageViewportRow>
     {/each}
 
     {#if isLoading && messages.length === 0}

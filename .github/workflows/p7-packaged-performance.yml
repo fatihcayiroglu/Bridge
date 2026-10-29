@@ -8,6 +8,8 @@ on:
       - 'scripts/perf-packaged.test.mjs'
       - 'client/js/core/MessageRenderer.svelte'
       - 'client/js/core/MessageListPanel.svelte'
+      - 'client/js/core/MessageViewportRow.svelte'
+      - 'client/tests/message-list-deep-coverage.test.ts'
       - '.github/workflows/p7-packaged-performance.yml'
   workflow_dispatch:
 
