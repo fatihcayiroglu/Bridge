@@ -251,6 +251,7 @@ export async function runPackaged(config) {
           durationSec: (performance.now() - start) / 1000, asarSha256, uiEntrySha256: servedUi.sha256,
           environment: process.env.GITHUB_ACTIONS === 'true' ? 'hosted CI VM' : 'operator host',
           display: process.env.XDG_SESSION_TYPE || (process.env.DISPLAY ? 'X11' : 'unspecified'),
+          windowManager: process.env.BRIDGE_PERF_WINDOW_MANAGER === 'openbox' ? 'openbox' : 'unverified',
           instrumentation: id === 'PA01' ? 'Playwright main-process inspector' : 'Playwright main-process inspector + renderer observer',
           instrumentedLoginUiMs, ...result.value?.evidence } };
       report.scenarios[report.scenarios.findIndex(s => s.id === id)] = entry;
