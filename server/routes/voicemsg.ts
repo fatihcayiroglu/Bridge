@@ -200,6 +200,12 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
   const store = getPrivateStorageAdapter();
   let result: Awaited<ReturnType<typeof store.uploadFile>> | null = null;
   let vm: Awaited<ReturnType<typeof VoiceMessages.insert>> | null = null;
+  // Preallocate identifiers so an insert that committed but lost its reply
+  // can be probed on the same primary before any destructive compensation.
+  const voiceId = uuidv4();
+  const chatId = uuidv4();
+  let voiceInsertAttempted = false;
+  let chatInsertAttempted = false;
   // Once both durable rows exist, HTTP delivery is no longer an upload rollback.
   // A response serialization/transport exception must not remove live bytes.
   let messageCommitted = false;
@@ -225,8 +231,9 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     // re-checks current channel visibility before proxying remote bytes.
     const fileUrl = `/uploads/${fileName}`;
 
+    voiceInsertAttempted = true;
     vm = await VoiceMessages.insert({
-      _id: uuidv4(), channelId, serverId,
+      _id: voiceId, channelId, serverId,
       userId: _u.id,
       // `voice_messages."displayName"` is NOT NULL with no default and was never written here,
       // so this insert could only fail on real PostgreSQL — the unit-test store does not
@@ -236,8 +243,9 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     });
     if (!vm?._id) throw new Error('Voice message persistence failed');
 
+    chatInsertAttempted = true;
     const msg = await Messages.create({
-      _id: uuidv4(), channelId, serverId,
+      _id: chatId, channelId, serverId,
       userId: _u.id, username: author.username,
       displayName, avatarColor: author.avatarColor || '#2d9cdb',
       content: '', type: 'voice_message',
@@ -282,6 +290,35 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       logger.error({ event: 'voicemsg.response_after_commit_failed' },
         'Voice message committed but response could not be delivered');
       throw err;
+    }
+    // PostgreSQL may commit a write before the client sees a transport error.
+    // On such an ambiguous result, deleting storage is worse than retaining
+    // an orphan: a real chat/voice row might still reference these bytes.
+    // Probe with the preallocated IDs; a failed proof must be fail-closed.
+    if (chatInsertAttempted) {
+      let persistedChat: Awaited<ReturnType<typeof Messages.findById>>;
+      try { persistedChat = await Messages.findById(chatId); }
+      catch {
+        logger.error({ event: 'voicemsg.chat_commit_unverifiable' },
+          'Voice message chat write result cannot be verified; backing bytes preserved');
+        if (result?.provider !== 'local') safeUnlink(filePath);
+        throw err;
+      }
+      if (persistedChat) {
+        logger.error({ event: 'voicemsg.chat_commit_confirmed_after_error' },
+          'Chat row committed but response was lost; backing bytes preserved');
+        if (result?.provider !== 'local') safeUnlink(filePath);
+        throw err;
+      }
+    }
+    if (voiceInsertAttempted && !vm?._id) {
+      try { vm = await VoiceMessages.findOne({ _id: voiceId }); }
+      catch {
+        logger.error({ event: 'voicemsg.voice_commit_unverifiable' },
+          'Voice write result cannot be verified; backing bytes preserved');
+        if (result?.provider !== 'local') safeUnlink(filePath);
+        throw err;
+      }
     }
     // İki tablo transaction paylaşmıyor. Voice row yazıldıktan sonra Message
     // insert'i başarısız olursa önce DB referansını geri al; DB rollback
