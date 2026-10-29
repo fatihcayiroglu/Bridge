@@ -148,3 +148,20 @@ execution is separate from native Wayland acceptance. Physical devices/API37,
 real gaming/SFU/capture and startup SLA acceptance remain NOT EXECUTED without
 their own evidence. Retention/erasure/legal-hold, signing domains/identities and
 release-scope decisions remain with the owner; no choice is silently enacted.
+
+
+## Verified continuation — 2026-10-29, latest checkpoint
+
+The historical rows above describe their recorded heads; this section supersedes their pending/latest status without erasing first failures. All candidates remain draft and unmerged. P7 OPEN.
+
+| Candidate | Exact head / run | Verified result and limit |
+| --- | --- | --- |
+| #579 closure/security | f8cc73bb67b75448ed9ec337088f264ee2de41b4 / 40792980618 | All six jobs PASS: Windows/Linux no-skip CLI contracts and root/server/Electron/E2E locked audits. Low findings 7/6/6/0 remain. Original #575 0dec6400 / 40787731090 still has its independent 13-finding audit failure. |
+| #582 thread reply/replay expiry | 8ad479cbe5da7d6cea5ad55e67fbed445d966138 / 40795713097, job 123191580212 | First attempt: 249 unit + 11 real PG16/Redis tests PASS, zero failed/skipped; types/strict debt 0/build PASS. Includes parent #581/#578 coverage: do not add totals together. Nonce replay after expiry refused; six concurrent same-nonce requests persist one row. Preflight only, not an atomic fence or complete writer graph. Artifact 12863852130 SHA-256 9d8d0feddaa7cd29a4d8f46a9e2dc401937d70602ac7002dbdbcd4ac02588a22. |
+| #580 actual packaged PA01 | da870e9405580942d350119f71685e5f072849d4 / 40794522256, job 123187608778 | PA01 EXECUTED: 300.107s, 299 raw samples, API CPU mean 0.0575%, p95 0.2492%; sum process working set mean 742.16 MiB/peak 777 MiB (shared pages may double-count). Real HTTPS UI login HTTP 200 and secure packaged ASAR. Hosted X11 VM, not physical hardware/Wayland/startup SLA. |
+| Same run PA08 | da870e9405580942d350119f71685e5f072849d4 / 40794522256 | FAIL; workflow FAIL. 5950 DOM messages at failure, CPU/memory growth retained as failed-attempt diagnostics only; not accepted PA08. First precise inner history cause unavailable. Artifact 12863846786 SHA-256 eeb6666d61d85723709751708637b8018691a3568c1e91350fba9c41f599ae14. |
+| #580 diagnostic follow-up | e219a7a9598c8316f00ab3f0b1477b85a0e3736b / 40796925234, job 123195525418 | FAIL before scenarios: AUTH_RESPONSE / AUTH_RESPONSE_UNAVAILABLE, no login response observed. Populated-field/function-presence booleans are not proof of submitted auth. No causal fix claimed. Artifact 12863559955 SHA-256 3fd0df4292e14a6bcd9e05440071bd5a2782d305ce17ada9c364836fa27536b6. |
+| #583 rendering experiment | fdc77bfcde3b76bcd2283228b418c34a42ec8524 / 40797988093 | Local 105 component +12 executor tests PASS, zero skipped, strict client TypeScript/build PASS, Svelte 0 errors/warnings. Native CI in progress, not PASS. Full 10000/120s gate retained; adds real skipped-rendering and adjacent keyboard checks. No performance improvement claimed. |
+| #553 latest browser | ff31737b150cbb9e85c59fbb41c20dc05727bef8 / 40790887919, job 123175534130 | 1 PASS / 1 FAIL / 1 NOT EXECUTED on iOS18.5 simulator. Cancel passed; authenticate/restart/rotate failed MOBILE_AUTH_DEADLINE:system-authentication-browser; account switch not reached. No command500 attribution for this head (driverFailure null). Binary40790888217/pilot40790887925/backend40790888022 passed separately. Artifact12861829424 SHA-256 ffbd015ee316e101c2298643178d7a95252bcb583927fbf2f899b02152ace5ca. |
+
+PA01 provenance: actual checkout 854abd5bde7c9e6545c6ab04cb8afb0262897421 (GitHub synthetic merge), ASAR SHA-256 12edacf8274f94e6068839bbd3ab1bc5f5b742d8d20728a812d4b3ef4d6aeba9. Instrumented launch-to-login UI 5367ms is not a clean startup benchmark. Remaining PA02–PA07/PA09–PA10 are NOT EXECUTED. No failed run was rerun for green. Native mobile physical/minimum/intermediate OS, #209 ANR causality, #416 original Wayland causality, owner lifecycle/retention choices and full D2 acceptance remain OPEN. No production data access, main merge, deployment or B1 modification.
