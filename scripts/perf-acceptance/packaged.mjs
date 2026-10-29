@@ -132,6 +132,15 @@ export async function runPackaged(config) {
     await measure('PA01');
     stage = 'PA08_HISTORY';
     await measure('PA08', async end => {
+      const inViewport = async id => {
+        const locator = page.locator(`.msg-list .msg[data-id="${id}"]`);
+        await locator.scrollIntoViewIfNeeded();
+        requireFact(await locator.evaluate(el => {
+          const r = el.getBoundingClientRect();
+          const view = document.getElementById('messages-area').getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && r.bottom > view.top && r.top < view.bottom;
+        }), 'HISTORY_ENDPOINT_NOT_IN_VIEWPORT');
+      };
       const seen = new Set();
       const pending = new Set();
       let invalidResponse = false;
@@ -162,6 +171,7 @@ export async function runPackaged(config) {
         const loadStart = performance.now();
         await selectChannel(c.historyChannel);
         await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}10000"]`).waitFor({ state: 'visible' });
+        await inViewport(`${c.messagePrefix}10000`);
         const firstPageVisibleMs = performance.now() - loadStart;
         let traversalMs = null;
         let direction = 0;
@@ -169,6 +179,7 @@ export async function runPackaged(config) {
           requireFact(!invalidResponse, 'HISTORY_RESPONSE_INVALID');
           if (seen.size === 10000 && traversalMs === null) {
             await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}00001"]`).waitFor({ state: 'visible' });
+            await inViewport(`${c.messagePrefix}00001`);
             traversalMs = performance.now() - loadStart;
           }
           await page.locator('#messages-area').evaluate((el, down) => {

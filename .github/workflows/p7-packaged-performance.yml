@@ -96,7 +96,7 @@ jobs:
           mkdir -p "${HOME}/.pki/nssdb"
           certutil -N --empty-password -d "sql:${HOME}/.pki/nssdb"
           certutil -A -d "sql:${HOME}/.pki/nssdb" -n bridge-perf-ephemeral -t 'C,,' -i "${fixture_dir}/ca.crt"
-          for key in JWT_SECRET REFRESH_SECRET AP_ENCRYPTION_KEY FEDERATION_SECRET; do
+          for key in JWT_SECRET REFRESH_SECRET AP_ENCRYPTION_KEY FEDERATION_SECRET METRICS_SECRET; do
             value="$(openssl rand -hex 32)"
             echo "::add-mask::${value}"
             printf '%s=%s\n' "${key}" "${value}" >> "${GITHUB_ENV}"
@@ -104,6 +104,7 @@ jobs:
           printf 'NODE_EXTRA_CA_CERTS=%s/ca.crt\nBRIDGE_PERF_TLS_KEY=%s/server.key\nBRIDGE_PERF_TLS_CERT=%s/server.crt\nBRIDGE_PERF_CONFIG=%s/config.json\nBRIDGE_PERF_OUTPUT=%s/perf-evidence\n' "${fixture_dir}" "${fixture_dir}" "${fixture_dir}" "${fixture_dir}" "${RUNNER_TEMP}" >> "${GITHUB_ENV}"
       - name: Real PostgreSQL schema, 10000 persisted messages and test account
         run: |
+          node -e "require('./server/dist/lib/env')"
           node server/dist/db/postgres/index.js
           node server/dist/db/migrate-postgres.js up
           node scripts/perf-acceptance/seed-disposable.mjs
@@ -117,13 +118,19 @@ jobs:
           echo "PERF_TLS_PID=$!" >> "${GITHUB_ENV}"
           node - <<'NODE'
           (async () => {
-            for (let n=0; n<60; n++) {
+            const codes = new Set(['ECONNREFUSED','ETIMEDOUT','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT']);
+            const probe = async url => {
               try {
-                const r=await fetch('https://127.0.0.1:3443/api/health', {signal: AbortSignal.timeout(1000)});
-                if (r.ok) return;
-              } catch {}
+                const r=await fetch(url, {signal: AbortSignal.timeout(1000)});
+                return {status:r.status};
+              } catch(e) { return {status:null, code:codes.has(e.cause?.code)?e.cause.code:'TRANSPORT_UNAVAILABLE'}; }
+            };
+            for (let n=0; n<60; n++) {
+              const tls=await probe('https://127.0.0.1:3443/api/health');
+              if (tls.status===200) return;
               await new Promise(r=>setTimeout(r,1000));
             }
+            console.error(JSON.stringify({code:'BACKEND_STARTUP_PROBE',direct:await probe('http://127.0.0.1:3000/api/health'),tls:await probe('https://127.0.0.1:3443/api/health')}));
             throw Error('BACKEND_HEALTH_DEADLINE');
           })().catch(()=>{ console.error('REAL_BACKEND_NOT_READY'); process.exitCode=1; });
           NODE

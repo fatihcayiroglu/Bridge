@@ -115,3 +115,17 @@ the canonical `(userId, serverId)` membership and retain this original failure.
 Fixture diagnostics now expose only a closed operation stage and SQLSTATE, never
 SQL arguments, passwords or database/error messages. No runtime scenario ran on
 the second head either; no performance numbers are claimed.
+
+Third attempt: `263db217b4ac7b28fcd0fb1b3e3c0069dedfb423`, run 40791304645 /
+job 123176901232. PG16 fixture now persisted exactly 10,000 rows and previous
+build/sandbox/TLS preparation passed. Backend health did not become ready within
+the unchanged 60-second startup bound; runtime scenarios again NOT EXECUTED.
+Inspection found the CI fixture omitted mandatory production `METRICS_SECRET`.
+A controlled child-process experiment against the identical production validator
+reproduced exit 1 with that secret absent and exit 0 when populated, without
+connecting to a DB or printing values. The follow-up generates/masks this secret,
+runs the actual production env validator before bootstrap and records only
+closed HTTP/TLS failure codes on readiness failure. No gate is disabled or
+startup timeout increased. Backend runtime still requires fresh exact-head proof.
+History endpoint checks also require actual scroller-viewport intersection,
+rather than relying on DOM/CSS visibility alone.
