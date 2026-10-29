@@ -9,6 +9,7 @@ on:
       - 'client/js/core/MessageRenderer.svelte'
       - 'client/js/core/MessageListPanel.svelte'
       - 'client/js/core/MessageViewportRow.svelte'
+      - 'client/js/core/message-viewport-observers.ts'
       - 'client/tests/message-list-deep-coverage.test.ts'
       - '.github/workflows/p7-packaged-performance.yml'
   workflow_dispatch:
@@ -66,7 +67,7 @@ jobs:
         run: node --test scripts/perf-acceptance.test.js scripts/perf-packaged.test.mjs
       - name: Message rendering and keyboard component regression, zero skipped tests
         run: |
-          (cd client && node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/message-renderer-deep-coverage.test.ts tests/message-renderer-dialogs-embeds.test.ts tests/message-list-deep-coverage.test.ts --reporter=json --outputFile=../message-rendering-results.json)
+          (cd client && node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/message-renderer-deep-coverage.test.ts tests/message-renderer-dialogs-embeds.test.ts tests/message-list-deep-coverage.test.ts tests/message-action-sheet.test.ts tests/mount-shims-lifecycle.test.ts tests/Phase9Messaging.test.ts tests/renderer.test.ts --reporter=json --outputFile=../message-rendering-results.json)
           node scripts/require-no-skipped-tests.js message-rendering-results.json --label "message rendering regression"
       - name: Build actual Svelte UI, backend and packaged Electron DEB
         run: |
