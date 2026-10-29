@@ -16,6 +16,7 @@
     "test:coverage": "npx jest --config ../jest.mobile.config.js --coverage"
   },
   "dependencies": {
+    "@bridge/local-first-crypto": "file:plugins/local-first-crypto",
     "@aparajita/capacitor-biometric-auth": "^10.0.0",
     "@capacitor/android": "^8.4.0",
     "@capacitor/app": "^8.1.0",

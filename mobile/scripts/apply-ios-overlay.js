@@ -29,6 +29,7 @@
 const fs = require('fs');
 const path = require('path');
 const plist = require('plist');
+const { redactIosBridgeResults } = require('./redact-ios-bridge-results.js');
 
 class OverlayError extends Error {}
 
@@ -89,6 +90,13 @@ function applyIosOverlay({ root = path.resolve(__dirname, '../..'), ifPresent = 
   }
 
   const curated = plist.parse(fs.readFileSync(path.join(root, 'mobile', 'ios', 'App', 'App', 'Info.plist'), 'utf8'));
+  // SwiftPM downloads a prebuilt XCFramework; patching the npm SDK there has
+  // no effect. Require Capacitor's supported local CocoaPods source build.
+  // Never rewrite an existing native project or discard its customizations.
+  if (!fs.existsSync(path.join(root, 'ios', 'App', 'Podfile'))
+      || fs.existsSync(path.join(root, 'ios', 'App', 'CapApp-SPM'))) {
+    throw new OverlayError('IOS_SOURCE_BUILD_REQUIRED: preserve this project and create a separate iOS project with "npx cap add ios --packagemanager CocoaPods". SwiftPM links an unpatched prebuilt framework. Nothing written.');
+  }
   const info = plist.parse(fs.readFileSync(infoPath, 'utf8'));
   const applied = [];
   for (const key of COPIED_KEYS) {
@@ -102,6 +110,9 @@ function applyIosOverlay({ root = path.resolve(__dirname, '../..'), ifPresent = 
     ...(Array.isArray(curated.UIBackgroundModes) ? curated.UIBackgroundModes : [])]);
   info.UIBackgroundModes = [...modes].filter((mode) => ALLOWED_BACKGROUND_MODES.has(mode)).sort();
   applied.push('UIBackgroundModes');
+  // Fail closed on an unreviewed SDK/logger shape before changing the project.
+  // This changes diagnostics only; native results and error handling are intact.
+  redactIosBridgeResults(root);
   fs.writeFileSync(infoPath, plist.build(info));
 
   const { marketing, build } = curatedVersions(root);

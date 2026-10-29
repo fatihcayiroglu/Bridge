@@ -28,22 +28,40 @@ export const CHANNEL_READ_EXPIRY_SQL = [
 export async function channelLiveForMessageRead(
   pool: ChannelReadQuery, channelId: string, serverId: string,
 ): Promise<boolean> {
+  return (await channelLiveWindowForRead(pool, channelId, serverId)).live;
+}
+
+/**
+ * The authoritative decision behind channelLiveForMessageRead, plus how much
+ * longer the channel stays live by the database clock, from the same read. `remainingMs` is expiresAt - now
+ * for an expiring channel and null for a permanent one. A caller may reuse a
+ * positive answer only within that window; the expiry API's minimum lifetime
+ * means an expiry can never be moved closer than it, while a tombstone only
+ * follows expiresAt.
+ */
+export async function channelLiveWindowForRead(
+  pool: ChannelReadQuery, channelId: string, serverId: string,
+): Promise<{ live: boolean; remainingMs: number | null }> {
+  const closed = { live: false, remainingMs: 0 };
   if (typeof channelId !== 'string' || typeof serverId !== 'string' ||
-      !channelId || !serverId || channelId.length > 256 || serverId.length > 256) return false;
+      !channelId || !serverId || channelId.length > 256 || serverId.length > 256) return closed;
   const result = await pool.query(CHANNEL_READ_EXPIRY_SQL, [channelId, serverId]);
-  if (!result || !Array.isArray(result.rows) || result.rows.length !== 1) return false;
+  if (!result || !Array.isArray(result.rows) || result.rows.length !== 1) return closed;
   const row = result.rows[0];
   if (!row || row._id !== channelId || row.serverId !== serverId ||
-      typeof row.hasTombstone !== 'boolean' || row.hasTombstone) return false;
+      typeof row.hasTombstone !== 'boolean' || row.hasTombstone) return closed;
   try {
     const nowMs = parsePersistedNonNegativeInteger(row.nowMs, 'database clock');
-    return classifyChannelExpiryWithTombstone(
-      { _id: row._id, serverId: row.serverId, expiresAt: row.expiresAt,
-        expiryVersion: row.expiryVersion },
+    const decision = classifyChannelExpiryWithTombstone(
+      { _id: row._id, serverId: row.serverId, expiresAt: row.expiresAt, expiryVersion: row.expiryVersion },
       null, nowMs,
-    ).accessible;
+    );
+    if (!decision.accessible) return closed;
+    if (decision.state === 'permanent') return { live: true, remainingMs: null };
+    const expiresAt = parsePersistedNonNegativeInteger(row.expiresAt, 'channel expiry');
+    return { live: true, remainingMs: expiresAt - nowMs };
   } catch {
-    return false;
+    return closed;
   }
 }
 

@@ -1,4 +1,6 @@
 jest.mock('../db/repositories', () => ({ Bots: { findInstalledForServer: jest.fn() } }));
+const mockLiveChannels = jest.fn();
+jest.mock('../lib/channelLiveReadSet', () => ({ liveChannelSet: (...args: unknown[]) => mockLiveChannels(...args) }));
 
 import { Bots } from '../db/repositories';
 import { dispatchRegisteredBotCommand } from '../lib/botCommandDispatch';
@@ -13,7 +15,10 @@ function ioHarness() {
 }
 
 describe('registered bot slash dispatch', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLiveChannels.mockResolvedValue(new Set(['c']));
+  });
 
   test('delivers only exact registered command to private bot room', async () => {
     findInstalled.mockResolvedValue([
@@ -38,5 +43,13 @@ describe('registered bot slash dispatch', () => {
     const { io, emitted } = ioHarness();
     await expect(dispatchRegisteredBotCommand(io as never, { _id:'m',serverId:'s',channelId:'c',userId:'u',content:'/ping' })).resolves.toBe(0);
     expect(emitted).toHaveLength(0);
+  });
+
+  test('an unavailable fresh expiry check never delivers command arguments', async () => {
+    findInstalled.mockResolvedValue([{ _id: 'b1', slashCommands: [{ name: 'ping' }] }]);
+    mockLiveChannels.mockRejectedValue(new Error('availability unavailable'));
+    const { io, emitted } = ioHarness();
+    expect(await dispatchRegisteredBotCommand(io, { _id:'m',serverId:'s',channelId:'c',userId:'u',content:'/ping private' })).toBe(0);
+    expect(emitted).toEqual([]);
   });
 });

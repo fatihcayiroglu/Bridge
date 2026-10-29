@@ -1601,3 +1601,83 @@ test('workflows: product suite gates, upstream controls run non-gating but keep 
   const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
   assert.match(runner, /node android\/android-journeys\.mjs\nstatus=\$\?\n[\s\S]*exit \$status\n$/);
 });
+
+// verify-emulator-image.sh, driven with a stub sdkmanager. A package's next N
+// installs fail like run 40029859999 ("Error on ZipFile unknown archive"):
+// a partial archive is left in the SDK staging directory and nothing is
+// installed. The preflight retries only the SDK download, from a clean
+// staging directory, and never reports success from an exit code alone.
+test('emulator image preflight retries corrupt SDK downloads cleanly and fails closed', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync: read } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const script = new URL('./verify-emulator-image.sh', import.meta.url).pathname;
+  const image = 'system-images/android-34/google_apis/x86_64';
+
+  function sdk({ emulatorFails = 0, imageFails = 0, silentNoop = false, installed = false } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'sdk-'));
+    const bin = join(root, 'cmdline-tools/latest/bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(root, 'fails-emulator'), String(emulatorFails));
+    writeFileSync(join(root, 'fails-image'), String(imageFails));
+    writeFileSync(join(bin, 'sdkmanager'), `#!/usr/bin/env bash
+root=${JSON.stringify(root)}
+for a in "$@"; do case "$a" in --licenses) exit 0;; esac; done
+pkg="\${@: -2:1}"
+case "$pkg" in emulator) key=emulator dir="$root/emulator";; system-images*) key=image dir="$root/${image}";; *) exit 2;; esac
+echo "$key staging=$( [ -e "$root/.temp/partial.zip" ] && echo stale || echo clean )" >> "$root/calls"
+${silentNoop ? 'exit 0' : ''}
+n=$(cat "$root/fails-$key")
+if [ "$n" -gt 0 ]; then
+  echo $((n - 1)) > "$root/fails-$key"; mkdir -p "$root/.temp" "$dir"; echo x > "$root/.temp/partial.zip"
+  echo "Warning: An error occurred while preparing SDK package: Error on ZipFile unknown archive."; exit 0
+fi
+mkdir -p "$dir"; echo '<pkg/>' > "$dir/package.xml"
+if [ "$key" = emulator ]; then printf '#!/bin/sh\\n' > "$dir/emulator"; chmod +x "$dir/emulator"; else echo img > "$dir/system.img"; fi
+`);
+    chmodSync(join(bin, 'sdkmanager'), 0o755);
+    if (installed) {
+      mkdirSync(join(root, image), { recursive: true }); mkdirSync(join(root, 'emulator'));
+      writeFileSync(join(root, image, 'system.img'), 'img'); writeFileSync(join(root, image, 'package.xml'), '<pkg/>');
+      writeFileSync(join(root, 'emulator/package.xml'), '<pkg/>'); writeFileSync(join(root, 'emulator/emulator', ''), '#!/bin/sh\n'); chmodSync(join(root, 'emulator/emulator'), 0o755);
+    }
+    return root;
+  }
+  const run = root => spawnSync('bash', [script], {
+    env: { ...process.env, ANDROID_HOME: root, ANDROID_SDK_ROOT: '', ANDROID_SDK_RETRY_BASE_SECONDS: '0', ANDROID_SDK_INSTALL_ATTEMPTS: '4' },
+    encoding: 'utf8',
+  });
+  const calls = root => (existsSync(join(root, 'calls')) ? read(join(root, 'calls'), 'utf8').trim().split('\n') : []);
+
+  // Already installed: no download at all.
+  let root = sdk({ installed: true });
+  let out = run(root);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.deepEqual(calls(root), []);
+
+  // The run-40029859999 pattern: the emulator corrupt on attempt 1, the image on attempts 1-2.
+  root = sdk({ emulatorFails: 1, imageFails: 2 });
+  out = run(root);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /verified \(attempt 3\/4\)/);
+  // Each retry starts from clean staging; a completed emulator is not downloaded again.
+  assert.deepEqual(calls(root), [
+    'emulator staging=clean', 'image staging=stale',
+    'emulator staging=clean', 'image staging=clean',
+    'image staging=clean',
+  ]);
+
+  // Still corrupt after every attempt: the job fails and says the journeys did not run.
+  root = sdk({ imageFails: 9 });
+  out = run(root);
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /::error::Android system image or emulator is missing or incomplete after 4 attempts; emulator tests were not run/);
+  assert.equal(calls(root).filter(c => c.startsWith('image')).length, 4);
+
+  // An sdkmanager that exits 0 but installs nothing is never trusted.
+  root = sdk({ silentNoop: true });
+  out = run(root);
+  assert.equal(out.status, 1);
+  assert.equal(calls(root).length, 8);
+});
