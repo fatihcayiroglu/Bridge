@@ -10,7 +10,7 @@ The subsequent diagnostic baseline at e219a7a9598c8316f00ab3f0b1477b85a0e3736b, 
 
 ## Candidate
 
-Use CSS content-visibility:auto and remembered intrinsic block size only for short, single-line, delivered normal messages with one plain text node. Keep the full DOM and existing keyboard/reply identifiers. Exclude pending/failed messages, replies, attachments, stickers, reactions, embeds, pinned rows and crosspost controls. Hover/focus and print force visible rendering. Unsupported CSS retains ordinary rendering. No dependency, authentication, message cache, backend or persistence change.
+Use CSS content-visibility:auto and remembered intrinsic block size only for short, single-line, delivered normal messages with one plain text node. Keep the full DOM and existing keyboard/reply identifiers. Exclude pending/failed messages, replies, attachments, stickers, reactions, embeds, pinned rows and crosspost controls. Open action sheets, history/report dialogs, reaction pickers and image viewers opt out immediately, including touch paths without hover/focus. Hover/focus and print force visible rendering. Unsupported CSS retains ordinary rendering. No dependency, authentication, message cache, backend or persistence change.
 
 Specification: https://www.w3.org/TR/css-contain-2/#content-visibility . This permits offscreen layout/paint skipping; it is not DOM virtualization and does not bound message-store memory.
 

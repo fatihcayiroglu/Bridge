@@ -643,6 +643,7 @@
   // and focused/hovered controls retain ordinary rendering.
   const containPlainText = $derived(Boolean(
     message?.type === 'normal' && isDelivered && !isPinned && !canCrosspost &&
+    !sheetOpen && !historyOpen && !reportOpen && !pickerOpen && !imageViewerOpen &&
     !message.replyTo && !fileHref && !message.sticker &&
     typeof message.content === 'string' && message.content.length <= 256 && !message.content.includes('\n') &&
     reactionList.length === 0 && linkEmbeds.length === 0 &&
