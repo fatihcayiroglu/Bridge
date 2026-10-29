@@ -65,7 +65,7 @@ jobs:
           REDIS_URL: ''
           REDIS_TEST_URL: ''
         run: |
-          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts tests/voicemsg.test.ts tests/voicemsg-failure-branches.test.ts tests/voicemsg-transcription-provider.test.ts --json --outputFile=d2-unit-results.json
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts tests/socket-channel-join-visibility.test.ts tests/socket-channel-join-expiry.test.ts tests/voicemsg.test.ts tests/voicemsg-failure-branches.test.ts tests/voicemsg-transcription-provider.test.ts --json --outputFile=d2-unit-results.json
           node ../scripts/require-no-skipped-tests.js d2-unit-results.json --label "D2 scheduling unit regression"
           node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/threads.test.ts tests/threads-forum-authorization-branches.test.ts tests/thread-reply-send-policy.test.ts tests/thread-socket.test.ts --json --outputFile=d2-thread-unit-results.json
           node ../scripts/require-no-skipped-tests.js d2-thread-unit-results.json --label "D2 thread reply regression"

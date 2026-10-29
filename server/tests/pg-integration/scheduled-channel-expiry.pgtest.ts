@@ -13,11 +13,13 @@ process.env.REDIS_URL = process.env.REDIS_TEST_URL || process.env.REDIS_URL;
 if (!process.env.REDIS_URL) throw new Error('REDIS_TEST_URL or REDIS_URL is required');
 
 const db = require('../../db/loader').default as typeof import('../../db/postgres').default;
-const { Messages, ScheduledMessages, Threads } = require('../../db/repositories') as typeof import('../../db/repositories');
+const { Messages, ScheduledMessages, Threads, Channels } = require('../../db/repositories') as typeof import('../../db/repositories');
 const adapter = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
 const contentPolicy = require('../../lib/messageContentPolicy') as typeof import('../../lib/messageContentPolicy');
 const voiceRouter = require('../../routes/voicemsg');
 const threadsRouter = require('../../routes/threads');
+const { setupMemberships } = require('../../socket/handlers/members') as typeof import('../../socket/handlers/members');
+const permissions = require('../../lib/permissions') as typeof import('../../lib/permissions');
 const { startScheduledJob, stopScheduledJob, _dispatchDueForTest: dispatch } =
   require('../../jobs/scheduledMessages') as typeof import('../../jobs/scheduledMessages');
 const q = (sql: string, values: unknown[] = []) => db._pool.query(sql, values);
@@ -226,5 +228,63 @@ describe('scheduled channel expiry against real PostgreSQL and Redis', () => {
     await dispatch();
     await dispatch();
     await expectRefused(f, 1);
+  });
+});
+
+
+// Real repositories/permissions/expiry SQL; transport double, not a Socket.IO
+// authentication, browser or persistent-background eviction acceptance claim.
+async function membershipTransport(f: Fixture) {
+  const handlers = new Map<string, (payload?: unknown) => unknown>();
+  const socket = {
+    id: randomUUID(), rooms: new Set<string>(),
+    on(event: string, handler: (payload?: unknown) => unknown) { handlers.set(event, handler); },
+    emit() {}, join(room: string) { this.rooms.add(room); }, leave(room: string) { this.rooms.delete(room); },
+  };
+  await setupMemberships(socket as never, { _id: f.user });
+  return { socket, join: () => Promise.resolve(handlers.get('channel:join')!(f.channel)) };
+}
+
+describe('channel subscription preflight with real PostgreSQL and Redis', () => {
+  it('joins a live channel then removes its now-expired room on explicit rejoin', async () => {
+    const f = await seed();
+    const transport = await membershipTransport(f);
+    await transport.join();
+    expect(transport.socket.rooms.has(`channel:${f.channel}`)).toBe(true);
+    await expire(f);
+    await transport.join();
+    expect(transport.socket.rooms.has(`channel:${f.channel}`)).toBe(false);
+    expect((await q('SELECT _id FROM channels WHERE _id=$1', [f.channel])).rows).toHaveLength(1);
+  });
+  it('refuses an expired SQL row even when the initial channel DTO is stale and permanent', async () => {
+    const f = await seed();
+    const stale = await Channels.findById(f.channel);
+    expect(stale).toBeTruthy();
+    await expire(f);
+    jest.spyOn(Channels, 'findById').mockResolvedValueOnce(stale);
+    const transport = await membershipTransport(f);
+    await transport.join();
+    expect(transport.socket.rooms.has(`channel:${f.channel}`)).toBe(false);
+  });
+  it('refuses a real tombstone while the channel row is still permanent', async () => {
+    const f = await seed();
+    await q('INSERT INTO channel_expiry_tombstones ("channelId","serverId","expiredAt","expiryVersion","recordedAt","cleanupState") VALUES ($1,$2,$3,1,$4,$5)',
+      [f.channel, f.server, Date.now() - 1000, Date.now(), 'pending']);
+    const transport = await membershipTransport(f);
+    await transport.join();
+    expect(transport.socket.rooms.has(`channel:${f.channel}`)).toBe(false);
+  });
+  it('rechecks authority after actual membership/visibility permission work yields', async () => {
+    const f = await seed();
+    const original = permissions.canViewChannel;
+    jest.spyOn(permissions, 'canViewChannel').mockImplementationOnce(async (...args) => {
+      const allowed = await original(...args);
+      expect(allowed).toBe(true);
+      await expire(f);
+      return allowed;
+    });
+    const transport = await membershipTransport(f);
+    await transport.join();
+    expect(transport.socket.rooms.has(`channel:${f.channel}`)).toBe(false);
   });
 });
