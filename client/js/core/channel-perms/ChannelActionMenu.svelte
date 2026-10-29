@@ -34,10 +34,19 @@
   import { canManageChannels, clearPermsCache } from '../permissions/myPermissions.ts';
   import { createChannelPermsController, type PermState } from './channelPermsStore.ts';
   import ChannelPermsEditor from './ChannelPermsEditor.svelte';
+  import ChannelExpiryDialog from './ChannelExpiryDialog.svelte';
 
   const log = createLogger('ChannelActionMenu');
 
-  interface CurrentServer { _id?: string; id?: string }
+  interface CurrentServer { _id?: string; id?: string; ownerId?: string }
+  interface Me { _id?: string; id?: string }
+
+  /** P7 D2: channel expiry is owner-only on the server; the item is shown only to the owner. */
+  function isServerOwner(server: CurrentServer | null): boolean {
+    const me = BridgeRegistry.call<Me | null>('getMe') ?? null;
+    const myId = String(me?._id ?? me?.id ?? '');
+    return !!myId && typeof server?.ownerId === 'string' && server.ownerId === myId;
+  }
 
   // ── Menü durumu ────────────────────────────────────────────────────────────
   let menuOpen    = $state(false);
@@ -47,6 +56,8 @@
   // degildir, yani menuye bagli her turetme bayat kalirdi.
   let menuEl = $state<HTMLElement | null>(null);
   let canManage   = $state(false);
+  let canSetExpiry = $state(false);
+  let expiryOpen = $state(false);
 
   // Açılışta YAKALANAN bağlam. Sonradan yeniden çözülmez.
   let ctxServerId   = $state('');
@@ -113,6 +124,7 @@
     ctxServerId    = sid;
     ctxChannelId   = cid;
     ctxChannelName = String(name ?? '');
+    canSetExpiry   = isServerOwner(server);
 
     menuX = Math.round(event.clientX);
     menuY = Math.round(event.clientY);
@@ -174,6 +186,17 @@
     bump();
   }
 
+  function openExpiry(): void {
+    if (!ctxServerId || !ctxChannelId || !canSetExpiry) return;
+    menuOpen = false;
+    expiryOpen = true;
+  }
+  function closeExpiry(): void { expiryOpen = false; }
+  function onExpirySaved(): void {
+    // The server also announces channels:changed; refetch now for this device without waiting.
+    BridgeRegistry.call('loadChannels', ctxServerId);
+  }
+
   function closeEditor(): void {
     editorOpen = false;
     controller = null;
@@ -222,8 +245,10 @@
     openSeq += 1;
     clearPermsCache();
     canManage = false;
+    canSetExpiry = false;
     closeMenu();
     if (editorOpen) closeEditor();
+    expiryOpen = false;
   };
 
   function onDocPointer(e: MouseEvent): void {
@@ -269,7 +294,27 @@
       </svg>
       <span>{t('cam_channel_perms', 'Kanal İzinleri')}</span>
     </button>
+    {#if canSetExpiry}
+      <button type="button" class="cam-item" role="menuitem" onclick={openExpiry}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="13" r="8"/>
+          <path d="M12 9v4l2.5 2.5M9 2h6"/>
+        </svg>
+        <span>{t('cam_channel_expiry', 'Kanal süresi…')}</span>
+      </button>
+    {/if}
   </div>
+{/if}
+
+{#if expiryOpen}
+  <ChannelExpiryDialog
+    serverId={ctxServerId}
+    channelId={ctxChannelId}
+    channelName={ctxChannelName}
+    onClose={closeExpiry}
+    onSaved={onExpirySaved}
+  />
 {/if}
 
 {#if editorOpen}

@@ -531,6 +531,107 @@ describe('MessageLoader — socket mutations and typing lifecycle', () => {
     expect(document.getElementById('typing-text')).toHaveTextContent('');
   });
 
+  it('rejoins the same channel on a replacement socket and receives reactions without stale listeners', async () => {
+    const otherListener = vi.fn();
+    socket.on('message:reaction', otherListener);
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [{ _id: 'm1', channelId: 'c1' }] }));
+    render(MessageLoader);
+    select('c1');
+    await waitFor(() => expect(messages).toEqual([{ _id: 'm1', channelId: 'c1' }]));
+    expect(socket.emitted.filter(item => item.event === 'channel:join')).toEqual([
+      { event: 'channel:join', args: ['c1'] },
+    ]);
+
+    const replacement = makeSocket();
+    BridgeRegistry.register('socket', replacement as unknown as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    await tick();
+    expect(replacement.emitted.filter(item => item.event === 'channel:join')).toEqual([
+      { event: 'channel:join', args: ['c1'] },
+    ]);
+    expect(socket.count('message:new')).toBe(0);
+    expect(socket.count('message:reaction')).toBe(1); // Keep another owner's listener.
+    expect(replacement.count('message:reaction')).toBe(1);
+
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    expect(replacement.emitted.filter(item => item.event === 'channel:join')).toHaveLength(1);
+    expect(replacement.count('message:reaction')).toBe(1);
+    calls.updateMessage.mockClear();
+    updated.mockClear();
+    const reaction = { messageId: 'm1', reactions: { '👍': ['u1'] } };
+    socket.fire('message:reaction', reaction);
+    expect(otherListener).toHaveBeenCalledTimes(1);
+    expect(calls.updateMessage).not.toHaveBeenCalled();
+    replacement.fire('message:reaction', reaction);
+    expect(calls.updateMessage).toHaveBeenCalledExactlyOnceWith({ _id: 'm1', channelId: 'c1', reactions: reaction.reactions });
+    expect(updated).toHaveBeenCalledTimes(1);
+  });
+
+  it('joins a preselected channel when the first socket becomes available after mount', async () => {
+    BridgeRegistry.unregister('socket');
+    currentChannel = { _id: 'c1' };
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [] }));
+    render(MessageLoader);
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+    const lateSocket = makeSocket();
+    BridgeRegistry.register('socket', lateSocket as unknown as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    await tick();
+    expect(lateSocket.emitted.filter(item => item.event === 'channel:join')).toEqual([
+      { event: 'channel:join', args: ['c1'] },
+    ]);
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    expect(lateSocket.emitted.filter(item => item.event === 'channel:join')).toHaveLength(1);
+  });
+
+  it('keeps a channel transition already joined on the replacement socket without another ready join', async () => {
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [] }));
+    render(MessageLoader);
+    select('c1');
+    await tick();
+    const replacement = makeSocket();
+    BridgeRegistry.register('socket', replacement as unknown as AnyFn);
+    select('c2');
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    await tick();
+    expect(BridgeRegistry.call('getActiveChannelId')).toBe('c2');
+    expect(replacement.emitted.filter(item => item.event === 'channel:join')).toEqual([
+      { event: 'channel:join', args: ['c2'] },
+    ]);
+    expect(socket.count('message:reaction')).toBe(0);
+    expect(replacement.count('message:reaction')).toBe(1);
+  });
+
+  it('does not rejoin a logged-out or cleared channel when a replacement becomes ready', async () => {
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [] }));
+    render(MessageLoader);
+    select('c1');
+    await tick();
+    document.dispatchEvent(new Event('bridge:auth-logout'));
+    currentChannel = null;
+    const replacement = makeSocket();
+    BridgeRegistry.register('socket', replacement as unknown as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    expect(replacement.emitted).toEqual([]);
+    expect(BridgeRegistry.call('getActiveChannelId')).toBeNull();
+    replacement.fire('message:new', { _id: 'old-message', channelId: 'c1' });
+    expect(calls.appendMessage).not.toHaveBeenCalled();
+
+    select('c2');
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    expect(replacement.emitted.filter(item => item.event === 'channel:join')).toEqual([
+      { event: 'channel:join', args: ['c2'] },
+    ]);
+    currentChannel = null;
+    document.dispatchEvent(new CustomEvent('bridge:channel-selected', { detail: { channelId: null } }));
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    expect(BridgeRegistry.call('getActiveChannelId')).toBeNull();
+    expect(replacement.emitted.filter(item => item.event === 'channel:join')).toHaveLength(1);
+    expect(replacement.emitted).toContainEqual({ event: 'channel:leave', args: ['c2'] });
+  });
+
   it('binds a late socket, joins the selected channel once, and releases it if the socket disappears', async () => {
     BridgeRegistry.unregister('socket');
     apiFetchMock.mockResolvedValue(apiResponse({ messages: [], hasMore: false }));
@@ -573,6 +674,9 @@ describe('MessageLoader — socket mutations and typing lifecycle', () => {
     document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
     await tick();
     expect(socket.emitted).toContainEqual({ event: 'channel:join', args: ['active'] });
+    expect(socket.emitted.filter(item => item.event === 'channel:join')).toHaveLength(2);
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    expect(socket.emitted.filter(item => item.event === 'channel:join')).toHaveLength(2);
     expect(apiFetchMock).toHaveBeenCalledTimes(1);
 
     cleanup();
@@ -631,4 +735,22 @@ describe('MessageLoader — send rejections reach the pending send', () => {
     socket.fire('warn:spam', { message: 'yavaşla', ackId: 'a-9' });
     expect(warn).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps the first page small and requests a complete bounded hundred-row older page', async () => {
+    currentChannel = { _id: 'paged-channel' };
+    apiFetchMock.mockResolvedValueOnce(apiResponse({ messages: [{ _id: 'latest', channelId: 'paged-channel' }],
+      prevCursor: 'before/first', hasMore: true }));
+    render(MessageLoader);
+    await waitFor(() => expect(messages).toHaveLength(1));
+    expect(apiFetchMock).toHaveBeenNthCalledWith(1, expect.stringContaining('/messages?limit=50'));
+    const older = Array.from({ length: 100 }, (_, n) => ({ _id: `older-${n}`, channelId: 'paged-channel', content: `History ${n}` }));
+    apiFetchMock.mockResolvedValueOnce(apiResponse({ messages: older, prevCursor: 'before/second', hasMore: true }));
+    await BridgeRegistry.call('loadOlderMessages');
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, expect.stringContaining('/messages?limit=100&cursor=before%2Ffirst'));
+    expect(messages.map(message => message._id)).toEqual([...older.map(message => message._id), 'latest']);
+    expect(messages).toHaveLength(101);
+    expect(cursor).toBe('before/second');
+    expect(hasMore).toBe(true);
+  });
+
 });

@@ -173,6 +173,10 @@ describe('lib/automodRuntime', () => {
 
   beforeEach(() => {
     jest.resetModules(); jest.clearAllMocks();
+    // Telemetry above supplies optional-package stubs. Do not carry those
+    // stubs into the real publisher's unit DB loader (it uses tryRequire to
+    // load the standard in-memory fixture).
+    jest.dontMock('../lib/_optional-require');
     jest.doMock('../db/repositories', () => ({ Channels, Messages }));
     jest.doMock('../lib/logger', () => ({ __esModule: true, default: logger, createLogger: jest.fn(() => logger) }));
   });

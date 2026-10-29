@@ -1,0 +1,15 @@
+{
+  "name": "bridge-ios-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Native iOS simulator acceptance tooling (not shipped with Bridge)",
+  "engines": { "node": ">=24.0.0", "npm": ">=10" },
+  "devDependencies": {
+    "appium": "3.8.0",
+    "appium-xcuitest-driver": "git+https://github.com/appium/appium-xcuitest-driver.git#77dfb1390ed33914555bfeb37ace8c9ab2f57b28"
+  },
+  "overrides": {
+    "shell-quote": "1.11.0",
+    "body-parser": "2.4.0"
+  }
+}

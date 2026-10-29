@@ -12,10 +12,23 @@ import { processNotifications } from '../lib/notifications';
 import { checkMessageContent, contentRefusalHttp, type MessageContentRefusal } from '../lib/messageContentPolicy';
 import logger from '../lib/logger';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
+import { channelContentAvailability } from '../lib/channelContentAvailability';
 
 // ── helpers ────────────────────────────────────────────────────
 async function memberCheck(userId: string, serverId: string) {
   return Members.findOne(userId, serverId);
+}
+
+async function refuseUnavailableReplyChannel(thread: { channelId: string; serverId: string }, res: express.Response): Promise<boolean> {
+  const channel = await Channels.findByIdAndServer(thread.channelId, thread.serverId);
+  const availability = channel ? await channelWriteAvailability(db, channel) : 'gone';
+  if (availability === 'live') return false;
+  res.status(availability === 'gone' ? 404 : 503).json({
+    error: availability === 'gone' ? 'Channel unavailable' : 'Channel availability cannot be verified',
+  });
+  return true;
 }
 
 async function channelPermissions(userId: string, serverId: string, channelId: string): Promise<number> {
@@ -31,6 +44,17 @@ function sendContentRefusal(res: express.Response, refusal: MessageContentRefusa
 async function canReadThread(userId: string, thread: { serverId: string; channelId: string }): Promise<boolean> {
   const perms = await channelPermissions(userId, thread.serverId, thread.channelId);
   return hasPermission(perms, PERMS.VIEW_CHANNELS) && hasPermission(perms, PERMS.READ_HISTORY);
+}
+
+async function requireLiveChannelContent(channelId: string, serverId: string, res: express.Response): Promise<boolean> {
+  const availability = await channelContentAvailability(channelId, serverId);
+  if (availability === 'live') return true;
+  if (availability === 'unavailable') {
+    res.status(503).json({ error: 'Channel availability could not be verified' });
+  } else {
+    res.status(404).json({ error: 'Channel not found' });
+  }
+  return false;
 }
 
 // ── Forum: POST /api/threads — forum kanalında yeni ileti VEYA mesajdan thread
@@ -95,6 +119,7 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
 
     const perms = await channelPermissions(_u.id, channel.serverId, channelId);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
+    if (!await requireLiveChannelContent(channelId, channel.serverId, res)) return;
 
     const user = await Users.findById(_u.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
@@ -168,6 +193,7 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
       !hasPermission(parentPerms, PERMS.SEND_MESSAGES)) {
     return res.status(403).json({ error: 'No permission' });
   }
+  if (!await requireLiveChannelContent(parent.channelId, parent.serverId, res)) return;
 
   const threadName = (name?.trim() || parent.content?.slice(0, 50) || 'Thread').slice(0, 100);
   const result = await Threads.createForParentAtomic({
@@ -180,6 +206,12 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
     lastMessageAt:   Date.now(),
     messageCount:    0,
   });
+  // A pre-existing row is found by parent ID. Its persisted scope must still
+  // match the canonical parent before any stored thread content is returned.
+  if (result.thread.channelId !== parent.channelId || result.thread.serverId !== parent.serverId ||
+      result.thread.parentMessageId !== parent._id) {
+    return res.status(404).json({ error: 'Thread not found' });
+  }
   if (!result.created) return res.status(409).json({ error: 'Thread already exists', thread: result.thread });
 
   res.json(result.thread);
@@ -212,6 +244,7 @@ router.get('/:threadId', authMiddleware, async (req, res) => {
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
   if (!await canReadThread(_u.id, thread)) return res.status(403).json({ error: 'No permission' });
+  if (!await requireLiveChannelContent(thread.channelId, thread.serverId, res)) return;
   res.json(thread);
 });
 
@@ -249,6 +282,7 @@ router.get('/:threadId/messages', authMiddleware, async (req, res) => {
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
   if (!await canReadThread(_u.id, thread)) return res.status(403).json({ error: 'No permission' });
+  if (!await requireLiveChannelContent(thread.channelId, thread.serverId, res)) return;
 
   const limit  = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
   const before = parseNonNegativeSafeIntQuery(req.query.before, Date.now() + 1);
@@ -314,13 +348,19 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
   const perms = await channelPermissions(_u.id, thread.serverId, thread.channelId);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY) || !hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
+  if (await refuseUnavailableReplyChannel(thread, res)) return;
+  if (!await requireLiveChannelContent(thread.channelId, thread.serverId, res)) return;
+
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'User not found' });
 
   // A retry of a stored reply answers with it and is not counted again.
   const nonce = typeof clientNonce === 'string' ? clientNonce : null;
   const stored = nonce ? await Threads.findMessageByClientNonce(thread._id, _u.id, nonce) : null;
-  if (stored) return res.status(200).json(stored);
+  if (stored) {
+    if (await refuseUnavailableReplyChannel(thread, res)) return;
+    return res.status(200).json(stored);
+  }
 
   // A thread reply is a message: the same P7 abuse limits, mass-mention limit
   // and AutoMod rules as a channel message (one owner, see the module).
@@ -335,6 +375,7 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
   }, req.app.get('io'));
   if (refusal) return sendContentRefusal(res, refusal);
 
+  if (await refuseUnavailableReplyChannel(thread, res)) return;
   const inserted = await Threads.insertMessageIdempotent({
     threadId:    thread._id,
     channelId:   thread.channelId,
@@ -441,6 +482,7 @@ router.get('/channel/:channelId', authMiddleware, async (req, res) => {
   const perms = await channelPermissions(_u.id, channel.serverId, String(req.params.channelId ?? ''));
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY))
     return res.status(403).json({ error: 'No permission' });
+  if (!await requireLiveChannelContent(channel._id, channel.serverId, res)) return;
 
   const sort = String(req.query.sort ?? 'latest');
   const tag = typeof req.query.tag === 'string' ? req.query.tag : '';

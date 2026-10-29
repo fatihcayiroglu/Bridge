@@ -109,3 +109,45 @@ describe('liveChannelSet unit-test fallback', () => {
     expect([...live]).toEqual(['legacy']);
   });
 });
+
+describe('route helpers', () => {
+  const live = require('../lib/channelLiveReadSet');
+
+  it('channelRecordIsLive classifies the loaded record and rejects incomplete ones', async () => {
+    expect(await live.channelRecordIsLive({ _id: 'c1', serverId: 's1' })).toBe(true);
+    expect(await live.channelRecordIsLive({ _id: 'c1', serverId: 's1', expiresAt: 1, expiryVersion: 1 })).toBe(false);
+    expect(await live.channelRecordIsLive({ _id: 'c1', serverId: '' })).toBe(false);
+    expect(await live.channelRecordIsLive({ _id: undefined, serverId: 's1' })).toBe(false);
+  });
+
+  it('fails closed outside tests when no PostgreSQL pool exists', async () => {
+    const env = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      await expect(live.channelRecordIsLive({ _id: 'c1', serverId: 's1' })).rejects.toBeInstanceOf(live.ChannelAvailabilityUnverifiable);
+    } finally {
+      process.env.NODE_ENV = env;
+    }
+  });
+
+  it('channelAvailabilityErrors answers 503 only for an unverifiable check', () => {
+    const res = () => {
+      const r = { headersSent: false, code: 0, body: undefined as unknown,
+        status(code: number) { r.code = code; return { json: (body: unknown) => { r.body = body; } }; } };
+      return r;
+    };
+    const next = jest.fn();
+    const r1 = res();
+    live.channelAvailabilityErrors(new live.ChannelAvailabilityUnverifiable(), {}, r1, next);
+    expect(r1.code).toBe(503);
+    expect(next).not.toHaveBeenCalled();
+    const other = new Error('boom');
+    live.channelAvailabilityErrors(other, {}, res(), next);
+    expect(next).toHaveBeenLastCalledWith(other);
+    const sent = Object.assign(res(), { headersSent: true });
+    const err = new live.ChannelAvailabilityUnverifiable();
+    live.channelAvailabilityErrors(err, {}, sent, next);
+    expect(next).toHaveBeenLastCalledWith(err);
+    expect(sent.code).toBe(0);
+  });
+});

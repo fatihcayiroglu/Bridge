@@ -25,8 +25,8 @@ import { checkMessageContent, machineContentRefused } from '../../lib/messageCon
 // sanitizeMessage() (regex tabanlı) yerine sanitizeMessageContent() (DOMPurify/jsdom) kullanılıyor
 import { normalizeMessageText, RAW_TEXT_FORMAT } from '../../lib/storedText';
 import { cache, isRedisAvailable } from '../../lib/redisAdapter';
-import { invalidateChannelMessages } from '../../lib/messageCache';
-import { announceChannelActivity, publishPersistedMessage } from '../../lib/channelActivity';
+import { publishPersistedMessage } from '../../lib/channelActivity';
+import { liveChannelSet } from '../../lib/channelLiveReadSet';
 import { processNotifications, incrementUnread } from '../../lib/notifications';
 import logger from '../../lib/logger';
 import { isChannelE2EEEnabled } from '../../lib/channelE2EE';
@@ -37,6 +37,7 @@ import type { SandboxedHooks } from '../../plugins/loader';
 import type { AuthUser, SendMessagePayload, SocketUser } from './messages-types';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { dispatchRegisteredBotCommand } from '../../lib/botCommandDispatch';
+import { channelWriteAvailability, type ChannelWriteDb } from '../../lib/channelWriteGuard';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../../lib/memberTimeout';
 
 // ── Opsiyonel bağımlılıklar ───────────────────────────────────
@@ -272,6 +273,19 @@ export async function sendChannelMessage(
     return;
   }
 
+  // P7 D2 (#321): an expired or tombstoned channel accepts no writes, whatever the cache or a stale client believes.
+  const writeDb = (await import('../../db/loader')).default as unknown as ChannelWriteDb;
+  const availability = await channelWriteAvailability(writeDb, channel);
+  if (availability !== 'live') {
+    socket.emit('error:message', {
+      event: 'message:send',
+      code: availability === 'gone' ? 'CHANNEL_NOT_FOUND' : 'CHANNEL_UNVERIFIABLE',
+      message: availability === 'gone' ? 'Kanal artık kullanılamıyor.' : 'Kanalın durumu doğrulanamadı. Lütfen tekrar deneyin.',
+      ...(validAckId ? { ackId } : {}), ...(validTmpId ? { tmpId: _tmpId } : {}),
+    });
+    return;
+  }
+
   const sendPerms = await getCachedPerms(user._id, serverId, resolvePermissions, channelId);
   // Knowing a channel id must never be enough to write into a channel the
   // current user cannot view. SEND_MESSAGES alone is not a visibility grant.
@@ -500,25 +514,31 @@ export async function sendChannelMessage(
   }
   const publicMsg = { ...msg } as Record<string, unknown>;
   delete publicMsg.ackId;
-  io.to(`channel:${channelId}`).emit('message:new', publicMsg);
-  announceChannelActivity(io, publicMsg);
+  let published: boolean;
+  try {
+    published = await publishPersistedMessage(io, publicMsg);
+  } finally {
+    // A row committed before expiry still receives its minimal delivery ACK.
+    // Neither expiry nor an unavailable publication preflight should invite a
+    // duplicate offline retry of that write. The ACK contains no message body.
+    if (validAckId) {
+      const ackRecord = {
+        messageId: String(msg._id), channelId, userId: user._id, ts: Date.now(),
+        ...(validTmpId ? { tmpId: _tmpId } : {}),
+      };
+      await setAckRecord(ackId, ackRecord);
+      sendAck(socket, ackId, ackRecord);
+    } else if (validTmpId && _tmpId) {
+      sendTmpAck(socket, _tmpId, String(msg._id), channelId);
+    }
+  }
+  if (!published) return;
+
   // Bot slash delivery is direct-to-bot rather than broad channel subscription.
   // The chat message is already durable; bot delivery is an optional realtime
   // side effect and therefore never weakens message persistence semantics.
   if (hasPermission(sendPerms, PERMS.USE_BOT_COMMANDS)) {
     void dispatchRegisteredBotCommand(io, publicMsg as unknown as import('../../lib/botCommandDispatch').SlashDispatchMessage);
-  }
-
-  // Delivery ACK
-  if (validAckId) {
-    const ackRecord = {
-      messageId: String(msg._id), channelId, userId: user._id, ts: Date.now(),
-      ...(validTmpId ? { tmpId: _tmpId } : {}),
-    };
-    await setAckRecord(ackId, ackRecord);
-    sendAck(socket, ackId, ackRecord);
-  } else if (validTmpId && _tmpId) {
-    sendTmpAck(socket, _tmpId, String(msg._id), channelId);
   }
 
   // Outgoing webhooks
@@ -554,20 +574,13 @@ export async function sendChannelMessage(
           const embeds = previews.filter((p): p is NonNullable<typeof p> => p !== null);
           if (embeds.length) {
             await Messages.update(msg._id, { embeds: JSON.stringify(embeds) });
+            if (!(await liveChannelSet([{ channelId, serverId }])).has(channelId)) return;
             io.to(`channel:${channelId}`).emit('message:embedUpdate', { messageId: msg._id, embeds });
           }
         } catch { /* non-fatal */ }
       })();
     }
   }
-
-  // Cache invalidate — ONEK BAZLI.
-  //
-  // Onceden yalnizca `first:50` ve `first:100` siliniyordu; oysa limit
-  // 1..100 arasi HERHANGI bir deger olabilir. `?limit=25` ile okuyan bir
-  // istemci, adaptif TTL suresince (sessiz kanalda 45s) BAYAT liste
-  // aliyordu.
-  await invalidateChannelMessages(String(channelId));
 
   // P7 B1 (lab ATK-04b): one ping decision per mentioned person for this
   // message, shared by the inbox delivery and `mention:received` below.
@@ -634,6 +647,14 @@ export async function sendChannelMessage(
           event: 'bridge.integrity.target_mismatch' }, 'Bridge forwarding skipped because target tenant identity is invalid.');
         continue;
       }
+      // A bridge authorizes a route, never an expired channel. Recheck both
+      // tenants against PostgreSQL, including when cached DTOs look permanent.
+      // This is a preflight, not a transaction-spanning lifetime fence.
+      const bridgeChannelsLive = async () => (await Promise.all([
+        channelWriteAvailability(writeDb, channel),
+        channelWriteAvailability(writeDb, targetChannel),
+      ])).every(state => state === 'live');
+      if (!await bridgeChannelsLive()) continue;
       // The stored text, never the raw payload, is what the bridge relays.
       const relayed = `🌉 **[${bridge.label || 'Bridge'}]** ${String(msg.content ?? '').trim()}`;
       // The target channel belongs to another server, whose AutoMod rules
@@ -659,6 +680,7 @@ export async function sendChannelMessage(
           'Bridge forwarding refused by the target server AutoMod.');
         continue;
       }
+      if (!await bridgeChannelsLive()) continue;
       const bMsg = await Messages.create({
         _id: uuidv4(), channelId: bridge.targetChannelId, serverId: bridge.targetServerId,
         userId: user._id, username: user.username, displayName: user.displayName,
@@ -667,7 +689,9 @@ export async function sendChannelMessage(
         type: 'normal', reactions: {}, createdAt: Date.now(),
         bridgedFrom: { channelId, serverId },
       });
-      await publishPersistedMessage(io, bMsg);
+      // Cache invalidation is asynchronous too. Check after it and publish
+      // synchronously; never delete a committed copy to disguise this race.
+      await publishPersistedMessage(io, bMsg, bridgeChannelsLive);
     }
   } catch (err) {
     logger.error({ event: 'bridge_forwarding_failed', serverId, channelId,

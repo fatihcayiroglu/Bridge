@@ -90,6 +90,8 @@ const FAKE_AUDIO = path.join(UPLOAD_DIR, 'fake.webm');
 
 beforeAll(async () => {
   fs.writeFileSync(FAKE_AUDIO, Buffer.alloc(512, 0));
+  // Authentication identifies a stored user; JWT profile claims are not authority.
+  await mockDb.users.insert({ _id: USER_ID, username: 'speaker', displayName: 'Speaker', avatarColor: '#abc', tokenVersion: 0 });
   // ── EKSIK FIXTURE: `servers` SATIRI ───────────────────────────────────────
   // `resolvePermissionResolution` ILK IS olarak `Servers.findById(serverId)`
   // yapar ve satir yoksa `missing_server` -> 0 izin doner. Bu fixture'da sunucu

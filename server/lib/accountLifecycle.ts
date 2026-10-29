@@ -172,6 +172,13 @@ export const LIFECYCLE: LifecycleRule[] = [
     why: 'Kişiye gelen bildirimler yalnızca onun okuması içindir; alıcı gidince anlamsız.' },
   { table: 'notifications',         columns: ['actorId'], disposition: 'ANONYMIZE',
     why: 'Kişinin tetiklediği bildirim BAŞKASININ gelen kutusudur; satır kalır, kimlik bağı kopar.' },
+  // P7 B5 (#336, migration 085): a report ABOUT this person carries a snapshot of the
+  // reported message. The report belongs to the server's moderation, not to the
+  // author; the snapshot follows the message's own policy above — the text stays,
+  // the author id and the name shown on it are removed (accountErasure.ts).
+  { table: 'message_reports',       columns: ['evidenceAuthorId'], disposition: 'ANONYMIZE',
+    why: 'Şikâyet kanıtı sunucu moderasyonuna aittir; mesajla aynı politika: metin kalır, '
+       + 'yazar kimliği ve görünen adı kaldırılır.' },
 
   // ── Federasyon: uzak taraf zaten kopyaya sahip ────────────────────────
   { table: 'ap_activities',         columns: ['actorUserId', 'targetUserId'], disposition: 'ANONYMIZE',

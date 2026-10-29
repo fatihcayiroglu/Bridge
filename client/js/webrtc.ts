@@ -327,6 +327,19 @@ class BridgeRTC {
         detail: { reason: 'socket-disconnect' },
       }));
     });
+
+    // The server evicted this voice session (access revoked, or the channel
+    // expired). It has already dropped the room and refuses further signaling,
+    // but P2P media flows directly between peers: only this client can close
+    // its peer connections and release the microphone. Same contract as the
+    // SFU engine (webrtc-sfu.ts).
+    this._onSocket('voice:evicted', (raw: unknown) => {
+      const { channelId } = (raw ?? {}) as { channelId?: unknown };
+      if (!this.currentChannelId || channelId !== this.currentChannelId) return;
+      this._cleanupVoiceState();
+      document.dispatchEvent(new CustomEvent('bridge:voice-left', { detail: { reason: 'evicted' } }));
+      toast(t('rtc_voice_evicted', 'Bu ses kanalına erişimin kaldırıldı.'), 'warning');
+    });
   }
 
   private _nextVoiceJoinRequestId(): string {

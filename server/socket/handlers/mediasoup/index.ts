@@ -14,14 +14,14 @@ import { sfuRooms, sfuPeers, getOrCreateRoom, createWebRtcTransport, getRoomPeer
 import type { BridgeSocket, BridgeIO, BridgeUser, SfuPeer, RtpCapabilities, DtlsParameters, RtpParameters } from './types';
 // Sprint 120: A3 — Merkezi simulcast encoding config'den import
 import { SIMULCAST_ENCODINGS, SCREENSHARE_ENCODINGS } from './config';
-// Sprint 122 FIX 3: Kanal üyelik kontrolü için Members repository
-import { Channels, GroupDms, Members } from '../../../db/repositories';
-import { PERMS, hasPermission, resolvePermissions } from '../../../lib/permissions';
+// Channel rooms: ./authority (membership, permissions, lifecycle). Group-DM rooms: GroupDms.
+import { GroupDms } from '../../../db/repositories';
 
 import logger from '../../../lib/logger';
 import { isolateSocketHandler } from '../../handlerIsolation';
-import { isMemberTimedOut } from '../../../lib/memberTimeout';
 import { isStageParticipant, isStageSpeaker } from '../stage';
+import { authorizeChannelMediaRoom } from './authority';
+import { armMediaExpiryEviction } from '../../mediaExpiryEviction';
 
 export { initMediasoup, isSFUReady } from './workers';
 export { sfuRooms, sfuPeers, cleanupRoom } from './rooms';
@@ -89,21 +89,8 @@ export function registerSFUHandlers(
   ): Promise<{ serverId: string | null; isGroup: boolean; channelType: 'voice' | 'stage' | 'group' } | null> {
     if (!channelId) return null;
 
-    const channel = await Channels.findById(channelId).catch(() => null);
-    if (channel) {
-      const actualServerId = String(channel.serverId ?? '');
-      if (!actualServerId) return null;
-      if (claimedServerId && claimedServerId !== actualServerId) return null;
-      if (channel.type !== 'voice' && channel.type !== 'stage') return null;
-
-      const membership = await Members.findOne(user._id, actualServerId).catch(() => null);
-      if (!membership || isMemberTimedOut(membership.timeoutUntil)) return null;
-
-      const perms = await resolvePermissions(user._id, actualServerId, channelId).catch(() => 0);
-      if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.CONNECT)) return null;
-      if (requireSpeak && !hasPermission(perms, PERMS.SPEAK)) return null;
-      return { serverId: actualServerId, isGroup: false, channelType: channel.type as 'voice' | 'stage' };
-    }
+    const channelAuthority = await authorizeChannelMediaRoom(user._id, channelId, claimedServerId, requireSpeak);
+    if (channelAuthority !== 'no-channel') return channelAuthority;
 
     // Group-DM SFU rooms do not have a channels row. They are authorized by
     // explicit group membership and never accept a claimed server id.
@@ -272,6 +259,10 @@ export function registerSFUHandlers(
         emitSfuError(socket, 'join', requestId, 'FORBIDDEN', 'Bu medya odasına katılma yetkiniz yok.');
         return;
       }
+
+      // Live media ends at the channel's expiry instant (mediaExpiryEviction.ts).
+      await armMediaExpiryEviction(io, channelId, actualServerId);
+      if (generation !== sfuJoinGeneration) return;   // a leave or a newer join owns the cleanup
 
       const existingPeers = [];
       for (const [sid, p] of room.peers) {
