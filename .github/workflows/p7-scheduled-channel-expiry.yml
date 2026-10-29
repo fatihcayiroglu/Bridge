@@ -67,6 +67,8 @@ jobs:
         run: |
           node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/scheduled-send-policy.test.ts tests/jobs-scheduledMessages.test.ts tests/scheduled.test.ts tests/scheduled-repository-behavior.test.ts tests/channel-write-guard.test.ts tests/voicemsg.test.ts tests/voicemsg-failure-branches.test.ts tests/voicemsg-transcription-provider.test.ts --json --outputFile=d2-unit-results.json
           node ../scripts/require-no-skipped-tests.js d2-unit-results.json --label "D2 scheduling unit regression"
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/threads.test.ts tests/threads-forum-authorization-branches.test.ts tests/thread-reply-send-policy.test.ts tests/thread-socket.test.ts --json --outputFile=d2-thread-unit-results.json
+          node ../scripts/require-no-skipped-tests.js d2-thread-unit-results.json --label "D2 thread reply regression"
       - name: Require genuine PostgreSQL 16 and Redis
         run: |
           node - <<'NODE'
@@ -106,4 +108,5 @@ jobs:
           path: |
             server/d2-pg16-results.json
             server/d2-unit-results.json
+            server/d2-thread-unit-results.json
           if-no-files-found: warn
