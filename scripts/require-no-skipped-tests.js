@@ -37,7 +37,7 @@ function skippedTestProblems(result, rootDir = process.cwd()) {
   if (total === 0) problems.push('the run collected 0 tests');
   const skipped = [];
   for (const file of result.testResults) {
-    const rel = path.relative(rootDir, String(file.name || file.testFilePath || '?'));
+    const rel = path.relative(rootDir, String(file.name || file.testFilePath || '?')).split(path.sep).join('/');
     for (const t of file.assertionResults || []) {
       if (t.status === 'pending' || t.status === 'skipped' || t.status === 'todo' || t.status === 'disabled') {
         skipped.push(`${rel} › ${t.fullName || t.title} (${t.status})`);

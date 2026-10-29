@@ -1,0 +1,44 @@
+name: P7 Closure Dependency and Gate Verification
+
+on:
+  pull_request:
+    paths:
+      - 'docs/P7_CLOSURE_MATRIX_20261028.md'
+      - '**/package-lock.json'
+      - 'scripts/require-no-skipped-tests*'
+      - '.github/workflows/p7-closure-dependencies.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  locked-dependency-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: ['.', 'server', 'electron', 'e2e']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Audit exact committed dependency graph
+        working-directory: ${{ matrix.directory }}
+        run: npm audit --package-lock-only --audit-level=high
+  no-skips-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Require zero-skips CLI contracts on the actual OS
+        run: node --test scripts/require-no-skipped-tests.test.js
