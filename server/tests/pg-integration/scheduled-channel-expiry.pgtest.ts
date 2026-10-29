@@ -13,15 +13,16 @@ process.env.REDIS_URL = process.env.REDIS_TEST_URL || process.env.REDIS_URL;
 if (!process.env.REDIS_URL) throw new Error('REDIS_TEST_URL or REDIS_URL is required');
 
 const db = require('../../db/loader').default as typeof import('../../db/postgres').default;
-const { Messages, ScheduledMessages } = require('../../db/repositories') as typeof import('../../db/repositories');
+const { Messages, ScheduledMessages, Threads } = require('../../db/repositories') as typeof import('../../db/repositories');
 const adapter = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
 const contentPolicy = require('../../lib/messageContentPolicy') as typeof import('../../lib/messageContentPolicy');
 const voiceRouter = require('../../routes/voicemsg');
+const threadsRouter = require('../../routes/threads');
 const { startScheduledJob, stopScheduledJob, _dispatchDueForTest: dispatch } =
   require('../../jobs/scheduledMessages') as typeof import('../../jobs/scheduledMessages');
 const q = (sql: string, values: unknown[] = []) => db._pool.query(sql, values);
 
-interface Fixture { user: string; server: string; channel: string; schedule: string }
+interface Fixture { user: string; server: string; channel: string; schedule: string; thread?: string }
 const fixtures: Fixture[] = [];
 const emitted: Array<{ room: string; event: string }> = [];
 const io = { to: (room: string) => ({ emit: (event: string) => emitted.push({ room, event }) }) };
@@ -47,6 +48,18 @@ const expire = (f: Fixture) => q('UPDATE channels SET "expiresAt"=$1,"expiryVers
   [Date.now() - 1000, f.channel]);
 const rows = (f: Fixture) => q('SELECT * FROM messages WHERE "scheduledId"=$1', [f.schedule]);
 const broadcasts = (f: Fixture) => emitted.filter(e => e.room === `channel:${f.channel}` && e.event === 'message:new');
+async function threadApp(f: Fixture) {
+  f.thread = randomUUID();
+  await Threads.insert({ _id: f.thread, channelId: f.channel, serverId: f.server,
+    createdBy: f.user, name: 'Expiry test thread', parentMessageId: null, lastMessageAt: Date.now() });
+  const app = express();
+  app.set('io', io);
+  app.use(express.json());
+  app.use('/api/threads', threadsRouter);
+  const token = jwt.sign({ id: f.user, v: 0 }, process.env.JWT_SECRET!, { expiresIn: '1m' });
+  return (content: string, clientNonce: string) => request(app).post(`/api/threads/${f.thread}/messages`)
+    .set('Authorization', `Bearer ${token}`).send({ content, clientNonce });
+}
 async function expectRefused(f: Fixture, persisted = 0) {
   expect((await rows(f)).rows).toHaveLength(persisted);
   expect(broadcasts(f)).toHaveLength(0);
@@ -70,6 +83,10 @@ afterEach(async () => {
   stopScheduledJob();
   jest.restoreAllMocks();
   for (const f of fixtures.splice(0)) {
+    if (f.thread) {
+      await q('DELETE FROM thread_messages WHERE "threadId"=$1', [f.thread]);
+      await q('DELETE FROM threads WHERE _id=$1', [f.thread]);
+    }
     await q('DELETE FROM channel_expiry_tombstones WHERE "channelId"=$1', [f.channel]);
     await q('DELETE FROM scheduled_msgs WHERE _id=$1', [f.schedule]);
     await q('DELETE FROM voice_messages WHERE "channelId"=$1', [f.channel]);
@@ -86,6 +103,44 @@ afterAll(async () => {
 });
 
 describe('scheduled channel expiry against real PostgreSQL and Redis', () => {
+  it('authenticated concurrent thread nonce submissions persist and publish exactly once', async () => {
+    const f = await seed();
+    const send = await threadApp(f);
+    const responses = await Promise.all(Array.from({ length: 6 }, (_, i) => send(`Concurrent reply ${i}`, 'same-nonce-0001')));
+    expect(responses.map(r => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(new Set(responses.map(r => r.body._id)).size).toBe(1);
+    expect((await q('SELECT _id FROM thread_messages WHERE "threadId"=$1', [f.thread])).rows).toHaveLength(1);
+    expect(emitted.filter(e => e.room === `thread:${f.thread}` && e.event === 'thread:message:new')).toHaveLength(1);
+  });
+
+  it('authenticated stale thread client cannot replay a stored nonce or add a reply after expiry', async () => {
+    const f = await seed();
+    const send = await threadApp(f);
+    expect((await send('Stored reply', 'stored-nonce-0001')).status).toBe(200);
+    await expire(f);
+    for (const nonce of ['stored-nonce-0001', 'new-nonce-0001']) {
+      const response = await send('Stored reply', nonce);
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Channel unavailable' });
+    }
+    expect((await q('SELECT _id FROM thread_messages WHERE "threadId"=$1', [f.thread])).rows).toHaveLength(1);
+    expect(emitted.filter(e => e.room === `thread:${f.thread}` && e.event === 'thread:message:new')).toHaveLength(1);
+  });
+
+  it('real content verification followed by PG expiry refuses thread insertion', async () => {
+    const f = await seed();
+    const send = await threadApp(f);
+    const original = contentPolicy.checkMessageContent;
+    jest.spyOn(contentPolicy, 'checkMessageContent').mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      await expire(f);
+      return result;
+    });
+    expect((await send('Content interleaving', 'interleaved-nonce-0001')).status).toBe(404);
+    expect((await q('SELECT _id FROM thread_messages WHERE "threadId"=$1', [f.thread])).rows).toHaveLength(0);
+    expect(emitted.filter(e => e.room === `thread:${f.thread}` && e.event === 'thread:message:new')).toHaveLength(0);
+  });
+
   it('permanent channel: two concurrent dispatches persist and publish exactly once', async () => {
     const f = await seed();
     await Promise.all([dispatch(), dispatch()]);
