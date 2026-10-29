@@ -144,3 +144,17 @@ New diagnostics distinguish window/identity stages and expose only closed error
 codes and security booleans/counts. An additional regression refuses unsafe
 renderer settings, bypass flags and unpackaged/absent windows. Local contracts
 are now 11/11 PASS. Actual measurements still need fresh runtime evidence.
+
+Fifth attempt: `634e1ed255b2364b98254e605e2ea8d6c33404ac`, run 40792829477 /
+job 123181967397. Backend and packaged security prerequisites passed; the
+first scenario was not reached because the broad AUTHENTICATE stage failed.
+Artifact 12862093207 SHA-256
+`0aac3ed280cc29497bfd2f58356d7ae4fdb50712b194f7e76c1b46829b5e7604`
+preserves the failure. It does not identify the precise input/click operation,
+so no authentication root cause is claimed. The follow-up splits each auth and
+server/channel-selection operation into a closed stage, records only login HTTP
+status and UI counts/visibility booleans, and handles a genuinely visible
+first-use tour through its actual Skip button. It does not inject an onboarding
+key, force a click, change authentication or treat an absent tour as tested.
+No screenshots, element text/values, credentials or WebDriver exception messages
+are published. This is diagnostic/precondition work; runtime evidence is pending.

@@ -58,11 +58,16 @@ export async function runPackaged(config) {
   fs.writeFileSync(path.join(profile, 'desktop-settings.json'), JSON.stringify({ serverOrigin: c.origin }), { mode: 0o600 });
   const report = buildReport(probe());
   let application;
+  let pageRef;
   let stage = 'LAUNCH';
   let securityFacts = null;
+  let loginStatus = null;
+  let onboardingDismissed = false;
+  let failureUi = null;
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
-    status, stage, code, securityFacts, bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
+    status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
+    bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
     const { _electron } = requireE2e('playwright');
@@ -71,6 +76,10 @@ export async function runPackaged(config) {
       args: [`--user-data-dir=${profile}`], timeout: 45000 });
     stage = 'PRODUCT_WINDOW';
     const page = await application.firstWindow();
+    pageRef = page;
+    page.on('response', response => {
+      if (new URL(response.url()).pathname === '/api/login' && response.request().method() === 'POST') loginStatus = response.status();
+    });
     page.setDefaultTimeout(30000);
     await page.waitForURL(url => url.origin === c.origin, { waitUntil: 'domcontentloaded' });
     stage = 'PACKAGED_IDENTITY';
@@ -89,17 +98,31 @@ export async function runPackaged(config) {
     validateIdentity(identity);
     const asarSha256 = createHash('sha256').update(fs.readFileSync(identity.appPath)).digest('hex');
     requireFact(new URL(page.url()).origin === c.origin, 'PRODUCT_ORIGIN');
-    stage = 'AUTHENTICATE';
+    stage = 'AUTH_FORM';
     await page.locator('#l-username').waitFor({ state: 'visible' });
     const instrumentedLoginUiMs = performance.now() - launchStart;
+    stage = 'AUTH_USERNAME';
     await page.locator('#l-username').fill(c.username);
+    stage = 'AUTH_PASSWORD';
     await page.locator('#l-password').fill(c.password);
     const login = page.waitForResponse(r => new URL(r.url()).pathname === '/api/login' && r.request().method() === 'POST');
+    stage = 'AUTH_SUBMIT';
     await page.locator('#login-form [data-auth-action="login"]').click();
+    stage = 'AUTH_RESPONSE';
     requireFact((await login).status() === 200, 'AUTHENTICATION_REJECTED');
+    stage = 'INITIAL_ONBOARDING';
+    // A fresh account may show the ordinary first-use tour. Dismiss only its
+    // actual visible Skip button; do not inject a completion key or credentials.
+    const tour = page.locator('.ow-backdrop .ow-btn-ghost');
+    try { await tour.waitFor({ state: 'visible', timeout: 3000 }); }
+    catch (error) { if (error?.name !== 'TimeoutError') throw error; }
+    if (await tour.isVisible()) { await tour.click(); onboardingDismissed = true; }
+    stage = 'SERVER_SELECT';
     await page.locator(`.server-icon[data-id="${c.server}"]`).click();
     const selectChannel = id => page.locator(`.ch-item[data-id="${id}"] .ch-open`).click();
+    stage = 'IDLE_CHANNEL_SELECT';
     await selectChannel(c.idleChannel);
+    stage = 'IDLE_MESSAGE_VISIBLE';
     await page.locator('.msg-list .msg').first().waitFor({ state: 'visible' });
     await sleep(10000); // fixed warmup, not included in scenario duration
 
@@ -220,9 +243,25 @@ export async function runPackaged(config) {
   } catch (error) {
     // WebDriver errors can include typed credentials. Never publish messages,
     // stacks, traces, screenshots or browser storage from authentication.
+    if (pageRef && !pageRef.isClosed()) {
+      try {
+        failureUi = await pageRef.evaluate(() => {
+          const visible = selector => {
+            const el = document.querySelector(selector);
+            return Boolean(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+          };
+          return { loginFormVisible: visible('#login-form'), usernameVisible: visible('#l-username'),
+            passwordVisible: visible('#l-password'), onboardingVisible: visible('.ow-backdrop'),
+            modalCount: document.querySelectorAll('[role="dialog"][aria-modal="true"]').length,
+            serverCount: document.querySelectorAll('.server-icon[data-id]').length,
+            channelCount: document.querySelectorAll('.ch-item[data-id]').length,
+            messageCount: document.querySelectorAll('.msg-list .msg').length };
+        });
+      } catch { failureUi = { unavailable: true }; }
+    }
     const closedCodes = new Set(['PACKAGED_SECURITY_PRECONDITION','PRODUCT_ORIGIN','AUTHENTICATION_REJECTED',
       'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
-    const code = closedCodes.has(error?.message) ? error.message : 'DRIVER_OR_RUNTIME_FAILURE';
+    const code = closedCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'DRIVER_TIMEOUT' : 'DRIVER_OR_RUNTIME_FAILURE';
     writeAttempt('FAIL', code);
     console.error(`PACKAGED_PERF_FAILED:${stage}:${code}`);
     throw new Error('PACKAGED_PERF_FAILED');
