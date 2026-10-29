@@ -1,11 +1,14 @@
 <!-- client/js/core/channel-list/ChannelItem.svelte -->
 <script lang="ts">
   import { t } from '../i18n/reactive.svelte.ts';
+  import { channelExpiresAt, formatChannelExpiry } from './channel-expiry.ts';
   export interface ChannelData {
     _id: string;
     name: string;
     type?: string;
     nsfw?: boolean;
+    /** P7 D2: server-authoritative expiry (epoch ms); absent or null when permanent. */
+    expiresAt?: unknown;
   }
 
   interface Props {
@@ -16,6 +19,10 @@
   }
 
   let { channel, active = false, onSelect, onOpenMenu }: Props = $props();
+
+  // Formatted when the row renders; the list refetches on every change and after resume.
+  const expiry = $derived(formatChannelExpiry(channelExpiresAt(channel), Date.now()));
+  const expiryText = $derived(expiry ? t('channel_expires_at', '{when} tarihinde sona erer', { when: expiry.absolute }) : '');
 
   const iconKind = $derived(
     channel.type === 'voice' ? 'voice'
@@ -48,7 +55,7 @@
     type="button"
     class="ch-open"
     aria-current={active ? 'page' : undefined}
-    aria-label={`${channel.type === 'voice' ? t("ui_ses_kanali") : channel.type === 'stage' ? t("surface_sahne_kanal_f2a33f") : t("ui_kanal")}: ${channel.name}`}
+    aria-label={`${channel.type === 'voice' ? t("ui_ses_kanali") : channel.type === 'stage' ? t("surface_sahne_kanal_f2a33f") : t("ui_kanal")}: ${channel.name}${expiryText ? ` — ${expiryText}` : ''}`}
     onclick={() => onSelect(channel)}
   >
   <span class="ch-icon" aria-hidden="true">
@@ -67,6 +74,11 @@
   <span class="ch-name">{channel.name}</span>
   {#if channel.nsfw}
     <span class="ch-nsfw-badge" title="NSFW">18+</span>
+  {/if}
+  {#if expiry}
+    <span class="ch-expiry-badge" class:ch-expiry-soon={expiry.soon} title={expiryText} aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>
+    </span>
   {/if}
   <span class="voice-count" id="vc-{channel._id}" style="display:none"></span>
   <span class="ch-unread" id="unread-{channel._id}" style="display:none"></span>
@@ -120,6 +132,9 @@
     font-size: var(--type-badge); background: var(--danger); color: var(--text-on-solid);
     border-radius: 3px; padding: 1px 4px; margin-left: 4px; font-weight: 700;
   }
+  .ch-expiry-badge { display: grid; place-items: center; flex: none; color: var(--text-muted); }
+  .ch-expiry-badge :global(svg) { width: 14px; height: 14px; }
+  .ch-expiry-badge.ch-expiry-soon { color: var(--warning, var(--danger)); }
   .ch-settings-btn {
     width: 24px; height: 24px; opacity: 0; display: grid; place-items: center;
     background: transparent; border: none; cursor: pointer; padding: 0;

@@ -61,7 +61,7 @@ const router = express.Router();
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { Channels, Members, Messages, VoiceMessages } from '../db/repositories';
+import { Channels, Members, Messages, Users, VoiceMessages } from '../db/repositories';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 import { authMiddleware} from '../middleware/auth';
 import logger from '../lib/logger';
@@ -73,6 +73,9 @@ import { uploadRoot } from '../lib/runtimePaths';
 import { parseNonNegativeSafeIntText } from '../lib/queryNumbers';
 import { transcriptionTarget } from '../lib/aiProvider';
 import { serverAllowsAi } from '../lib/aiServerPolicy';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
+import { channelLiveForMedia } from '../lib/channelContentAvailability';
 // ── AI TRANSKRİPSİYON ─────────────────────────────────────────
 // P6 AI-09: the provider decision lives in lib/aiProvider (AI_PROVIDER governs
 // it); the server's own setting is checked by the caller before this runs.
@@ -175,6 +178,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(membership.timeoutUntil) });
   }
 
+  // Access tokens identify the author; normal JWTs do not carry displayName.
+  // Use the stored author snapshot, including for valid id-only legacy tokens.
+  const author = await Users.findById(_u.id);
+  if (!author) return res.status(401).json({ error: 'User not found' });
+  const displayName = membership.nickname || author.displayName || author.username;
+
+  const availability = await channelWriteAvailability(db, channel);
+  if (availability === 'gone') return res.status(404).json({ error: 'Channel unavailable' });
+  if (availability !== 'live') return res.status(503).json({ error: 'Channel availability cannot be verified' });
+
   const parsedDuration = parseNonNegativeSafeIntText(duration, 0);
   if (parsedDuration === null) return res.status(400).json({ error: 'duration must be a non-negative safe integer' });
 
@@ -194,6 +207,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       deleteLocal: false,
       contentType: req.file.mimetype,
     });
+    // Upload can outlast the channel. No DB reference exists yet, so only this
+    // request's newly uploaded object may be rolled back on a refused recheck.
+    const currentChannel = await Channels.findByIdAndServer(channelId, serverId);
+    const currentAvailability = currentChannel ? await channelWriteAvailability(db, currentChannel) : 'gone';
+    if (currentAvailability !== 'live') {
+      await cleanupUploadedObject(store, result, filePath);
+      return res.status(currentAvailability === 'gone' ? 404 : 503).json({
+        error: currentAvailability === 'gone' ? 'Channel unavailable' : 'Channel availability cannot be verified',
+      });
+    }
     // Voice messages are private channel attachments. Keep their persisted
     // reference on Bridge even when bytes live in S3/R2/MinIO/B2; uploadAuthz
     // re-checks current channel visibility before proxying remote bytes.
@@ -205,15 +228,15 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       // `voice_messages."displayName"` is NOT NULL with no default and was never written here,
       // so this insert could only fail on real PostgreSQL — the unit-test store does not
       // enforce NOT NULL (Final21 Phase 16: every insert audited against the schema).
-      displayName: _u.displayName || _u.username,
+      displayName,
       url: fileUrl, duration: parsedDuration, createdAt: Date.now(),
     });
     if (!vm?._id) throw new Error('Voice message persistence failed');
 
     const msg = await Messages.create({
       _id: uuidv4(), channelId, serverId,
-      userId: _u.id, username: _u.username,
-      displayName: _u.displayName, avatarColor: _u.avatarColor || '#2d9cdb',
+      userId: _u.id, username: author.username,
+      displayName, avatarColor: author.avatarColor || '#2d9cdb',
       content: '', type: 'voice_message',
       fileUrl, fileName, fileType: req.file.mimetype,
       reactions: {}, createdAt: Date.now(),
@@ -228,12 +251,13 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     setImmediate(async () => {
       try {
         // P6: a server that turned AI off never has its members' audio sent out.
-        const transcript = await serverAllowsAi(String(channel.serverId)) ? await transcribeAudio(filePath) : null;
-        if (transcript) {
+        if (!await serverAllowsAi(String(channel.serverId)) || !await channelLiveForMedia(channelId, serverId)) return;
+        const transcript = await transcribeAudio(filePath);
+        if (transcript && await channelLiveForMedia(channelId, serverId)) {
           await VoiceMessages.update({ _id: vmId }, { $set: { transcript } });
           await Messages.update(messageId, { transcript });
-          const io = req.app.get('io'); if (io) {
-            io.to(channelId).emit('message:transcript', { messageId, transcript });
+          const io = req.app.get('io'); if (io && await channelLiveForMedia(channelId, serverId)) {
+            io.to(`channel:${channelId}`).emit('message:transcript', { messageId, transcript });
           }
         }
       } catch (_err) { const err = _err as Error;
@@ -270,7 +294,8 @@ router.get('/:vmId/transcript', authMiddleware, async (req, res) => {
   const channelId = String(vm.channelId ?? '');
   const serverId = String(vm.serverId ?? '');
   const channel = channelId && serverId ? await Channels.findByIdAndServer(channelId, serverId) : null;
-  if (!channel) return res.status(404).json({ error: 'Voice message not found' });
+  // The transcript is channel content: gone with the channel's expiry (P7 D2).
+  if (!channel || !await channelLiveForMedia(channelId, serverId)) return res.status(404).json({ error: 'Voice message not found' });
   const perms = await resolvePermissions(_u.id, serverId, channelId);
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY)) {
     return res.status(403).json({ error: 'Missing channel permissions' });

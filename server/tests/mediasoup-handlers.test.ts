@@ -432,8 +432,12 @@ describe('sfu:join', () => {
   it('daha yeni join eski yavaş authorization sonucunu geçersiz kılar', async () => {
     const repositories = jest.requireMock('../db/repositories');
     let resolveSlow!: (value: unknown) => void;
+    let slowStarted = false;
     (repositories.Channels.findById as jest.Mock).mockImplementation((channelId: string) => {
-      if (channelId === 'ch-slow') {
+      // Only the slow join's first authorization read is held; later reads
+      // (the P7 D2 liveness check) answer at once, as a real store would.
+      if (channelId === 'ch-slow' && !slowStarted) {
+        slowStarted = true;
         return new Promise(resolve => { resolveSlow = resolve; });
       }
       return Promise.resolve({ _id: channelId, serverId: 'srv-1', type: 'voice' });

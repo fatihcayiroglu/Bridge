@@ -265,6 +265,7 @@ export async function evictSocketsWithoutChannelAccess(
   io: SocketIOServer | null | undefined,
   serverId: string,
   channelId?: string | null,
+  opts: { channelGone?: boolean } = {},
 ): Promise<number> {
   if (!io || !serverId) return 0;
 
@@ -313,7 +314,9 @@ export async function evictSocketsWithoutChannelAccess(
     // One request scope per socket so repeated permission resolution is memoized.
     await runWithRequestContext({ requestId: newRequestId(), userId, socketId: socket.id, memo: new Map() }, async () => {
       for (const [cid, rooms] of roomsByChannel) {
-        if (await canViewChannel(userId, serverId, cid)) {
+        // P7 D2: an expired channel's row can outlive the claim while its graph
+        // drains, so permissions still resolve; `channelGone` evicts everyone.
+        if (!opts.channelGone && await canViewChannel(userId, serverId, cid)) {
           if (!rooms.includes(`voice:${cid}`)) continue;
           const access = await liveVoiceAccess(userId, serverId, cid);
           const key = `${userId}:${cid}`;
@@ -371,9 +374,10 @@ export async function evictSocketsWithoutChannelAccessBestEffort(
   io: SocketIOServer | null | undefined,
   serverId: string,
   channelId?: string | null,
+  opts: { channelGone?: boolean } = {},
 ): Promise<void> {
   try {
-    await evictSocketsWithoutChannelAccess(io, serverId, channelId);
+    await evictSocketsWithoutChannelAccess(io, serverId, channelId, opts);
   } catch (err) {
     logger.error(
       { err, serverId, channelId, event: 'socket.channel_access_evict.failed' },

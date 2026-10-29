@@ -6,6 +6,7 @@
 
 import {
   clearDraft as clearLegacyDraft,
+  legacyChannelDraftIds,
   readDraftSnapshot,
   type DraftIdentity,
 } from '../draft-store.ts';
@@ -192,6 +193,23 @@ export function clearLocalFirstDraft(identity: DraftIdentity): void {
   bump(key);
   volatile.set(key, null);
   void createRuntime(stable.userId).then(runtime => runtime.session.clear(stable));
+}
+
+/**
+ * P7 D2: channel ids of `serverId` holding a draft for this user, encrypted or
+ * still in the legacy plaintext store (not migrated until the channel is opened).
+ */
+export async function localFirstChannelDraftIds(userId: string, serverId: string): Promise<string[]> {
+  if (!userId || !serverId) return [];
+  const runtime = await createRuntime(userId);
+  const encrypted = await new EncryptedDraftRepository(runtime.storage.store).channelConversationIds(serverId);
+  return [...new Set([...encrypted, ...legacyChannelDraftIds(userId, serverId)])].sort();
+}
+
+/** Clear a draft in the encrypted store AND the legacy plaintext store. */
+export function purgeLocalFirstDraft(identity: DraftIdentity): void {
+  clearLocalFirstDraft(identity);
+  clearLegacyDraft(identity);
 }
 
 export async function flushLocalFirstDraft(identity: DraftIdentity): Promise<void> {
