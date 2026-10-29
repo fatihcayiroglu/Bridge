@@ -34,6 +34,8 @@ import { startFederationHeartbeat, stopFederationHeartbeat } from './jobs/federa
 import { startFederationDeliveryWorker, stopFederationDeliveryWorker } from './routes/federation/delivery';
 import { startEventReminderJob, stopEventReminderJob } from './jobs/eventReminders';
 import { startSavedMessageReminderJob, stopSavedMessageReminderJob } from './jobs/savedMessageReminders';
+import { startChannelExpiryJob, stopChannelExpiryJob } from './jobs/channelExpiry';
+import { startReportEvidenceRetentionJob, stopReportEvidenceRetentionJob } from './jobs/reportEvidenceRetention';
 import { startOutgoingWebhookDeliveryJob, stopOutgoingWebhookDeliveryJob } from './routes/outgoingWebhooks';
 // Sprint 120: A4 — pgvector geçmiş mesaj batch embed job kayıt altına alındı
 import { scheduleEmbedHistoryJob, cancelEmbedHistoryJob, scheduleEmbedSweep, cancelEmbedSweep } from './jobs/embedHistory';
@@ -98,6 +100,9 @@ async function bootstrap(): Promise<void> {
   startAutoModerationJob(io);
   startEventReminderJob();
   startSavedMessageReminderJob();
+  // P7 D2: claims expired channels and cleans their graph (no-op until expiry is configurable).
+  startChannelExpiryJob(io);
+  startReportEvidenceRetentionJob();   // P7 B5: report evidence retention
   startFederationHeartbeat();
   // P5 SH-01b: after initSchema — the queue table is created by the migration chain.
   startFederationDeliveryWorker();
@@ -144,6 +149,8 @@ const gracefulShutdown = createGracefulShutdown({
     stopAuthCleanup();
     stopEventReminderJob();
     stopSavedMessageReminderJob();
+    stopChannelExpiryJob();
+    stopReportEvidenceRetentionJob();
     stopFederationHeartbeat();   // Sprint 97: zaten vardı
     stopFederationDeliveryWorker();   // P5 SH-01b
     stopOutgoingWebhookDeliveryJob();

@@ -13,6 +13,7 @@ import { Messages } from '../db/repositories';
 import * as policy from '../lib/messageContentPolicy';
 import * as authority from '../lib/channelWriteGuard';
 import { cache } from '../lib/redisAdapter';
+import * as publicationAuthority from '../lib/channelLiveReadSet';
 
 const events: string[] = [];
 const app = express();
@@ -99,6 +100,15 @@ it('invalid credentials are checked before expiry authority', async () => {
   expect((await send('invalid-credential')).status).toBe(401);
   expect(check).not.toHaveBeenCalled();
   expect(await rows()).toHaveLength(0);
+  expect(events).toEqual([]);
+});
+
+it('a caller-live result cannot override a final publication refusal or produce HTTP success', async () => {
+  jest.spyOn(publicationAuthority, 'liveChannelSet').mockResolvedValue(new Set());
+  const response = await send();
+  expect(response.status).toBe(404);
+  expect(response.body).toEqual({ error: 'Channel unavailable' });
+  expect(await rows()).toHaveLength(1);
   expect(events).toEqual([]);
 });
 

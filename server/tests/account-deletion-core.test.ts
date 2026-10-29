@@ -25,6 +25,7 @@ function fakeDb(rules: Array<[RegExp, (params?: unknown[]) => Reply]>, schema: R
       calls.push({ sql, params });
       if (/information_schema\.tables/.test(sql)) return { rows: Object.keys(schema).map((table_name) => ({ table_name })) };
       if (/information_schema\.columns/.test(sql)) return { rows: (schema[String(params?.[0])] ?? []).map((column_name) => ({ column_name })) };
+      if (/SELECT _id FROM users WHERE _id = \$1 FOR UPDATE/.test(sql)) return { rows: [{ _id: params?.[0] }], rowCount: 1 };
       for (const [re, fn] of rules) {
         if (re.test(sql)) {
           const r = fn(params);
@@ -91,8 +92,11 @@ describe('eraseAccountData', () => {
     const { applied } = await eraseAccountData(db, transaction, 'u1', { purgeChannelMessages: true });
     expect(applied[0]).toEqual({ table: 'messages', disposition: 'PURGE_BY_ADMIN', rows: 3 });
     const purgeIdx = calls.findIndex((c) => /DELETE FROM messages WHERE "userId"/.test(c.sql));
+    const lockIdx = calls.findIndex((c) => /FOR UPDATE/.test(c.sql));
     const anonymizeIdx = calls.findIndex((c) => /UPDATE "messages"/.test(c.sql));
     expect(purgeIdx).toBeGreaterThanOrEqual(0);
+    expect(lockIdx).toBeGreaterThanOrEqual(0);
+    expect(lockIdx).toBeLessThan(purgeIdx);
     expect(anonymizeIdx).toBeGreaterThan(purgeIdx);     // nothing left to anonymize afterwards, but the policy still runs
     expect(calls.at(-1)?.sql).toBe('DELETE FROM users WHERE _id = $1');
   });

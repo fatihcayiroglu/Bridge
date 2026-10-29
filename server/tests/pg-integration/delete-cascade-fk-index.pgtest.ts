@@ -17,6 +17,9 @@
 //   channel_read_positions."channelId" -> channels, 1M satır, 100 kanal
 //       açık DELETE + kanal silme: indekssiz 5 662–5 842 ms, indeksli 1 312–1 500 ms
 //
+// P7 B5 migration 085 bu FK'yi kaldırdı (rapor, mesajın kalıcı silinmesinden sonra da
+// kalır); `messageId` indeksi arama için durur ve mesaj silme artık raporlara hiç dokunmaz.
+//
 // Sunucu silme (`ServerRepository.deleteGraphAtomic`) bunların ikisini de TEK
 // işlemde yürütür; 1M mesajlı Faz 7 korpus sunucusunun silinmesi istemcinin
 // 30 sn zaman aşımını geçti.
@@ -142,19 +145,33 @@ RUN('gerçek PostgreSQL — cascade silmede başvuran sütun indeksli', () => {
     expect(await leadingIndexes('channel_read_positions', 'channelId')).not.toEqual([]);
   });
 
-  it('mesaj silme, rapor tablosunda silinen mesaj başına sıralı tarama YAPMAZ', async () => {
-    const [indexName] = await leadingIndexes('message_reports', 'messageId');
+  // Migration 085 (P7 B5, #336) dropped the message foreign key: a report outlives a
+  // hard delete of its message (a ban that removes recent messages, an admin purge
+  // used to erase the open reports behind it). Deleting messages therefore does not
+  // touch message_reports at all — no sequential scan, no index scan — which is
+  // stronger than the per-row index scan this case measured while the CASCADE existed.
+  it('mesaj silme rapor tablosuna HİÇ dokunmaz; silinen mesajın raporu KALIR (085)', async () => {
+    const SURVIVORS = 5;
+    await q(
+      `INSERT INTO message_reports (_id, "serverId", "channelId", "messageId", "reporterId", reason, detail, status, "createdAt")
+       SELECT '${P}-rd-' || m, $1, '${P}-c-1', '${P}-m-' || m, '${P}-u-2', 'spam', '', 'open', 1
+       FROM generate_series(1, ${SURVIVORS}) m`,
+      [`${P}-srv`],
+    );
     const r = await measureCascade(
       'message_reports',
       `DELETE FROM messages WHERE "channelId" = $1`,
       [`${P}-c-1`],
     );
     expect(r.deleted).toBe(DELETE_MESSAGES);
-    expect(r.seqDelta).toBeLessThan(DELETE_MESSAGES / 10);
-    expect(r.idxDelta[indexName] ?? 0).toBeGreaterThanOrEqual(DELETE_MESSAGES);
-    // Anlam korunur: silinmeyen mesajlara bakan raporlar yerinde.
+    expect(r.seqDelta).toBe(0);
+    expect(Object.values(r.idxDelta).reduce((sum, n) => sum + n, 0)).toBe(0);
+    // Silinmeyen mesajlara bakan raporlar yerinde…
     expect(Number((await q(`SELECT count(*) AS n FROM message_reports WHERE _id LIKE $1`, [`${P}-r-%`]))[0].n))
       .toBe(USERS * 10);
+    // …ve SİLİNEN mesajlara bakan açık raporlar da.
+    expect(Number((await q(`SELECT count(*) AS n FROM message_reports WHERE _id LIKE $1`, [`${P}-rd-%`]))[0].n))
+      .toBe(SURVIVORS);
   });
 
   it('kanal silme, okuma konumlarında silinen kanal başına sıralı tarama YAPMAZ', async () => {

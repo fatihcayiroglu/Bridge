@@ -270,8 +270,21 @@
 
   // ── Kanal geçişi ───────────────────────────────────────────────────────────
   function onChannelSelected(event: Event): void {
-    const detail = (event as CustomEvent<{ channelId?: string }>).detail;
+    const detail = (event as CustomEvent<{ channelId?: string | null }>).detail;
     const next = detail?.channelId;
+    if (next === null) {
+      requestSeq += 1;
+      channelId = null;
+      liveSinceLoad = null;
+      if (joinedChannel) getSocket()?.emit('channel:leave', joinedChannel);
+      joinedChannel = null;
+      clearTypingTimers();
+      updateTypingBar();
+      BridgeRegistry.call('setMessagesLoading', false);
+      BridgeRegistry.call('setMessagesOffline', false);
+      notifyUpdated();
+      return;
+    }
     if (!next) return;
 
     channelId = next;

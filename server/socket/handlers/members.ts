@@ -121,6 +121,8 @@ export async function setupMemberships(
         { userId: user._id, channelId, event: 'socket.channel_join.error', err: (e as Error).message },
         'channel:join işlemi başarısız.',
       );
+    } finally {
+      if (generation === joinGeneration) pendingChannel = null;
     }
   }));
 

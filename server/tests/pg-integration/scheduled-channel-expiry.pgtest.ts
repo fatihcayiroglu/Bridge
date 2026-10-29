@@ -182,6 +182,15 @@ describe('scheduled channel expiry against real PostgreSQL and Redis', () => {
     expect((await q('SELECT _id FROM voice_messages WHERE "channelId"=$1', [f.channel])).rows).toHaveLength(0);
     expect((await q('SELECT _id FROM messages WHERE "channelId"=$1', [f.channel])).rows).toHaveLength(0);
     expect(files()).toEqual(before);
+    const otherTenant = await seed();
+    const otherToken = jwt.sign({ id: otherTenant.user, v: 0 }, process.env.JWT_SECRET!, { expiresIn: '1m' });
+    const unauthorized = await request(app).post('/api/voice-messages').set('Authorization', `Bearer ${otherToken}`)
+      .field('serverId', f.server).field('channelId', f.channel).field('duration', '0')
+      .attach('audio', Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), { filename: 'fixture.webm', contentType: 'audio/webm' });
+    expect(unauthorized.status).toBe(403);
+    expect((await q('SELECT _id FROM voice_messages WHERE "channelId"=$1', [f.channel])).rows).toHaveLength(0);
+    expect((await q('SELECT _id FROM messages WHERE "channelId"=$1', [f.channel])).rows).toHaveLength(0);
+    expect(files()).toEqual(before);
   });
 
   it('tombstone is terminal even if the channel row still appears permanent', async () => {

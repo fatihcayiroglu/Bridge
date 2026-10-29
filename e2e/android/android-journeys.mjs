@@ -311,6 +311,25 @@ async function seedLongChannel(serverId, userId, token, count) {
   } finally { await client.end(); }
 }
 
+// ── P7 D2 expiry seeding: the real API sets the expiry (owner only, 1 h minimum), then the
+// stored value is moved into the database clock's past. Nothing in the product offers a shorter
+// lifetime, and the journey must not wait an hour. Requires DATABASE_URL (provided in CI);
+// without it the journey FAILS instead of skipping, so a missing service is never green.
+async function expireChannelNow(serverId, channelId, token) {
+  if (!process.env.DATABASE_URL) throw new Error('D2L01 needs DATABASE_URL to move an API-set expiry into the past');
+  await write('PUT', `/api/servers/${serverId}/channels/${channelId}/expiry`, token, { expiresAt: Date.now() + 2 * 60 * 60 * 1000 });
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const pg = require('../../server/node_modules/pg');
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const r = await client.query(`UPDATE channels SET "expiresAt" = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - 1000
+      WHERE _id = $1 AND "serverId" = $2 AND "expiryVersion" > 0`, [channelId, serverId]);
+    if (r.rowCount !== 1) throw new Error('D2L01 expiry seed did not update exactly one channel');
+  } finally { await client.end(); }
+}
+
 // ── Platform layer ─────────────────────────────────────────────────────────
 const sh = async (cmd) => (await device.shell(cmd)).toString().trim();
 
@@ -1708,6 +1727,56 @@ async function main() {
     log('L02 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
     await assertVisibleAfterResume(needle, 'L02', 60_000);
     return { visibleAfterMs: Date.now() - t0, pidStable: pidBefore === pidAfter, channelPreserved: true };
+  });
+
+  // P7 D2 lifecycle. Two product contracts, both measured on the device:
+  //  1. A channel another device creates appears in the ALREADY-LOADED list (server-emitted
+  //     `channels:changed`, server id only). Before it, nothing was emitted and the list stayed
+  //     stale; this step is what failed in the first D2L01 attempt.
+  //  2. A channel that expires while the app is suspended is gone on resume: not listed, not
+  //     active, its unsent draft not left on the device, and the server refuses its history.
+  //     The app is backgrounded, so it may miss `channel:expired`; the resume refetch must cover it.
+  // The original channel is reopened at the end so the journeys after this one start unchanged.
+  await check('D2L01', 'channel created elsewhere appears live; channel expiring while suspended is gone on resume', async () => {
+    const created = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-gecici', type: 'text' });
+    const doomedId = created._id || created.id || created.channel?._id;
+    assert(typeof doomedId === 'string' && doomedId, 'D2L01 channel was not created');
+    const t0 = Date.now();
+    await until(() => page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomedId),
+      { timeout: 15_000, message: 'D2L01 channel created by another device appears without a manual reload' });
+    const liveListMs = Date.now() - t0;
+
+    await openChannel(doomedId);
+    const draft = `android-d2-draft-${Date.now().toString(36)}`;
+    await page.fill('#msg-input', draft);
+    await sleep(1_500);  // let the draft store persist it
+
+    await platform.home();
+    await sleep(3_000);
+    await expireChannelNow(serverId, doomedId, me.token);
+    const history = await http('GET', `/api/channels/${doomedId}/messages?limit=1`, { token: me.token });
+    assert(history.status === 404, `D2L01 server still serves the expired channel's history (HTTP ${history.status})`);
+    await sleep(5_000);
+
+    const fg = await platform.foreground();
+    if (MODE === 'dryrun') {
+      // No native shell in the dry run: send the same signal Capacitor's appStateChange sends.
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } })));
+    }
+    const t1 = Date.now();
+    await attachPage();
+    await until(() => page.evaluate((cid) => !document.querySelector(`.ch-item[data-id="${cid}"]`), doomedId),
+      { timeout: 30_000, message: 'D2L01 expired channel removed from the list after resume' });
+    await until(async () => (await activeChannel()) !== doomedId,
+      { timeout: 15_000, message: 'D2L01 expired channel no longer active after resume' });
+    const goneAfterMs = Date.now() - t1;
+    await until(() => page.evaluate((cid) => !Object.keys(localStorage).some((k) => k.includes(cid)), doomedId),
+      { timeout: 15_000, message: 'D2L01 no local storage key still references the expired channel' });
+    const draftVisible = await page.evaluate((d) => (document.querySelector('#msg-input')?.value ?? '') === d, draft);
+    assert(!draftVisible, 'D2L01 the expired channel draft is still in the composer');
+
+    await openChannel(channelId);
+    return { liveListMs, goneAfterResumeMs: goneAfterMs, launchState: fg.launchState ?? null };
   });
 
   await check('L03', 'process killed while backgrounded → relaunch restores session, channel and missed messages', async () => {
