@@ -272,8 +272,8 @@
     if (!scroller) return;
     const top = scroller.scrollTop;
     const height = scroller.scrollHeight;
-    const grewWhileAtBottom = stickToBottom && height > lastObservedScrollHeight &&
-      top >= lastObservedScrollTop - 1;
+    const grewWhileAtBottom = stickToBottom && lastObservedScrollHeight > 0 &&
+      height > lastObservedScrollHeight && top >= lastObservedScrollTop - 1;
     lastObservedScrollTop = top;
     lastObservedScrollHeight = height;
     if (grewWhileAtBottom) {
