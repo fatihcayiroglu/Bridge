@@ -37,7 +37,7 @@ const path = require('node:path');
 
 const SERVER_ROOT = path.resolve(__dirname, '..');
 const LEDGER_PATH = path.join(SERVER_ROOT, 'TYPE_DEBT.json');
-const ERROR_LINE = /^(.+?)\((\d+),(\d+)\): error TS\d+:/;
+const ERROR_LINE = /^(.+?)\((\d+),(\d+)\): error TS(\d+):/;
 
 function parseArgs(argv) {
   const args = { project: null, bucket: null, write: false };
@@ -129,6 +129,20 @@ function main() {
     console.error(`❌ TypeScript strictness ratchet "${args.bucket}" failed (${problems.length} issue(s)):`);
     for (const problem of problems.slice(0, 40)) console.error(`   ${problem}`);
     if (problems.length > 40) console.error(`   … ${problems.length - 40} more`);
+    // Reveal only the first source location and TypeScript diagnostic code per
+    // newly regressed file, never source lines or arbitrary compiler messages.
+    // This is diagnostic evidence, not permission to add type debt.
+    const regressed = new Set([...counts].filter(([file, count]) =>
+      !Object.prototype.hasOwnProperty.call(declared, file) || count > declared[file]).map(([file]) => file));
+    const shown = new Set();
+    for (const line of output.split(/\r?\n/)) {
+      const match = ERROR_LINE.exec(line);
+      if (!match) continue;
+      const file = match[1].split(path.sep).join('/').replace(/^\.\//, '');
+      if (!regressed.has(file) || shown.has(file)) continue;
+      console.error(`   FIRST_COMPILER_LOCATION: ${file}:${match[2]}:${match[3]} TS${match[4]}`);
+      shown.add(file);
+    }
     console.error('   Re-baseline deliberately with --write only when the ledger legitimately shrinks.');
     process.exit(1);
   }
