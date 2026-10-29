@@ -70,6 +70,41 @@ assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
 [2] -> xdg_toplevel#15.set_min_size(520, 400)
 [3] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#16)
 [4] -> xdg_surface#14.ack_configure(26)' 'superseded role no size'
+# A successful ACK must still belong to a live toplevel at the end of
+# the captured protocol. A historical success on a destroyed window is not
+# acceptable evidence of the currently visible application.
+assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_surface#14.destroy()' 'configured surface was subsequently destroyed'
+assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_toplevel#15.destroy()' 'configured toplevel was subsequently destroyed'
+assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_surface#14.get_popup(new id xdg_popup#16, nil, nil)' 'configured role replaced by popup'
+assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#16)' 'configured role superseded without a fresh ACK'
+assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_surface#99.get_toplevel(new id xdg_toplevel#15)' 'same toplevel object id cannot keep stale surface proof'
+assert_pass '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_surface#99.get_toplevel(new id xdg_toplevel#16)
+[5] -> xdg_surface#99.destroy()' 'destroying unrelated surface leaves live proof'
+assert_pass '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
+[2] -> xdg_toplevel#15.set_min_size(520, 400)
+[3] -> xdg_surface#14.ack_configure(26)
+[4] -> xdg_surface#99.get_toplevel(new id xdg_toplevel#16)
+[5] -> xdg_toplevel#16.set_max_size(1024, 768)
+[6] -> xdg_surface#99.ack_configure(27)
+[7] -> xdg_surface#14.destroy()' 'another currently configured toplevel remains live'
 # A failed native launch can contain untrusted app/Wayland/GTK text.
 # Diagnostic output must retain fixed numerical evidence but never the text.
 printf '%s\n' \
