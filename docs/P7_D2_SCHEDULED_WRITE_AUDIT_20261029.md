@@ -32,7 +32,8 @@ creation, not all mutations of channel-related data.
 | --- | --- | --- |
 | Socket.IO primary send, `socket/handlers/messages-send.ts` | `Messages.create` | #576 preflight; atomic race OPEN |
 | Schedule POST and `jobs/scheduledMessages.ts` | Queue, then `Messages.create` | This PR adds repeated preflight; atomic race OPEN |
-| Socket bridge forwarding and poll socket creation | `Messages.create` | Receiving-channel enforcement OPEN |
+| Socket bridge forwarding | `Messages.create` | Source/receiver repeated preflight; [bridge audit](P7_D2_BRIDGE_WRITE_AUDIT_20261029.md); atomic race OPEN |
+| Poll socket creation | `Messages.create` | Receiving-channel enforcement OPEN |
 | `routes/voicemsg.ts` | `Messages.create` plus voice/upload state | OPEN; check before side effects and final commit required |
 | `routes/bots.ts`, `lib/botInteractionReply.ts` | `Messages.create` | OPEN |
 | `plugins/actions.ts` | `Messages.create` | OPEN |

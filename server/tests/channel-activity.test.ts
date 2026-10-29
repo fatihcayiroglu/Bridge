@@ -94,6 +94,30 @@ describe('publishing a persisted message', () => {
     expect(mockInvalidate).toHaveBeenCalledWith('c1');
   });
 
+  it('final publication authority runs after invalidation and before both live events', async () => {
+    const io = recordingIo();
+    mockInvalidate.mockImplementation(async () => { io.order.push('invalidate'); });
+    await publishPersistedMessage(io, message, async () => { io.order.push('authority'); return true; });
+    expect(io.order).toEqual(['invalidate', 'authority', 'emit:message:new', 'emit:channel:activity']);
+  });
+
+  it('refused final authority still invalidates history but emits neither event', async () => {
+    const io = recordingIo();
+    const authority = jest.fn(async () => false);
+    await publishPersistedMessage(io, message, authority);
+    expect(mockInvalidate).toHaveBeenCalledWith('c1');
+    expect(authority).toHaveBeenCalledTimes(1);
+    expect(io.events).toEqual([]);
+  });
+
+  it('unavailable final authority cannot emit a message or activity signal', async () => {
+    const io = recordingIo();
+    await expect(publishPersistedMessage(io, message, async () => { throw new Error('authority unavailable'); }))
+      .rejects.toThrow('authority unavailable');
+    expect(mockInvalidate).toHaveBeenCalledWith('c1');
+    expect(io.events).toEqual([]);
+  });
+
   it('publish of a row without a channel does nothing', async () => {
     const io = recordingIo();
     await publishPersistedMessage(io, { _id: 'm1' });

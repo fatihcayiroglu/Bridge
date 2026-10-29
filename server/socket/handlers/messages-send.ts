@@ -274,7 +274,8 @@ export async function sendChannelMessage(
   }
 
   // P7 D2 (#321): an expired or tombstoned channel accepts no writes, whatever the cache or a stale client believes.
-  const availability = await channelWriteAvailability((await import('../../db/loader')).default as unknown as ChannelWriteDb, channel);
+  const writeDb = (await import('../../db/loader')).default as unknown as ChannelWriteDb;
+  const availability = await channelWriteAvailability(writeDb, channel);
   if (availability !== 'live') {
     socket.emit('error:message', {
       event: 'message:send',
@@ -647,6 +648,14 @@ export async function sendChannelMessage(
           event: 'bridge.integrity.target_mismatch' }, 'Bridge forwarding skipped because target tenant identity is invalid.');
         continue;
       }
+      // A bridge authorizes a route, never an expired channel. Recheck both
+      // tenants against PostgreSQL, including when cached DTOs look permanent.
+      // This is a preflight, not a transaction-spanning lifetime fence.
+      const bridgeChannelsLive = async () => (await Promise.all([
+        channelWriteAvailability(writeDb, channel),
+        channelWriteAvailability(writeDb, targetChannel),
+      ])).every(state => state === 'live');
+      if (!await bridgeChannelsLive()) continue;
       // The stored text, never the raw payload, is what the bridge relays.
       const relayed = `🌉 **[${bridge.label || 'Bridge'}]** ${String(msg.content ?? '').trim()}`;
       // The target channel belongs to another server, whose AutoMod rules
@@ -672,6 +681,7 @@ export async function sendChannelMessage(
           'Bridge forwarding refused by the target server AutoMod.');
         continue;
       }
+      if (!await bridgeChannelsLive()) continue;
       const bMsg = await Messages.create({
         _id: uuidv4(), channelId: bridge.targetChannelId, serverId: bridge.targetServerId,
         userId: user._id, username: user.username, displayName: user.displayName,
@@ -680,7 +690,9 @@ export async function sendChannelMessage(
         type: 'normal', reactions: {}, createdAt: Date.now(),
         bridgedFrom: { channelId, serverId },
       });
-      await publishPersistedMessage(io, bMsg);
+      // Cache invalidation is asynchronous too. Check after it and publish
+      // synchronously; never delete a committed copy to disguise this race.
+      await publishPersistedMessage(io, bMsg, bridgeChannelsLive);
     }
   } catch (err) {
     logger.error({ event: 'bridge_forwarding_failed', serverId, channelId,

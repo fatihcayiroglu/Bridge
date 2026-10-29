@@ -873,13 +873,13 @@ test('all production message mutations invalidate every cached first-page varian
   // first page behind in the TARGET channel — but it is now owned by
   // `publishPersistedMessage` instead of being repeated at each call site, so
   // the contract is asserted where the ordering actually lives.
-  assert.match(send, /channelId: bridge\.targetChannelId[\s\S]{0,1200}?await publishPersistedMessage\(io, bMsg\)/,
-    'bridge-forwarded messages must go through the canonical persisted-message publisher');
+  assert.match(send, /channelId: bridge\.targetChannelId[\s\S]{0,1200}?await publishPersistedMessage\(io, bMsg, bridgeChannelsLive\)/,
+    'bridge-forwarded messages must go through the canonical publisher with final expiry authority');
   assert.match(
     activity,
-    /export async function publishPersistedMessage[\s\S]*?await invalidateChannelMessages\(channelId\);\s*\n\s*broadcastPersistedMessage\(io, message\);/,
+    /export async function publishPersistedMessage[\s\S]*?await invalidateChannelMessages\(channelId\);\s*\n\s*if \(beforeBroadcast && await beforeBroadcast\(\) !== true\) return;\s*\n\s*broadcastPersistedMessage\(io, message\);/,
     'the canonical publisher must invalidate the channel cache BEFORE broadcasting, '
-    + 'or a client that refetches on the broadcast can be served the stale page');
+    + 'then require final authority before broadcasting; no asynchronous work may follow that authority check');
 
   // Pin and reaction stay in the socket handler; edit and delete moved to ONE owner shared with
   // the HTTP routes (Final21 Phase 16 — the HTTP copies had skipped the cache and the broadcast).
