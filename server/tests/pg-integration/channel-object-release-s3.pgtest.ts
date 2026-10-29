@@ -26,7 +26,7 @@ const fs = require('fs') as typeof import('fs');
 const os = require('os') as typeof import('os');
 const path = require('path') as typeof import('path');
 const crypto = require('crypto') as typeof import('crypto');
-const { S3Client, HeadObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3') as typeof import('@aws-sdk/client-s3');
+const { S3Client, HeadObjectCommand, DeleteObjectCommand, NotFound } = require('@aws-sdk/client-s3') as typeof import('@aws-sdk/client-s3');
 const db = require('../../db/loader').default;
 const { getPrivateStorageAdapter } = require('../../lib/storageAdapter') as typeof import('../../lib/storageAdapter');
 const { runChannelExpiryTick } = require('../../lib/channelExpiryWorker') as typeof import('../../lib/channelExpiryWorker');
@@ -50,7 +50,15 @@ RUN('P7 D2 expired-channel object release — real S3-compatible private bucket'
     credentials: { accessKeyId: ACCESS_KEY, secretAccessKey: SECRET_KEY },
   });
   const present = async (key: string) => {
-    try { await s3.send(new HeadObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key })); return true; } catch { return false; }
+    try {
+      await s3.send(new HeadObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key }));
+      return true;
+    } catch (err) {
+      // Only the SDK's missing-object response proves absence. Transport,
+      // authentication and service failures must fail the deletion assertion.
+      if (err instanceof NotFound && err.$metadata.httpStatusCode === 404) return false;
+      throw err;
+    }
   };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-d2-s3-'));
 
@@ -82,6 +90,25 @@ RUN('P7 D2 expired-channel object release — real S3-compatible private bucket'
     await cleanup();
     await q('DELETE FROM upload_release_keys WHERE key = ANY($1::text[])', [[KEY_GONE, KEY_SHARED]]);
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['connection reset', Object.assign(new Error('probe transport failed'), { code: 'ECONNRESET' })],
+    ['timeout', Object.assign(new Error('probe timed out'), { name: 'TimeoutError' })],
+    ['forbidden', Object.assign(new Error('probe forbidden'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })],
+    ['service unavailable', Object.assign(new Error('probe unavailable'), { name: 'ServiceUnavailable', $metadata: { httpStatusCode: 503 } })],
+    ['missing bucket', Object.assign(new Error('missing bucket'), { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })],
+  ])('does not accept a failed storage probe as deleted-object evidence: %s', async (_label, failure) => {
+    // The object exists in the real service. A transient probe failure must
+    // fail the evidence assertion, rather than masquerading as successful deletion.
+    expect(await present(KEY_SHARED)).toBe(true);
+    const send = jest.spyOn(s3, 'send').mockImplementationOnce(async () => { throw failure; });
+    try {
+      await expect(present(KEY_SHARED)).rejects.toBe(failure);
+    } finally {
+      send.mockRestore();
+    }
+    expect(await present(KEY_SHARED)).toBe(true);
   });
 
   it('deletes the expired channel\'s private object and keeps one still referenced elsewhere', async () => {

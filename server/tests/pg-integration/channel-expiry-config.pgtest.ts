@@ -1,3 +1,5 @@
+import '../helpers/realRedisFixture';
+
 /**
  * P7 D2: real PostgreSQL proof of the owner-only channel expiry API.
  */

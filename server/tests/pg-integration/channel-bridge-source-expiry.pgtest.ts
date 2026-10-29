@@ -1,3 +1,5 @@
+import '../helpers/realRedisFixture';
+
 /** A permanent bridge destination cannot authorize copying an expired source. */
 import { Bridges, Messages } from '../../db/repositories';
 import { publishPersistedMessage } from '../../lib/channelActivity';

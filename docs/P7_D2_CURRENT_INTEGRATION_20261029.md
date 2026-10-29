@@ -69,7 +69,7 @@ bounded privacy correction, not full B3 acceptance.
 Local validation of the final source tree:
 
 - Server: 13,237 tests; client: 5,667 tests; real PostgreSQL 18/Redis 7/S3-compatible
-  RustFS: 436 tests; mobile assets/overlay: 149 tests; iOS Node harness: nine tests.
+  RustFS: 441 tests; mobile assets/overlay: 149 tests; iOS Node harness: nine tests.
   All executed with zero failed/skipped tests. Client all-source and production-
   reachable S/B/F/L coverage gates remain at 90% and pass.
 - Redis follow-up: 64 unit and 15 real Redis cache/SFU ownership controls pass,
@@ -110,3 +110,32 @@ failed-delete and process-crash compensation require a separate fault-injection
 proof and must not be counted as covered by the committed-object release outbox.
 Main and
 #375 remain unchanged; no full D2/P7 acceptance is claimed from this draft.
+
+
+## First exact-head CI findings and fixture correction
+
+The expanded PG16 run on `45a2ad5f`, run `40926442305`, failed 20 of 207
+assertions in seven suites. Those suites configured Redis authority but never
+connected Bridge's singleton. Production correctly refused rate limits and spam
+coordination; the same 20 failures reproduced locally against PG18. A shared
+fixture now configures the explicit test Redis before production imports,
+connects through the existing adapter, requires readiness and a real PONG, and
+closes its connection. Redis authority is neither disabled nor mocked.
+
+The S3 absence probe also caught every HEAD error as `false`, so a storage outage
+could masquerade as a deleted object. Five injected transport/timeout/403/503/
+missing-bucket errors initially failed the new negative controls. The probe now
+accepts only the SDK's missing-object 404 response; other errors propagate. Each
+fault is bracketed by real reads of an existing shared object. The original real
+upload, deletion and shared-reference assertions remain.
+
+Packaged desktop run `40926442242` failed before measuring either scenario:
+`AUTH_RESPONSE_UNAVAILABLE`, zero observed clicks and login requests, no recorded
+network/runtime failure. Native focus alone did not establish delivery of the
+login click. No performance result is accepted, and the failure is not relabeled
+as a passing retry. Exact-head native and broader lifecycle gates remain open.
+
+The revised local full real PG18/Redis/S3 suite passes 441 tests with zero skips.
+The exact PG16 workflow selection plus the S3 controls passes 213 tests locally
+on PG18 with configured Redis; real PG16 remains a separate CI requirement.
+The strict test type gate passes without new debt or type assertions.

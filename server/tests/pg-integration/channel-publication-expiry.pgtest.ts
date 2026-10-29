@@ -1,3 +1,5 @@
+import '../helpers/realRedisFixture';
+
 /** A deferred publisher must not emit a previously committed row after expiry. */
 import { publishPersistedMessage, broadcastPersistedMessage } from '../../lib/channelActivity';
 import { Bots, Messages } from '../../db/repositories';

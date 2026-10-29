@@ -1,3 +1,5 @@
+import '../helpers/realRedisFixture';
+
 /**
  * P7 D2: real PostgreSQL + HTTP evidence for search, saved and inbox.
  *

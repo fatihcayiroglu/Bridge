@@ -1,3 +1,5 @@
+import '../helpers/realRedisFixture';
+
 /** Real PostgreSQL + HTTP evidence for thread/forum parent-channel expiry. */
 jest.mock('../../middleware/auth', () => ({
   authMiddleware: (req: { user?: unknown; headers: Record<string, unknown> }, _res: unknown, next: () => void) => {

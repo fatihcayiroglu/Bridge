@@ -1,3 +1,5 @@
+import '../helpers/realRedisFixture';
+
 /**
  * P7 D2: a scheduled post whose channel expired (or was tombstoned) after it
  * was scheduled is refused by the PostgreSQL write barrier (SQLSTATE BX001).
