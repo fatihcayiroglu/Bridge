@@ -432,6 +432,61 @@ describe('committed voice-message response is not a storage rollback', () => {
       expect.objectContaining({ event: 'voicemsg.chat_commit_unverifiable' }), expect.any(String));
   });
 
+  it('preserves a late chat commit after an absent-row probe and transport failure', async () => {
+    const original = Messages.create.bind(Messages);
+    let releaseCommit!: () => void;
+    const gate = new Promise<void>(resolve => { releaseCommit = resolve; });
+    let backendCommit!: Promise<unknown>;
+    jest.spyOn(Messages, 'create').mockImplementationOnce((...args) => {
+      backendCommit = gate.then(() => original(...args));
+      return Promise.reject(Object.assign(new Error('connection lost before reply'), { code: '08006' }));
+    });
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('connection lost before reply');
+    expect(await db.messages.find({ channelId: 'c1', type: 'voice_message' })).toHaveLength(0);
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(1);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'voicemsg.write_completion_indeterminate' }), expect.any(String));
+    // The original backend finishes after a different connection saw no row.
+    releaseCommit();
+    await backendCommit;
+    expect(await db.messages.find({ channelId: 'c1', type: 'voice_message' })).toHaveLength(1);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('preserves remote bytes if the voice insert can finish after its failed reply', async () => {
+    const original = VoiceMessages.insert.bind(VoiceMessages);
+    let releaseCommit!: () => void;
+    const gate = new Promise<void>(resolve => { releaseCommit = resolve; });
+    let backendCommit!: Promise<unknown>;
+    jest.spyOn(VoiceMessages, 'insert').mockImplementationOnce((...args) => {
+      backendCommit = gate.then(() => original(...args));
+      return Promise.reject(Object.assign(new Error('voice connection interrupted'), { code: '08006' }));
+    });
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('voice connection interrupted');
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(0);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+    releaseCommit();
+    await backendCommit;
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(1);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on an unclassified thrown chat write with no row', async () => {
+    jest.spyOn(Messages, 'create').mockRejectedValueOnce(new Error('unknown write status'));
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response)).rejects.toThrow('unknown write status');
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(1);
+    expect(store.deleteFile).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
   it('rolls back a confirmed voice row when voice insert commits before a lost acknowledgement', async () => {
     const original = VoiceMessages.insert.bind(VoiceMessages);
     jest.spyOn(VoiceMessages, 'insert').mockImplementationOnce(async (...args) => {
@@ -459,8 +514,20 @@ describe('committed voice-message response is not a storage rollback', () => {
       expect.objectContaining({ event: 'voicemsg.voice_commit_unverifiable' }), expect.any(String));
   });
 
+  it('cleans up remote bytes after a definitive PostgreSQL voice constraint rejection', async () => {
+    jest.spyOn(VoiceMessages, 'insert').mockRejectedValueOnce(
+      Object.assign(new Error('simulated voice constraint rejection'), { code: '23514' }));
+    const response = { json: jest.fn() };
+    await expect(uploadHandler()(injectedRequest(), response))
+      .rejects.toThrow('simulated voice constraint rejection');
+    expect(await db.voiceMessages.find({ channelId: 'c1' })).toHaveLength(0);
+    expect(store.deleteFile).toHaveBeenCalledTimes(1);
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
   it('still rolls back uncommitted voice bytes if the chat-message insert fails', async () => {
-    jest.spyOn(Messages, 'create').mockRejectedValueOnce(new Error('simulated message insert rejection'));
+    jest.spyOn(Messages, 'create').mockRejectedValueOnce(
+      Object.assign(new Error('simulated message insert rejection'), { code: '23514' }));
     const response = { json: jest.fn() };
     await expect(uploadHandler()(injectedRequest(), response)).rejects.toThrow('simulated message insert rejection');
 

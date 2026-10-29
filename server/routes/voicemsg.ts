@@ -140,6 +140,15 @@ function safeUnlink(filePath: string): void {
   }
 }
 
+// A primary read that returns no row is not proof that a disconnected write
+// was rejected: the original PostgreSQL backend can still be completing it.
+// Only an explicit server-side SQL rejection is evidence of no commit.
+function isDefinitiveVoiceWriteRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  const code = error.code;
+  return typeof code === 'string' && /^(?:22[A-Z0-9]{3}|23[A-Z0-9]{3}|42[A-Z0-9]{3}|55000|P0001)$/.test(code);
+}
+
 async function cleanupUploadedObject(
   store: ReturnType<typeof getPrivateStorageAdapter>,
   result: { url: string; key: string | null; provider: string },
@@ -206,6 +215,7 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
   const chatId = uuidv4();
   let voiceInsertAttempted = false;
   let chatInsertAttempted = false;
+  let writeCompletionUncertain = false;
   // Once both durable rows exist, HTTP delivery is no longer an upload rollback.
   // A response serialization/transport exception must not remove live bytes.
   let messageCommitted = false;
@@ -240,6 +250,9 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       // enforce NOT NULL (Final21 Phase 16: every insert audited against the schema).
       displayName,
       url: fileUrl, duration: parsedDuration, createdAt: Date.now(),
+    }).catch((writeErr: unknown) => {
+      writeCompletionUncertain = !isDefinitiveVoiceWriteRejection(writeErr);
+      throw writeErr;
     });
     if (!vm?._id) throw new Error('Voice message persistence failed');
 
@@ -251,6 +264,9 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       content: '', type: 'voice_message',
       fileUrl, fileName, fileType: req.file.mimetype,
       reactions: {}, createdAt: Date.now(),
+    }).catch((writeErr: unknown) => {
+      writeCompletionUncertain = !isDefinitiveVoiceWriteRejection(writeErr);
+      throw writeErr;
     });
     if (!msg?._id) throw new Error('Message persistence failed');
     messageCommitted = true;
@@ -319,6 +335,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
         if (result?.provider !== 'local') safeUnlink(filePath);
         throw err;
       }
+    }
+    // Even a successful primary read of "no row" can race the old backend's
+    // eventual commit after a connection/unknown write failure. Preserve the
+    // object and the voice row; the reference-aware orphan collector may
+    // eventually reclaim genuinely unreferenced storage under its DB fence.
+    if (writeCompletionUncertain && (chatInsertAttempted || (voiceInsertAttempted && !vm?._id))) {
+      logger.error({ event: 'voicemsg.write_completion_indeterminate' },
+        'Voice write may still commit after an absent-row probe; backing bytes preserved');
+      if (result?.provider !== 'local') safeUnlink(filePath);
+      throw err;
     }
     // İki tablo transaction paylaşmıyor. Voice row yazıldıktan sonra Message
     // insert'i başarısız olursa önce DB referansını geri al; DB rollback
