@@ -104,3 +104,14 @@ No `--no-sandbox` or other sandbox bypass is introduced.
 Additional gates reject connection-string host overrides/nonempty existing
 product databases before fixture writes, and require the real newest and oldest
 history messages to become visible during traversal.
+
+Second attempt: `c6e132d55ccf0002d4692e61bf42bd99e4fcda05`, run 40790877387 /
+job 123175498708. Build, 10/10 contracts, installed sandbox and TLS prerequisites
+PASS. Before CI provisioning the sandbox helper was owner 0 / mode 755; the
+explicit 4755 setup retained the strong sandbox gate. Schema/migrations applied,
+then fixture insertion FAIL: PostgreSQL SQLSTATE 42703, `members._id` absent in
+the actual migrated schema. The fixture used the legacy schema field. Fix it to
+the canonical `(userId, serverId)` membership and retain this original failure.
+Fixture diagnostics now expose only a closed operation stage and SQLSTATE, never
+SQL arguments, passwords or database/error messages. No runtime scenario ran on
+the second head either; no performance numbers are claimed.

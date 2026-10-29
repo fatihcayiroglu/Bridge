@@ -10,6 +10,7 @@ const { Pool } = serverRequire('pg');
 const bcrypt = serverRequire('bcryptjs');
 
 const pool = new Pool({ connectionString: requireDisposable(process.env) });
+let stage = 'DATABASE_PREREQUISITES';
 try {
   const version = await pool.query('SHOW server_version_num');
   if (Math.floor(Number(version.rows[0].server_version_num) / 10000) !== 16) throw Error('PG16_REQUIRED');
@@ -26,16 +27,22 @@ try {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    stage = 'USER_FIXTURE';
     await client.query('INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$2,$3,$4,$5)',
       [user, username, 'Disposable performance account', await bcrypt.hash(password, 12), now]);
+    stage = 'SERVER_FIXTURE';
     await client.query('INSERT INTO servers (_id,name,"ownerId","createdAt") VALUES ($1,$2,$3,$4)',
       [server, 'Performance fixture', user, now]);
-    await client.query('INSERT INTO members (_id,"userId","serverId",roles,"joinedAt") VALUES ($1,$2,$3,$4::jsonb,$5)',
-      [randomUUID(), user, server, '[]', now]);
+    stage = 'MEMBERSHIP_FIXTURE';
+    // Current migrated schema uses (userId, serverId); legacy _id was removed.
+    await client.query('INSERT INTO members ("userId","serverId",roles,"joinedAt") VALUES ($1,$2,$3::jsonb,$4)',
+      [user, server, '[]', now]);
+    stage = 'CHANNEL_FIXTURE';
     for (const [id, name, order] of [[idleChannel, 'idle', 0], [historyChannel, 'history-10000', 1]]) {
       await client.query('INSERT INTO channels (_id,"serverId",name,"order","createdAt") VALUES ($1,$2,$3,$4,$5)',
         [id, server, name, order, now]);
     }
+    stage = 'MESSAGE_FIXTURE';
     await client.query('INSERT INTO messages (_id,"channelId","serverId","userId",username,"displayName",content,"createdAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
       [randomUUID(), idleChannel, server, user, username, 'Performance fixture', 'Idle channel fixture', now]);
     const prefix = `perf-${stem}-`;
@@ -45,6 +52,7 @@ try {
     const count = await client.query('SELECT COUNT(*)::int AS count FROM messages WHERE "channelId"=$1', [historyChannel]);
     if (count.rows[0].count !== 10000) throw Error('FIXTURE_COUNT');
     await client.query('COMMIT');
+    stage = 'PRIVATE_CONFIG';
     const config = { schema: 1, bridgeCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
       executable: '/opt/Bridge/bridge', output: path.resolve(process.env.BRIDGE_PERF_OUTPUT),
       origin: 'https://127.0.0.1:3443', user, username, password, server, idleChannel, historyChannel,
@@ -55,7 +63,8 @@ try {
     await client.query('ROLLBACK');
     throw error;
   } finally { client.release(); }
-} catch {
-  console.error('DISPOSABLE_PERF_FIXTURE_FAILED');
+} catch (error) {
+  console.error(JSON.stringify({ code: 'DISPOSABLE_PERF_FIXTURE_FAILED', stage,
+    sqlState: /^[0-9A-Z]{5}$/.test(error?.code ?? '') ? error.code : null }));
   process.exitCode = 1;
 } finally { await pool.end(); }
