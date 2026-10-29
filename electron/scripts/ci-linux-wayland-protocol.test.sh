@@ -70,7 +70,38 @@ assert_fail '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)
 [2] -> xdg_toplevel#15.set_min_size(520, 400)
 [3] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#16)
 [4] -> xdg_surface#14.ack_configure(26)' 'superseded role no size'
-# Only exit status is used; private renderer text must never enter the report.
-printf '%s\n' '[1] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)' '[2] -> xdg_toplevel#15.set_min_size(520, 400)' '[3] -> xdg_surface#14.ack_configure(26)' 'Bearer secret-token private-account' > "${fixture}"
+# A failed native launch can contain untrusted app/Wayland/GTK text.
+# Diagnostic output must retain fixed numerical evidence but never the text.
+printf '%s\n' \
+  '[1] -> wl_compositor#4.create_surface(new id wl_surface#3)' \
+  '[2] -> xdg_wm_base#7.get_xdg_surface(new id xdg_surface#14, wl_surface#3)' \
+  '[3] -> xdg_surface#14.get_toplevel(new id xdg_toplevel#15)' \
+  '[4] -> xdg_toplevel#15.set_min_size(520, 400)' \
+  '[5] -> xdg_surface#14.ack_configure(26)' \
+  'Gtk: gdk_seat_get_keyboard: GDK_IS_SEAT assertion failed' \
+  'Bearer secret-token private-account /home/private-runner https://private-server.invalid' \
+  'xdg_toplevel#15.set_title("private-account /home/private-runner")' > "${fixture}"
 wayland_protocol_ready "${fixture}"
-echo "PASS: native Wayland same-surface controls (${passed} valid / ${refused} invalid / 1 privacy / 0 skipped)"
+summary="$(wayland_protocol_summary "${fixture}")"
+[[ "${summary}" == *'wayland-surfaces=1'* ]]
+[[ "${summary}" == *'wayland-xdg-surfaces=1'* ]]
+[[ "${summary}" == *'wayland-get-toplevel=1'* ]]
+[[ "${summary}" == *'wayland-size-requests=1'* ]]
+[[ "${summary}" == *'wayland-configure-acks=1'* ]]
+[[ "${summary}" == *'wayland-gtk-seat-assertions=1'* ]]
+for sensitive in private-account secret-token /home/private-runner private-server.invalid Bearer set_title; do
+  [[ "${summary}" != *"${sensitive}"* ]] || {
+    echo 'FAIL: native Wayland diagnostic leaked private renderer text' >&2
+    exit 1
+  }
+done
+missing_summary="$(wayland_protocol_summary "${fixture}.missing")"
+[[ "${missing_summary}" == 'wayland-log=unavailable' ]]
+# Static guard on the real smoke error paths: no tailing raw client/Weston
+# protocol, which can contain URLs, window titles and profile paths.
+smoke_script="$(dirname "${BASH_SOURCE[0]}")/ci-linux-wayland-smoke.sh"
+if grep -Eq '^[[:space:]]*(tail|cat)[[:space:]]+.*(app|weston)\.log' "${smoke_script}"; then
+  echo 'FAIL: raw private native Wayland log dumped by smoke' >&2
+  exit 1
+fi
+echo "PASS: native Wayland same-surface controls (${passed} valid / ${refused} invalid / 2 privacy / 0 skipped)"
