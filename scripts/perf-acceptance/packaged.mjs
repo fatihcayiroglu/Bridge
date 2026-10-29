@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { buildReport, probe } from './run.mjs';
@@ -30,6 +31,14 @@ export function closedAuthInputGeometry(data) {
   const result = {};
   for (const name of names) result[name] = data[name] === true;
   return result;
+}
+
+// Compare an X11 window-manager active-window snapshot against the Electron
+// native handle. The artifact receives only true/false/null, never raw XIDs.
+export function x11ActiveWindowMatches(text, windowId) {
+  if (typeof text !== 'string' || !Number.isSafeInteger(windowId) || windowId <= 0) return null;
+  const match = /_NET_ACTIVE_WINDOW\(WINDOW\): window id # (0x[0-9a-fA-F]+)\b/.exec(text);
+  return match ? Number.parseInt(match[1], 16) === windowId : null;
 }
 
 export function isolatedRequestAllowed(rawUrl, method, origin) {
@@ -94,8 +103,25 @@ export async function runPackaged(config) {
   // A resolved Playwright click is not proof that the native input reached the
   // renderer. Record only closed, non-sensitive facts about the transition.
   const authInputTransition = { clickResolved: false, mainFrameNavigations: 0,
-    domContentLoaded: 0, beforeClick: null, afterClick: null, onFailure: null };
+    domContentLoaded: 0, beforeClick: null, afterClick: null, onFailure: null,
+    x11BeforeClick: null, x11AfterClick: null, x11OnFailure: null };
   let captureAuthInput = null;
+  const captureX11Window = async () => {
+    if (process.platform !== 'linux' || !process.env.DISPLAY || !application) return { available: false };
+    try {
+      const nativeId = await application.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        const handle = window?.getNativeWindowHandle();
+        return handle?.length >= 4 ? handle.readUInt32LE(0) : null;
+      });
+      const query = spawnSync('xprop', ['-root', '_NET_ACTIVE_WINDOW'],
+        { encoding: 'utf8', timeout: 2000, maxBuffer: 4096 });
+      const matches = query.status === 0 ? x11ActiveWindowMatches(query.stdout, nativeId) : null;
+      return { available: matches !== null, matchesNative: matches };
+    } catch {
+      return { available: false };
+    }
+  };
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
@@ -241,9 +267,11 @@ export async function runPackaged(config) {
       .then(response => ({ response }), () => ({ unavailable: true }));
     stage = 'AUTH_SUBMIT';
     authInputTransition.beforeClick = await captureAuthInput();
+    authInputTransition.x11BeforeClick = await captureX11Window();
     await page.locator('#login-form [data-auth-action="login"]').click();
     authInputTransition.clickResolved = true;
     authInputTransition.afterClick = await captureAuthInput();
+    authInputTransition.x11AfterClick = await captureX11Window();
     stage = 'AUTH_RESPONSE';
     const loginResult = await login;
     requireFact(!loginResult.unavailable, 'AUTH_RESPONSE_UNAVAILABLE');
@@ -459,6 +487,7 @@ export async function runPackaged(config) {
     // stacks, traces, screenshots or browser storage from authentication.
     if (pageRef && !pageRef.isClosed()) {
       if (captureAuthInput) authInputTransition.onFailure = await captureAuthInput();
+      authInputTransition.x11OnFailure = await captureX11Window();
       try {
         authInteraction = await pageRef.evaluate(() => {
           const state = window.__bridgePerfAuth;
