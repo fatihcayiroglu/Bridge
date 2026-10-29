@@ -1317,6 +1317,29 @@ describe('sendChannelMessage', () => {
     expect(mockProcessNotifications).not.toHaveBeenCalled();
   });
 
+  it('P7 D2: süresi dolmuş kanala yazma reddedilir ve hiçbir şey kalıcı olmaz', async () => {
+    await mockDb.channels.update({ _id: channel._id }, { $set: { expiresAt: Date.now() - 1000, expiryVersion: 1 } });
+    await sendChannelMessage(
+      { channelId: channel._id, serverId: server._id, content: 'must not land', ackId: 'ack-exp', _tmpId: 'tmp-exp' },
+      socket as never, io as never, user, new Map(),
+    );
+    expect(findEmitted(socket._emitted, 'error:message')?.data).toMatchObject({
+      event: 'message:send', code: 'CHANNEL_NOT_FOUND', ackId: 'ack-exp', tmpId: 'tmp-exp',
+    });
+    expect(await mockDb.messages.count({ channelId: channel._id })).toBe(0);
+    expect(findEmitted(io._emitted, 'message:new')).toBeUndefined();
+    expect(mockProcessNotifications).not.toHaveBeenCalled();
+  });
+
+  it('P7 D2: henüz dolmamış süreli kanal ve süresiz kanal yazmayı kabul eder (negatif kontrol)', async () => {
+    await mockDb.channels.update({ _id: channel._id }, { $set: { expiresAt: Date.now() + 3_600_000, expiryVersion: 1 } });
+    await sendChannelMessage(
+      { channelId: channel._id, serverId: server._id, content: 'still open' },
+      socket as never, io as never, user, new Map(),
+    );
+    expect(await mockDb.messages.count({ channelId: channel._id })).toBe(1);
+  });
+
   it('kanal canonical server scope içinde bulunamazsa CHANNEL_NOT_FOUND döner', async () => {
     await mockDb.channels.remove({ _id: channel._id });
     await sendChannelMessage(
