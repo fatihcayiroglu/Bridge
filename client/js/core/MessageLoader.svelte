@@ -11,7 +11,7 @@
     socket.ts:202-207           typing:update  (+ updateTypingBar)
 
   Backend sözleşmesi:
-    GET /api/channels/:cid/messages?limit=50[&cursor=…]
+    GET /api/channels/:cid/messages?limit=50 (initial), limit=100&cursor=… (older)
       → { messages, hasMore, nextCursor, prevCursor, limit, count }  (eski→yeni sıralı)
     socket: channel:join / message:* / typing:*   (adlar değiştirilmedi)
 
@@ -48,6 +48,9 @@
   interface MessagesResponse { messages?: Message[]; hasMore?: boolean; prevCursor?: string | null; nextCursor?: string | null }
 
   const PAGE_SIZE = 50;
+  // Keep the small first paint; later pages use the existing server maximum
+  // to avoid spending one rate-limit request for every 50 historical rows.
+  const OLDER_PAGE_SIZE = 100;
   const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
   let channelId: string | null = null;
@@ -236,7 +239,7 @@
     const seq = requestSeq; // yeni kanal seçilirse seq değişir → yanıt atılır
     try {
       const response = await apiFetch<MessagesResponse>(
-        `${getAPI()}/api/channels/${encodeURIComponent(target)}/messages?limit=${PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`,
+        `${getAPI()}/api/channels/${encodeURIComponent(target)}/messages?limit=${OLDER_PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`,
       );
       if (!response.ok) throw new ApiResponseError(response);
       const data = await response.typed();
@@ -267,8 +270,21 @@
 
   // ── Kanal geçişi ───────────────────────────────────────────────────────────
   function onChannelSelected(event: Event): void {
-    const detail = (event as CustomEvent<{ channelId?: string }>).detail;
+    const detail = (event as CustomEvent<{ channelId?: string | null }>).detail;
     const next = detail?.channelId;
+    if (next === null) {
+      requestSeq += 1;
+      channelId = null;
+      liveSinceLoad = null;
+      if (joinedChannel) getSocket()?.emit('channel:leave', joinedChannel);
+      joinedChannel = null;
+      clearTypingTimers();
+      updateTypingBar();
+      BridgeRegistry.call('setMessagesLoading', false);
+      BridgeRegistry.call('setMessagesOffline', false);
+      notifyUpdated();
+      return;
+    }
     if (!next) return;
 
     channelId = next;

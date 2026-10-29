@@ -36,22 +36,19 @@ bridge-v29/
 ### Adımlar
 
 ```bash
-# 1. Mobile dizinine gir
-cd mobile
+# Repository root; macOS + CocoaPods are required for the iOS source build.
+npm ci
+npm run mobile:init
 
-# 2. Bağımlılıkları yükle
-npm install
-
-# 3. Web dosyalarını www/ dizinine kopyala
-node scripts/setup.js
-
-# 4. Capacitor platformlarını ekle
-npx cap add ios
-npx cap add android
-
-# 5. Sync et
-npx cap sync
+# Rebuild/sync the existing generated projects after a source change.
+npm run mobile:sync
 ```
+
+The root scripts apply the reviewed native layers and iOS result-log privacy
+patch before building. CocoaPods compiles the pinned local Capacitor source.
+Preserve existing SwiftPM projects and customizations; the overlay refuses
+prebuilt-framework linkage and never rewrites a project automatically. See
+[BUILD.md](BUILD.md) for the supported build and device requirements.
 
 ---
 

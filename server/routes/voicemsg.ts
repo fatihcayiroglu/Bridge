@@ -73,6 +73,9 @@ import { uploadRoot } from '../lib/runtimePaths';
 import { parseNonNegativeSafeIntText } from '../lib/queryNumbers';
 import { transcriptionTarget } from '../lib/aiProvider';
 import { serverAllowsAi } from '../lib/aiServerPolicy';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
+import { channelLiveForMedia } from '../lib/channelContentAvailability';
 // ── AI TRANSKRİPSİYON ─────────────────────────────────────────
 // P6 AI-09: the provider decision lives in lib/aiProvider (AI_PROVIDER governs
 // it); the server's own setting is checked by the caller before this runs.
@@ -175,6 +178,10 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(membership.timeoutUntil) });
   }
 
+  const availability = await channelWriteAvailability(db, channel);
+  if (availability === 'gone') return res.status(404).json({ error: 'Channel unavailable' });
+  if (availability !== 'live') return res.status(503).json({ error: 'Channel availability cannot be verified' });
+
   const parsedDuration = parseNonNegativeSafeIntText(duration, 0);
   if (parsedDuration === null) return res.status(400).json({ error: 'duration must be a non-negative safe integer' });
 
@@ -194,6 +201,16 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
       deleteLocal: false,
       contentType: req.file.mimetype,
     });
+    // Upload can outlast the channel. No DB reference exists yet, so only this
+    // request's newly uploaded object may be rolled back on a refused recheck.
+    const currentChannel = await Channels.findByIdAndServer(channelId, serverId);
+    const currentAvailability = currentChannel ? await channelWriteAvailability(db, currentChannel) : 'gone';
+    if (currentAvailability !== 'live') {
+      await cleanupUploadedObject(store, result, filePath);
+      return res.status(currentAvailability === 'gone' ? 404 : 503).json({
+        error: currentAvailability === 'gone' ? 'Channel unavailable' : 'Channel availability cannot be verified',
+      });
+    }
     // Voice messages are private channel attachments. Keep their persisted
     // reference on Bridge even when bytes live in S3/R2/MinIO/B2; uploadAuthz
     // re-checks current channel visibility before proxying remote bytes.
@@ -270,7 +287,8 @@ router.get('/:vmId/transcript', authMiddleware, async (req, res) => {
   const channelId = String(vm.channelId ?? '');
   const serverId = String(vm.serverId ?? '');
   const channel = channelId && serverId ? await Channels.findByIdAndServer(channelId, serverId) : null;
-  if (!channel) return res.status(404).json({ error: 'Voice message not found' });
+  // The transcript is channel content: gone with the channel's expiry (P7 D2).
+  if (!channel || !await channelLiveForMedia(channelId, serverId)) return res.status(404).json({ error: 'Voice message not found' });
   const perms = await resolvePermissions(_u.id, serverId, channelId);
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY)) {
     return res.status(403).json({ error: 'Missing channel permissions' });

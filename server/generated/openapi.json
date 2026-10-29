@@ -13618,6 +13618,12 @@
         "responses": {
           "200": {
             "description": "Channel deleted"
+          },
+          "400": {
+            "description": "Last channel of the server"
+          },
+          "409": {
+            "description": "LAST_PERMANENT_CHANNEL, the server's only permanent channel while an expiring one remains"
           }
         },
         "operationId": "delete_servers_sid_channels_cid"

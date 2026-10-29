@@ -75,6 +75,17 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 081 | portable_import_approval_ledger | One-use hashed approval primitives (unmounted) |
 | 082 | portable_import_approval_grant_binding | Grant-set digest required for new approvals; legacy NULL grants cannot be claimed |
 | 083 | portable_import_snapshot_replay_barrier | Per-destination signed snapshot replay ledger; UNIQUE key, same-transaction apply, FK CASCADE cleanup |
+| 085 | message_report_evidence | P7 B5: report-time evidence snapshot on message reports; the message FK (CASCADE) is dropped so reports outlive a hard delete |
+| 086 | channel_write_barrier | P7 D2: BEFORE INSERT/UPDATE kanal yazma bariyeri (messages, thread_messages, threads); süresi dolmuş/tombstone/kiracı uyumsuz kanala yazımı SQLSTATE BX001 ile reddeder |
+| 087 | channel_expiry_worker_index | P7 D2 süre sonu işçisi için kısmi indeksler (süreli kanallar, bekleyen tombstone temizliği) |
+| 088 | message_report_channel_retention | P7 D2 x B5: message_reports channel FK (CASCADE) dropped; reports and 085 evidence outlive channel expiry/deletion; down refuses while reports point at missing channels |
+| 089 | channel_object_release_outbox | P7 D2: süresi dolan kanalın silinen satırlarındaki yükleme URL'leri aynı ifadede kalıcı kuyruğa yazılır; nesneler COMMIT sonrası kiralanmış, sınırlı, yeniden denemeli olarak bırakılır; down bekleyen iş varken reddeder |
+| 090 | message_report_channel_visibility | P7 D2 x B5: message_reports."channelVisibility" ('open'/'restricted'/NULL) recorded when the channel is claimed or deleted; a gone 'open' channel's reports stay reviewable by server-level moderators, everything else ADMIN only; down drops it (fail-safe: ADMIN only) |
+
+> 085 is taken by B5 #345 (`085_message_report_evidence`); D2 was renumbered to
+> 086/087 so the two branches merge in either order. Every number must be unique
+> (`tests/versioned-migrations.test.ts`). The two chains touch disjoint objects,
+> so an upgraded database that applies 085 after 087 ends in the same schema.
 
 ## `_inline.ts` Dosyaları
 
@@ -94,6 +105,8 @@ oluşturulabilecekse. Çoğu durumda yalnızca `.sql` yeterlidir.
 ## Rollback
 
 Her migration için `rollback/` klasöründe `.down.sql` dosyası mevcuttur.
+Migration 085 has a guarded, transactional rollback. Its mixed-version and
+erasure behavior is documented in `docs/P7_MESSAGE_REPORT_EVIDENCE_ROLLOUT.md`.
 
 ## Yeni Migration Ekleme
 

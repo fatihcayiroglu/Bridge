@@ -33,7 +33,7 @@ Bu script:
 # İlk kez (ios/ ve android/ dizinlerini oluşturur)
 npm run mobile:init
 # Yukarıdaki şununla eşdeğer:
-#   node mobile/scripts/setup.js && npx cap add ios && npx cap add android \
+#   node mobile/scripts/setup.js && npx cap add ios --packagemanager CocoaPods && npx cap add android \
 #     && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js \
 #     && npx cap sync
 
@@ -69,6 +69,14 @@ uyuşmazsa hiçbir şey yazılmaz. `mobile:init`, `mobile:add`, `mobile:ios` ve 
 kendileri yapar. `mobile/ios/App/App.xcodeproj/project.pbxproj` tam bir Xcode projesi değildir;
 yalnızca sürüm değerleri oradan okunur. iOS derlemesi macOS gerektirir; CI'da `Mobile iOS`
 iş akışı uygulamayı simülatör için derler ve açar (AUTOMATED / SIMULATOR kanıtı — cihaz kanıtı değildir).
+
+The iOS build uses CocoaPods (`pod` must be installed on macOS) so the pinned
+local Capacitor SDK source, including the result-log privacy patch, is compiled.
+Capacitor's SwiftPM package downloads prebuilt XCFrameworks and ignores that
+source patch. The overlay refuses SwiftPM projects. Preserve any existing
+project/customizations and generate a CocoaPods project in a separate checkout;
+the script never removes or rewrites the existing project. CI compiles the
+workspace and requires a real native-decrypt log privacy positive control.
 
 ## 4. iOS Build (macOS gerektirir)
 

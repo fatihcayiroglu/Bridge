@@ -176,3 +176,63 @@ describe('POST /:id/report — kayıt', () => {
     expect(again.body.created).toBe(false);
   });
 });
+
+// P7 D2: until the expiry worker claims an expired channel, its rows still
+// exist. A report filed then would copy expired content into a retained
+// snapshot, so the route asks the same liveness authority as every read path.
+describe('POST /:id/report — P7 D2 kanal süresi', () => {
+  const EXPIRED_CH = 'rch-suresi-dolmus';
+  const EXPIRING_CH = 'rch-suresi-dolacak';
+  const EXPIRED_TEXT = 'SURESI-DOLMUS-KANAL-METNI';
+
+  beforeAll(async () => {
+    await mockDb.channels.insert({ _id: EXPIRED_CH, serverId: SRV, name: 'gecici', type: 'text', createdAt: 1,
+      expiresAt: Date.now() - 1000, expiryVersion: 1 });
+    await mockDb.channels.insert({ _id: EXPIRING_CH, serverId: SRV, name: 'gecici-canli', type: 'text', createdAt: 1,
+      expiresAt: Date.now() + 3_600_000, expiryVersion: 1 });
+    await mockDb.messages.insert({
+      _id: 'rmsg-dolmus', channelId: EXPIRED_CH, serverId: SRV, userId: AUTHOR,
+      content: EXPIRED_TEXT, type: 'normal', reactions: {}, createdAt: 6000,
+    });
+    await mockDb.messages.insert({
+      _id: 'rmsg-dolmus-kendi', channelId: EXPIRED_CH, serverId: SRV, userId: REPORTER,
+      content: 'kendi', type: 'normal', reactions: {}, createdAt: 6001,
+    });
+    await mockDb.messages.insert({
+      _id: 'rmsg-dolacak', channelId: EXPIRING_CH, serverId: SRV, userId: AUTHOR,
+      content: 'canlı geçici', type: 'normal', reactions: {}, createdAt: 7000,
+    });
+  });
+
+  it('süresi dolmuş (henüz toplanmamış) kanaldaki mesaj AYNI 404 döner ve rapor AÇILMAZ', async () => {
+    const [expired, missing] = await Promise.all([report('rmsg-dolmus'), report('rmsg-yok')]);
+    expect(expired.status).toBe(404);
+    expect(expired.body).toEqual(missing.body);
+    expect(JSON.stringify(expired.body)).not.toContain(EXPIRED_TEXT);
+    expect(await mockDb.messageReports.find({ messageId: 'rmsg-dolmus' })).toHaveLength(0);
+  });
+
+  it('yazarın kendi mesajı için de 404 (400 değil): süresi dolmuş kanal hiçbir şeyi ayırt ettirmez', async () => {
+    const res = await report('rmsg-dolmus-kendi');
+    expect(res.status).toBe(404);
+  });
+
+  it('kanal canlılığı doğrulanamıyorsa 503: rapor AÇILMAZ (fail closed)', async () => {
+    const pool = { query: jest.fn().mockRejectedValue(new Error('pg down')) };
+    (mockDb as unknown as { _pool?: unknown })._pool = pool;
+    try {
+      const res = await report('rmsg-dolacak', { reason: 'harassment' });
+      expect(res.status).toBe(503);
+      expect(pool.query).toHaveBeenCalled();
+    } finally {
+      delete (mockDb as unknown as { _pool?: unknown })._pool;
+    }
+    expect(await mockDb.messageReports.find({ messageId: 'rmsg-dolacak' })).toHaveLength(0);
+  });
+
+  it('süresi henüz dolmamış geçici kanalda rapor 201 ile açılır (pozitif kontrol)', async () => {
+    const res = await report('rmsg-dolacak', { reason: 'spam' });
+    expect(res.status).toBe(201);
+    expect(res.body.created).toBe(true);
+  });
+});

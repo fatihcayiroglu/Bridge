@@ -17,6 +17,9 @@ import { replyToInvocation } from '../lib/botInteractionReply';
 import { machineContentRefused } from '../lib/messageContentPolicy';
 import type { HandlerServer } from '../socket/handler-contracts';
 import { broadcastPersistedMessage, publishPersistedMessage } from '../lib/channelActivity';
+import db from '../db/loader';
+import { channelWriteAvailability, type ChannelWriteAvailability, type ChannelWriteDb } from '../lib/channelWriteGuard';
+import { channelAvailabilityErrors } from '../lib/channelLiveReadSet';
 function generateBotToken(_serverId: string, _botId: string): string {
   // The database stores only SHA-256(token), so a structured/HMAC token buys
   // nothing and historically introduced a dangerous known-secret fallback.
@@ -69,7 +72,9 @@ router.post('/interactions/:messageId/reply', botAuthMiddleware, limits.bots(), 
   const result = await replyToInvocation(bot, String(req.params.messageId ?? ''), body.content, Date.now(), io);
   if (!result.ok) return void res.status(result.status).json({ error: result.error });
   // replyToInvocation already invalidated the history cache.
-  broadcastPersistedMessage(io, result.message);
+  if (!await broadcastPersistedMessage(io, result.message)) {
+    return void res.status(404).json({ error: 'Channel not found' });
+  }
   res.json({ ok: true, message: result.message });
 });
 
@@ -436,6 +441,16 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
     return;
   }
 
+  // Credentials grant this integration a route, not permission to revive an
+  // expired channel. Current SQL/tombstone/database time outranks the DTO.
+  const currentAvailability = () => channelWriteAvailability(db as unknown as ChannelWriteDb, channel);
+  const refuseUnavailable = (availability: ChannelWriteAvailability): boolean => {
+    if (availability === 'live') return false;
+    res.status(availability === 'gone' ? 404 : 503).json({ error: 'Channel unavailable' });
+    return true;
+  };
+  if (refuseUnavailable(await currentAvailability())) return;
+
   // Webhook tokens authorize an integration to post; they do not confer a
   // human member's permissions or exemptions. Apply the server's current
   // AutoMod rules to both plain text and embed text before writing anything.
@@ -463,6 +478,7 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
     res.status(422).json({ error: 'Message blocked by server moderation' });
     return;
   }
+  if (refuseUnavailable(await currentAvailability())) return;
 
   const message = await Messages.create({
     _id: uuidv4(),
@@ -485,7 +501,16 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
   });
   // Final21 Phase 15: webhook posts were stored but never delivered — nobody in the
   // channel saw them until a reload, and the cached first page hid them even then.
-  await publishPersistedMessage((req.app.get('io') as HandlerServer | undefined) ?? null, message);
+  let finalAvailability: ChannelWriteAvailability = 'unverifiable';
+  const published = await publishPersistedMessage((req.app.get('io') as HandlerServer | undefined) ?? null, message, async () => {
+    finalAvailability = await currentAvailability();
+    return finalAvailability === 'live';
+  });
+  if (refuseUnavailable(finalAvailability)) return;
+  if (!published) {
+    res.status(404).json({ error: 'Channel unavailable' });
+    return;
+  }
   res.json({ ok: true });
 };
 
@@ -498,6 +523,8 @@ router.post('/:webhookId', (req, _res, next) => {
   if (/\/webhooks$/.test(req.baseUrl)) next();
   else next('router');
 }, limits.bots(), receiveWebhook);
+
+router.use(channelAvailabilityErrors);
 
 export default router;
 
