@@ -78,12 +78,13 @@ export async function runPackaged(config) {
   const runtimeErrors = [];
   let historyProgress = null;
   let authInteraction = null;
+  let nativeFocusFacts = null;
   let loginRequests = 0;
   const raw = path.join(c.output, 'resources.jsonl');
   const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
     status, stage, code, securityFacts, loginStatus, onboardingDismissed, failureUi,
     blockedExternalRequests, networkFailures, runtimeErrors,
-    historyProgress, authInteraction, loginRequests,
+    historyProgress, authInteraction, loginRequests, nativeFocusFacts,
     bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
@@ -154,17 +155,29 @@ export async function runPackaged(config) {
       try { return !globalThis.BRIDGE_API || new URL(globalThis.BRIDGE_API).origin === location.origin; }
       catch { return false; }
     }), 'AUTH_ORIGIN_PRECONDITION');
+    stage = 'AUTH_WINDOW_FOCUS';
+    // Native input requires a foreground window. Activate the actual app,
+    // never force a DOM click or substitute an authentication request.
+    await page.bringToFront();
+    await application.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].focus(); });
+    await page.waitForFunction(() => document.hasFocus());
+    nativeFocusFacts = await application.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      return { focused: window.isFocused(), visible: window.isVisible() };
+    });
+    requireFact(nativeFocusFacts.focused && nativeFocusFacts.visible, 'NATIVE_WINDOW_FOCUS');
     stage = 'AUTH_FORM';
     await page.locator('#l-username').waitFor({ state: 'visible' });
     const instrumentedLoginUiMs = performance.now() - launchStart;
     // Observe only closed event counts, never input values, event text or URLs.
     // A successful driver click is not proof that the product delegate ran.
     await page.evaluate(() => {
-      const counts = { pointerDown: 0, capturedClick: 0, bubbledClick: 0 };
+      const counts = { pointerDown: 0, capturedClick: 0, bubbledClick: 0, anyPointerDown: 0, anyCapturedClick: 0, lastPointerTarget: 'none', lastClickTarget: 'none' };
       const matches = event => event.target instanceof Element &&
         Boolean(event.target.closest('#login-form [data-auth-action="login"]'));
-      const down = event => { if (matches(event)) counts.pointerDown++; };
-      const capture = event => { if (matches(event)) counts.capturedClick++; };
+      const category = event => matches(event) ? 'login' : event.target instanceof Element && event.target.closest('#l-username,#l-password') ? 'credential-field' : 'other';
+      const down = event => { counts.anyPointerDown++; counts.lastPointerTarget = category(event); if (matches(event)) counts.pointerDown++; };
+      const capture = event => { counts.anyCapturedClick++; counts.lastClickTarget = category(event); if (matches(event)) counts.capturedClick++; };
       const bubble = event => { if (matches(event)) counts.bubbledClick++; };
       document.addEventListener('pointerdown', down, true);
       document.addEventListener('click', capture, true);
@@ -407,7 +420,7 @@ export async function runPackaged(config) {
             const el = document.querySelector(selector);
             return Boolean(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
           };
-          return { documentReady: document.readyState === 'complete',
+          return { documentReady: document.readyState === 'complete', documentFocused: document.hasFocus(),
             loginButtonCount: document.querySelectorAll('#login-form [data-auth-action="login"]').length,
             loginButtonDisabled: Boolean(document.querySelector('#login-form [data-auth-action="login"]')?.disabled),
             authMessagePresent: Boolean(document.querySelector('#auth-msg')?.textContent?.trim()),
@@ -425,7 +438,7 @@ export async function runPackaged(config) {
       } catch { failureUi = { unavailable: true }; }
     }
     const closedCodes = new Set(['PACKAGED_SECURITY_PRECONDITION','PRODUCT_ORIGIN','AUTHENTICATION_REJECTED',
-      'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE',
+      'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE','NATIVE_WINDOW_FOCUS',
       'HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID','HISTORY_TRAVERSAL_INCOMPLETE',
       'HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING','HISTORY_DRIVER_TIMEOUT',
       'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED','HISTORY_DOM_WINDOW_UNBOUNDED','UI_IDENTITY',
