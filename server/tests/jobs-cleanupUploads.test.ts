@@ -2,6 +2,15 @@
 // cleanupUploads job — unit tests (filesystem & DB mocked)
 process.env.NODE_ENV = 'test';
 
+// This suite models filesystem/repository policy; real reservation locks and
+// writer interleavings execute in upload-cleanup-reservations-s3.pgtest.ts.
+const mockReserveRelease = jest.fn(async (_pool: unknown, _keys: readonly string[]) => new Set<string>());
+jest.mock('../lib/uploadReleaseFence', () => ({
+  reserveUploadReleaseKeys: (pool: unknown, keys: readonly string[]) => mockReserveRelease(pool, keys),
+}));
+beforeEach(() => { mockReserveRelease.mockReset().mockResolvedValue(new Set<string>()); });
+
+
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
