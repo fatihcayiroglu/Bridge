@@ -12,10 +12,22 @@ import { processNotifications } from '../lib/notifications';
 import { checkMessageContent, contentRefusalHttp, type MessageContentRefusal } from '../lib/messageContentPolicy';
 import logger from '../lib/logger';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
 
 // ── helpers ────────────────────────────────────────────────────
 async function memberCheck(userId: string, serverId: string) {
   return Members.findOne(userId, serverId);
+}
+
+async function refuseUnavailableReplyChannel(thread: { channelId: string; serverId: string }, res: express.Response): Promise<boolean> {
+  const channel = await Channels.findByIdAndServer(thread.channelId, thread.serverId);
+  const availability = channel ? await channelWriteAvailability(db, channel) : 'gone';
+  if (availability === 'live') return false;
+  res.status(availability === 'gone' ? 404 : 503).json({
+    error: availability === 'gone' ? 'Channel unavailable' : 'Channel availability cannot be verified',
+  });
+  return true;
 }
 
 async function channelPermissions(userId: string, serverId: string, channelId: string): Promise<number> {
@@ -314,13 +326,18 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
   const perms = await channelPermissions(_u.id, thread.serverId, thread.channelId);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY) || !hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
+  if (await refuseUnavailableReplyChannel(thread, res)) return;
+
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'User not found' });
 
   // A retry of a stored reply answers with it and is not counted again.
   const nonce = typeof clientNonce === 'string' ? clientNonce : null;
   const stored = nonce ? await Threads.findMessageByClientNonce(thread._id, _u.id, nonce) : null;
-  if (stored) return res.status(200).json(stored);
+  if (stored) {
+    if (await refuseUnavailableReplyChannel(thread, res)) return;
+    return res.status(200).json(stored);
+  }
 
   // A thread reply is a message: the same P7 abuse limits, mass-mention limit
   // and AutoMod rules as a channel message (one owner, see the module).
@@ -335,6 +352,7 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
   }, req.app.get('io'));
   if (refusal) return sendContentRefusal(res, refusal);
 
+  if (await refuseUnavailableReplyChannel(thread, res)) return;
   const inserted = await Threads.insertMessageIdempotent({
     threadId:    thread._id,
     channelId:   thread.channelId,

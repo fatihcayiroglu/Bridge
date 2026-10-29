@@ -37,6 +37,7 @@ import type { SandboxedHooks } from '../../plugins/loader';
 import type { AuthUser, SendMessagePayload, SocketUser } from './messages-types';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { dispatchRegisteredBotCommand } from '../../lib/botCommandDispatch';
+import { channelWriteAvailability, type ChannelWriteDb } from '../../lib/channelWriteGuard';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../../lib/memberTimeout';
 
 // ── Opsiyonel bağımlılıklar ───────────────────────────────────
@@ -267,6 +268,18 @@ export async function sendChannelMessage(
   if (!channel) {
     socket.emit('error:message', {
       event: 'message:send', code: 'CHANNEL_NOT_FOUND', message: 'Kanal artık kullanılamıyor.',
+      ...(validAckId ? { ackId } : {}), ...(validTmpId ? { tmpId: _tmpId } : {}),
+    });
+    return;
+  }
+
+  // P7 D2 (#321): an expired or tombstoned channel accepts no writes, whatever the cache or a stale client believes.
+  const availability = await channelWriteAvailability((await import('../../db/loader')).default as unknown as ChannelWriteDb, channel);
+  if (availability !== 'live') {
+    socket.emit('error:message', {
+      event: 'message:send',
+      code: availability === 'gone' ? 'CHANNEL_NOT_FOUND' : 'CHANNEL_UNVERIFIABLE',
+      message: availability === 'gone' ? 'Kanal artık kullanılamıyor.' : 'Kanalın durumu doğrulanamadı. Lütfen tekrar deneyin.',
       ...(validAckId ? { ackId } : {}), ...(validTmpId ? { tmpId: _tmpId } : {}),
     });
     return;
