@@ -214,5 +214,23 @@
       "087_channel_expiry_worker_index"
     ],
     "rationale": "087 indexes columns and a table that 084 owns. Isolated reversal of 084 drops them, which drops 087's two partial indexes with them; re-applying 084 alone cannot recreate objects that belong to 087. Ordered rollback unwinds 087 first, and 087's own isolated cycle is lossless (proven by the gate). 084's down is otherwise unchanged and still refuses while expiry metadata or tombstones exist."
+  },
+  "086_channel_write_barrier": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "cannot drop function bridge_channel_write_barrier() because other objects depend on it: voice_messages.channel_write_barrier, installed by 096",
+    "dependsOn": [
+      "096_voice_channel_write_barrier"
+    ],
+    "rationale": "096 reuses 086's canonical function in the voice_messages.channel_write_barrier trigger. Isolated reversal of 086 must refuse to drop that function while its later dependent trigger exists. Measured DOWN_FAILED on PostgreSQL 18; no CASCADE is used to bypass it. Ordered rollback unwinds 096 before 086; the complete 93-file chain has zero lost or extra structural objects. Migration 096 also proves exact function/trigger restoration and preservation of voice data, retained evidence, tombstones and pending object releases in real PostgreSQL."
+  },
+  "092_channel_copy_source_barrier": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "cannot drop function bridge_channel_copy_source_barrier() because other objects depend on it: voice_messages.zz_channel_final_admission, installed by 096",
+    "dependsOn": [
+      "096_voice_channel_write_barrier"
+    ],
+    "rationale": "096 reuses 092's canonical function in the voice_messages.zz_channel_final_admission trigger. Isolated reversal of 092 must refuse to drop that function while its later dependent trigger exists. Measured DOWN_FAILED on PostgreSQL 18; no CASCADE is used to bypass it. Ordered rollback unwinds 096 before 092; the complete 93-file chain has zero lost or extra structural objects. Migration 096 also proves exact function/trigger restoration and preservation of voice data, retained evidence, tombstones and pending object releases in real PostgreSQL."
   }
 }

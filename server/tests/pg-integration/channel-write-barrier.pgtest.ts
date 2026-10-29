@@ -75,6 +75,7 @@ RUN('P7 D2 channel write barrier — real PostgreSQL', () => {
       { tbl: 'messages', is_constraint: false, tgdeferrable: false },
       { tbl: 'thread_messages', is_constraint: false, tgdeferrable: false },
       { tbl: 'threads', is_constraint: false, tgdeferrable: false },
+      { tbl: 'voice_messages', is_constraint: false, tgdeferrable: false },
     ]);
   });
 
