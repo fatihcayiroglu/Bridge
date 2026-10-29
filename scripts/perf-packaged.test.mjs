@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateConfig, normalizeMetrics } from './perf-acceptance/packaged.mjs';
+import { validateConfig, normalizeMetrics, validateIdentity } from './perf-acceptance/packaged.mjs';
 import { SCENARIOS } from './perf-acceptance/scenarios.mjs';
 import { requireDisposable } from './perf-acceptance/disposable.mjs';
 
@@ -53,5 +53,17 @@ test('idle needs no call, while every actual voice scenario still requires real 
   assert.equal(SCENARIOS.find(s => s.id === 'PA01').realSfu, false);
   for (const id of ['PA02', 'PA03', 'PA04', 'PA05', 'PA06', 'PA07', 'PA10']) {
     assert.equal(SCENARIOS.find(s => s.id === id).realSfu, true);
+  }
+});
+
+test('a packaged executable with disabled sandbox, unsafe renderer or no real window never qualifies', () => {
+  const good = { packaged: true, appPath: '/fixture/resources/app.asar', insecure: false,
+    windows: [{ sandbox: true, contextIsolation: true, nodeIntegration: false }] };
+  validateIdentity(good);
+  for (const patch of [{ packaged: false }, { appPath: '/fixture/synthetic.js' }, { insecure: true }, { windows: [] },
+    { windows: [{ sandbox: false, contextIsolation: true, nodeIntegration: false }] },
+    { windows: [{ sandbox: true, contextIsolation: false, nodeIntegration: false }] },
+    { windows: [{ sandbox: true, contextIsolation: true, nodeIntegration: true }] }]) {
+    assert.throws(() => validateIdentity({ ...good, ...patch }), /PACKAGED_SECURITY_PRECONDITION/);
   }
 });

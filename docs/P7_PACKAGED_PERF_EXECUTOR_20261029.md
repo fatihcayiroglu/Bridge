@@ -129,3 +129,18 @@ closed HTTP/TLS failure codes on readiness failure. No gate is disabled or
 startup timeout increased. Backend runtime still requires fresh exact-head proof.
 History endpoint checks also require actual scroller-viewport intersection,
 rather than relying on DOM/CSS visibility alone.
+
+Fourth attempt: `36e556116789ffcc6d3d898dbee2768cdfdd053f`, run 40792240804 /
+job 123180018231. Actual backend HTTPS readiness PASS; packaged execution FAIL
+at launch/preconditions before any scenario. Artifact 12862282316 SHA-256
+`68ee781a48582025690de98fdbf426e246142fd6c90ea172b4319e8a7ec65033`
+preserves the closed failure stage. Inspection of the official
+[Playwright Electron launcher](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/electron/electron.ts)
+shows Linux adds `--no-sandbox` unless `chromiumSandbox` is explicitly true.
+The runner now explicitly sets it true, retaining the prohibition on bypass
+flags. This is a required security fix; the previous catch exposed only a broad
+launch stage, so the exact fourth-run exception is not retrospectively claimed.
+New diagnostics distinguish window/identity stages and expose only closed error
+codes and security booleans/counts. An additional regression refuses unsafe
+renderer settings, bypass flags and unpackaged/absent windows. Local contracts
+are now 11/11 PASS. Actual measurements still need fresh runtime evidence.

@@ -15,6 +15,12 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const requireE2e = createRequire(new URL('../../e2e/package.json', import.meta.url));
 const requireFact = (condition, code) => { if (!condition) throw new Error(code); };
 
+export function validateIdentity(identity) {
+  requireFact(identity.packaged && identity.appPath.endsWith('app.asar') && !identity.insecure &&
+    identity.windows.length > 0 && identity.windows.every(w => w.sandbox && w.contextIsolation && !w.nodeIntegration),
+  'PACKAGED_SECURITY_PRECONDITION');
+}
+
 export function validateConfig(c) {
   requireFact(c?.schema === 1 && /^[a-f0-9]{40}$/.test(c.bridgeCommit), 'CONFIG_PROVENANCE');
   const u = new URL(c.origin);
@@ -53,18 +59,21 @@ export async function runPackaged(config) {
   const report = buildReport(probe());
   let application;
   let stage = 'LAUNCH';
+  let securityFacts = null;
   const raw = path.join(c.output, 'resources.jsonl');
-  const writeAttempt = status => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
-    status, stage, bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
+  const writeAttempt = (status, code = null) => fs.writeFileSync(path.join(c.output, 'attempt.json'), JSON.stringify({
+    status, stage, code, securityFacts, bridgeCommit: c.bridgeCommit, executed: summarize(report).executed,
   }, null, 2));
   try {
     const { _electron } = requireE2e('playwright');
     const launchStart = performance.now();
-    application = await _electron.launch({ executablePath: c.executable,
+    application = await _electron.launch({ executablePath: c.executable, chromiumSandbox: true,
       args: [`--user-data-dir=${profile}`], timeout: 45000 });
+    stage = 'PRODUCT_WINDOW';
     const page = await application.firstWindow();
     page.setDefaultTimeout(30000);
     await page.waitForURL(url => url.origin === c.origin, { waitUntil: 'domcontentloaded' });
+    stage = 'PACKAGED_IDENTITY';
     const identity = await application.evaluate(({ app, BrowserWindow }) => ({
       packaged: app.isPackaged, appPath: app.getAppPath(), appVersion: app.getVersion(),
       insecure: ['no-sandbox', 'ignore-certificate-errors', 'disable-web-security']
@@ -74,9 +83,10 @@ export async function runPackaged(config) {
         return { sandbox: p.sandbox, contextIsolation: p.contextIsolation, nodeIntegration: p.nodeIntegration };
       }),
     }));
-    requireFact(identity.packaged && identity.appPath.endsWith('app.asar') && !identity.insecure &&
-      identity.windows.length > 0 && identity.windows.every(w => w.sandbox && w.contextIsolation && !w.nodeIntegration),
-    'PACKAGED_SECURITY_PRECONDITION');
+    securityFacts = { packaged: identity.packaged, asar: identity.appPath.endsWith('app.asar'),
+      insecureSwitchPresent: identity.insecure, windowCount: identity.windows.length,
+      secureWindowCount: identity.windows.filter(w => w.sandbox && w.contextIsolation && !w.nodeIntegration).length };
+    validateIdentity(identity);
     const asarSha256 = createHash('sha256').update(fs.readFileSync(identity.appPath)).digest('hex');
     requireFact(new URL(page.url()).origin === c.origin, 'PRODUCT_ORIGIN');
     stage = 'AUTHENTICATE';
@@ -207,11 +217,14 @@ export async function runPackaged(config) {
     writeAttempt('EXECUTED');
     console.log(JSON.stringify({ subset: ['PA01', 'PA08'], status: 'EXECUTED', ...summarize(report), performanceThresholdsQualified: false }));
     return report;
-  } catch {
+  } catch (error) {
     // WebDriver errors can include typed credentials. Never publish messages,
     // stacks, traces, screenshots or browser storage from authentication.
-    writeAttempt('FAIL');
-    console.error(`PACKAGED_PERF_FAILED:${stage}`);
+    const closedCodes = new Set(['PACKAGED_SECURITY_PRECONDITION','PRODUCT_ORIGIN','AUTHENTICATION_REJECTED',
+      'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
+    const code = closedCodes.has(error?.message) ? error.message : 'DRIVER_OR_RUNTIME_FAILURE';
+    writeAttempt('FAIL', code);
+    console.error(`PACKAGED_PERF_FAILED:${stage}:${code}`);
     throw new Error('PACKAGED_PERF_FAILED');
   } finally {
     if (application) await application.close();
