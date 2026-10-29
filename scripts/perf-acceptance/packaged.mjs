@@ -137,6 +137,17 @@ export async function runPackaged(config) {
     validateIdentity(identity);
     const asarSha256 = createHash('sha256').update(fs.readFileSync(identity.appPath)).digest('hex');
     requireFact(new URL(page.url()).origin === c.origin, 'PRODUCT_ORIGIN');
+    stage = 'SERVED_UI_IDENTITY';
+    const servedUi = await page.evaluate(async () => {
+      const script = document.querySelector('script[type="module"][src]');
+      if (!script || new URL(script.src).origin !== location.origin) throw Error('UI_IDENTITY');
+      const response = await fetch(script.src, { cache: 'no-store' });
+      if (!response.ok) throw Error('UI_IDENTITY');
+      const bytes = await response.arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return { sha256: [...new Uint8Array(digest)].map(n => n.toString(16).padStart(2, '0')).join(''), bytes: bytes.byteLength };
+    });
+    requireFact(/^[a-f0-9]{64}$/.test(servedUi.sha256) && servedUi.bytes > 0, 'UI_IDENTITY');
     stage = 'AUTH_RUNTIME_READY';
     await page.waitForFunction(() => typeof globalThis.login === 'function');
     requireFact(await page.evaluate(() => {
@@ -205,7 +216,7 @@ export async function runPackaged(config) {
       await application.evaluate(({ app }) => app.getAppMetrics());
       const historyCodes = new Set(['HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID',
         'HISTORY_TRAVERSAL_INCOMPLETE','HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING',
-        'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED']);
+        'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED','HISTORY_DOM_WINDOW_UNBOUNDED','UI_IDENTITY']);
       const work = activity ? activity(end).then(value => ({ value }), error => ({ failed: true,
         code: historyCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'HISTORY_DRIVER_TIMEOUT' : 'HISTORY_ACTIVITY_FAILED' })) : Promise.resolve({});
       while (performance.now() < end) {
@@ -224,7 +235,7 @@ export async function runPackaged(config) {
         provenance: { os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
           osVersion: os.release(), bridgeCommit: c.bridgeCommit, appVersion: identity.appVersion,
           machine: os.hostname(), startedAt, endedAt: new Date().toISOString(),
-          durationSec: (performance.now() - start) / 1000, asarSha256,
+          durationSec: (performance.now() - start) / 1000, asarSha256, uiEntrySha256: servedUi.sha256,
           environment: process.env.GITHUB_ACTIONS === 'true' ? 'hosted CI VM' : 'operator host',
           display: process.env.XDG_SESSION_TYPE || (process.env.DISPLAY ? 'X11' : 'unspecified'),
           instrumentation: id === 'PA01' ? 'Playwright main-process inspector' : 'Playwright main-process inspector + renderer observer',
@@ -253,12 +264,25 @@ export async function runPackaged(config) {
       } catch { historyProgress.profilerAvailable = false; }
       const inViewport = async id => {
         const locator = page.locator(`.msg-list .msg[data-id="${id}"]`);
+        // Virtualized rows retain lightweight scroll anchors. Reach the actual
+        // endpoint with the product scroll handler before querying its article.
+        if (await locator.count() === 0) {
+          await page.locator('#messages-area').evaluate((el, bottom) => {
+            el.scrollTop = bottom ? el.scrollHeight : 0; el.dispatchEvent(new Event('scroll'));
+          }, id === `${c.messagePrefix}10000`);
+          await locator.waitFor({ state: 'visible' });
+        }
         await locator.scrollIntoViewIfNeeded();
-        requireFact(await locator.evaluate(el => {
+        const geometry = await locator.evaluate(el => {
           const r = el.getBoundingClientRect();
-          const view = document.getElementById('messages-area').getBoundingClientRect();
-          return r.width > 0 && r.height > 0 && r.bottom > view.top && r.top < view.bottom;
-        }), 'HISTORY_ENDPOINT_NOT_IN_VIEWPORT');
+          const scroller = document.getElementById('messages-area');
+          const view = scroller.getBoundingClientRect();
+          return { width: r.width, height: r.height, top: r.top, bottom: r.bottom,
+            viewportTop: view.top, viewportBottom: view.bottom, scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight };
+        });
+        historyProgress.lastViewportCheck = { endpoint: id.endsWith('00001') ? 'oldest' : 'newest', ...geometry };
+        requireFact(geometry.width > 0 && geometry.height > 0 && geometry.bottom > geometry.viewportTop && geometry.top < geometry.viewportBottom,
+          'HISTORY_ENDPOINT_NOT_IN_VIEWPORT');
       };
       const seen = new Set();
       const pending = new Set();
@@ -287,7 +311,7 @@ export async function runPackaged(config) {
         await page.evaluate(() => {
           if (!PerformanceObserver.supportedEntryTypes.includes('longtask')) throw Error('LONGTASK_UNAVAILABLE');
           const state = window.__bridgePerf = { frames: [], longTasks: [], last: performance.now(), running: true,
-            skipped: new Set(), skippedPeak: 0 };
+            skipped: new Set(), skippedPeak: 0, mountedPeak: 0 };
           state.onContainment = event => {
             if (!event.target.classList.contains('msg-contained')) return;
             if (event.skipped) state.skipped.add(event.target); else state.skipped.delete(event.target);
@@ -296,7 +320,7 @@ export async function runPackaged(config) {
           document.addEventListener('contentvisibilityautostatechange', state.onContainment, true);
           state.observer = new PerformanceObserver(list => state.longTasks.push(...list.getEntries().map(e => e.duration)));
           state.observer.observe({ type: 'longtask' });
-          const frame = time => { if (!state.running) return; state.frames.push(time - state.last); state.last = time; requestAnimationFrame(frame); };
+          const frame = time => { if (!state.running) return; state.frames.push(time - state.last); state.last = time; state.mountedPeak = Math.max(state.mountedPeak, document.querySelectorAll('.msg-list .msg').length); requestAnimationFrame(frame); };
           requestAnimationFrame(frame);
         });
         const loadStart = performance.now();
@@ -310,7 +334,6 @@ export async function runPackaged(config) {
         while (performance.now() < end) {
           requireFact(!invalidResponse, responseFailure || 'HISTORY_RESPONSE_INVALID');
           if (seen.size === 10000 && traversalMs === null) {
-            await page.locator(`.msg-list .msg[data-id="${c.messagePrefix}00001"]`).waitFor({ state: 'visible' });
             await inViewport(`${c.messagePrefix}00001`);
             historyProgress.oldestVisible = true;
             traversalMs = performance.now() - loadStart;
@@ -333,14 +356,14 @@ export async function runPackaged(config) {
         const observed = await page.evaluate(() => {
           const s = window.__bridgePerf; s.running = false; s.observer.disconnect();
           document.removeEventListener('contentvisibilityautostatechange', s.onContainment, true);
-          return { frames: s.frames, longTasks: s.longTasks, skippedPeak: s.skippedPeak };
+          return { frames: s.frames, longTasks: s.longTasks, skippedPeak: s.skippedPeak, mountedPeak: s.mountedPeak };
         });
         requireFact(observed.frames.length >= 3 && observed.frames.every(Number.isFinite), 'SCROLL_SAMPLES_MISSING');
-        requireFact(observed.skippedPeak > 0, 'CONTAINMENT_NOT_EXERCISED');
+        requireFact(observed.mountedPeak > 0 && observed.mountedPeak <= 240, 'HISTORY_DOM_WINDOW_UNBOUNDED');
         return { samples: observed.frames.map(frameTimeMs => ({ frameTimeMs })), evidence: {
           firstPageVisibleMs, traversalMs, uniqueMessagesObserved: seen.size,
           newestAndOldestVisible: true,
-          keyboardNavigation: true, offscreenSkippedPeak: observed.skippedPeak,
+          keyboardNavigation: true, offscreenSkippedPeak: observed.skippedPeak, mountedMessagePeak: observed.mountedPeak,
           longTaskDurationsMs: observed.longTasks, persistedFixtureCount: c.seededMessages,
           scrollMethod: 'actual product scroll handler; authenticated network responses; no registry calls',
         } };
@@ -354,7 +377,8 @@ export async function runPackaged(config) {
               document.removeEventListener('contentvisibilityautostatechange', s.onContainment, true);
             }
             return { supported: CSS.supports('content-visibility', 'auto'),
-              eligibleRows: document.querySelectorAll('.msg-contained').length, skippedPeak: s?.skippedPeak ?? 0 };
+              eligibleRows: document.querySelectorAll('.msg-contained').length, skippedPeak: s?.skippedPeak ?? 0,
+              scrollAnchors: document.querySelectorAll('[data-message-viewport-id]').length, mountedPeak: s?.mountedPeak ?? 0 };
           });
         } catch { historyProgress.containment = { unavailable: true }; }
         if (profiler) {
@@ -403,7 +427,7 @@ export async function runPackaged(config) {
       'AUTH_ORIGIN_PRECONDITION','AUTH_RESPONSE_UNAVAILABLE',
       'HISTORY_HTTP_STATUS','HISTORY_RESPONSE_SHAPE','HISTORY_RESPONSE_INVALID','HISTORY_TRAVERSAL_INCOMPLETE',
       'HISTORY_ENDPOINT_NOT_IN_VIEWPORT','SCROLL_SAMPLES_MISSING','HISTORY_DRIVER_TIMEOUT',
-      'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED',
+      'CONTAINMENT_NOT_EXERCISED','HISTORY_KEYBOARD_FAILED','HISTORY_DOM_WINDOW_UNBOUNDED','UI_IDENTITY',
       'PROCESS_METRICS_MISSING','PROCESS_METRIC_INVALID','HISTORY_ACTIVITY_FAILED','REPORT_INVALID']);
     const code = closedCodes.has(error?.message) ? error.message : error?.name === 'TimeoutError' ? 'DRIVER_TIMEOUT' : 'DRIVER_OR_RUNTIME_FAILURE';
     writeAttempt('FAIL', code);
