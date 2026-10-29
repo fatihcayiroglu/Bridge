@@ -59,6 +59,19 @@ export function locateAsset(url: unknown): AssetLocation | null {
   const storageKey = store.keyFromUrl(url);
   const canonicalKey = normalizeUploadKey(storageKey.startsWith('uploads/') ? storageKey : `uploads/${storageKey}`);
   if (!canonicalKey || !ADAPTER_PREFIXES.some(p => canonicalKey.startsWith(p))) return null;
+  // keyFromUrl extracts a path; it does not establish that this server owns
+  // the URL. Otherwise https://foreign/uploads/server-assets/x could delete
+  // the local/CDN object x. Accept exact relative refs or the adapter's own
+  // canonical service URL; retain unverified legacy aliases for reconciliation.
+  if (url.startsWith('/uploads/')) {
+    if (url !== `/${canonicalKey}`) return null;
+  } else {
+    try {
+      const actual = new URL(url);
+      const expected = new URL(store.publicUrlForKey(storageKey), process.env.BASE_URL);
+      if (actual.href !== expected.href) return null;
+    } catch { return null; }
+  }
   return { kind: 'adapter', canonicalKey, storageKey };
 }
 

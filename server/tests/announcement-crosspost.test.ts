@@ -50,6 +50,7 @@ jest.mock('../middleware/rateLimit', () => ({
 import express from 'express';
 import request from 'supertest';
 import { router, setIo } from '../routes/announcement';
+import * as activity from '../lib/channelActivity';
 
 const SRC_SERVER = 'srv-source';
 const SRC_CHANNEL = 'ch-announcement';
@@ -130,6 +131,25 @@ describe('announcement crosspost authority + durability handoff', () => {
     expect(emit).toHaveBeenCalledWith('new_message', expect.objectContaining({
       _id: 'bridge-1', channelId: TARGET_CHANNEL, serverId: TARGET_SERVER, type: 'crosspost',
     }));
+  });
+
+  it('withholds a committed crosspost when source availability is lost before broadcast', async () => {
+    await db.channels.insert(makeChannel(TARGET_SERVER, { _id: TARGET_CHANNEL, type: 'text' }));
+    mockGetFollowers.mockResolvedValue([{ targetChannelId: TARGET_CHANNEL, targetServerId: TARGET_SERVER }]);
+    mockPersistCrosspost.mockResolvedValue({ bridgeMessageId: 'bridge-committed', created: true });
+    const emit = jest.fn();
+    setIo({ to: jest.fn(() => ({ emit })) } as never);
+    const check = jest.spyOn(activity, 'persistedMessageIsLive').mockResolvedValueOnce(false);
+    try {
+      const res = await request(app()).post(`/api/channels/${SRC_CHANNEL}/messages/${MESSAGE_ID}/crosspost`)
+        .set('x-test-user', PUBLISHER);
+      expect(res.status).toBe(200);
+      expect(res.body.crosspostedTo).toBe(1); // The copy already committed.
+      expect(mockPersistCrosspost).toHaveBeenCalledTimes(1);
+      expect(check).toHaveBeenCalledWith(expect.objectContaining({ channelId: TARGET_CHANNEL, serverId: TARGET_SERVER,
+        bridgedFrom: expect.objectContaining({ channelId: SRC_CHANNEL, serverId: SRC_SERVER }) }));
+      expect(emit).not.toHaveBeenCalled();
+    } finally { check.mockRestore(); }
   });
 
   it('idempotent replay does not emit the same persisted crosspost twice', async () => {

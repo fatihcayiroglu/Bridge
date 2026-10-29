@@ -53,9 +53,11 @@ import { authMiddleware}  from '../middleware/auth';
 import { limits }                      from '../middleware/rateLimit';
 import type { Server as IOServer }     from 'socket.io';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
+import { channelRecordIsLive, channelAvailabilityErrors } from '../lib/channelLiveReadSet';
 import { machineContentRefused } from '../lib/messageContentPolicy';
 import { storedMessageText } from '../lib/storedText';
 import type { HandlerServer } from '../socket/handler-contracts';
+import { persistedMessageIsLive } from '../lib/channelActivity';
 
 let _io: IOServer | null = null;
 export function setIo(io: IOServer): void { _io = io; }
@@ -86,6 +88,7 @@ router.post('/:cid/follow', authMiddleware, limits.api(), async (req, res) => {
   // Kaynak kanal announcement mı?
   const source = await assertAnnouncementChannel(cid);
   if (!source) return res.status(400).json({ error: 'Source channel is not an announcement channel', code: 'NOT_ANNOUNCEMENT' });
+  if (!await channelRecordIsLive(source)) return res.status(404).json({ error: 'Channel not found' });
 
   // Hedef kanal var ve kullanıcı o sunucunun üyesi mi?
   const target = await Channels.findById(targetChannelId) as { _id: string; name: string; serverId: string; type: string } | null;
@@ -185,6 +188,8 @@ router.post('/:cid/messages/:mid/crosspost', authMiddleware, limits.api(), async
   // Kaynak kanal announcement mı?
   const source = await assertAnnouncementChannel(cid);
   if (!source) return res.status(400).json({ error: 'Not an announcement channel', code: 'NOT_ANNOUNCEMENT' });
+  // P7 D2: an expired source must not republish its content into live channels.
+  if (!await channelRecordIsLive(source)) return res.status(404).json({ error: 'Channel not found' });
 
   // Mesaj bu kanala mı ait?
   const msg = await Messages.findById(mid) as {
@@ -272,7 +277,7 @@ router.post('/:cid/messages/:mid/crosspost', authMiddleware, limits.api(), async
 
       // Emit yalnız transaction gerçekten yeni/healed bir message persist ettiyse.
       // Idempotent tekrar publish mevcut mesajı ikinci kez realtime'a basmaz.
-      if (_io && persisted.created) {
+      if (_io && persisted.created && await persistedMessageIsLive({ channelId: target._id, serverId: target.serverId, bridgedFrom })) {
         _io.to(`channel:${target._id}`).emit('new_message', {
           _id: persisted.bridgeMessageId,
           channelId: target._id,
@@ -313,5 +318,8 @@ function _sendSystemMessage(channelId: string, serverId: string, content: string
     createdAt:   Date.now(),
   });
 }
+
+// P7 D2: an unverifiable channel availability check answers 503, never content.
+router.use(channelAvailabilityErrors);
 
 export { router };
