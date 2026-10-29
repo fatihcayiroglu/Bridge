@@ -47,7 +47,7 @@ jobs:
         run: cd electron && npm ci --no-audit --no-fund
       - name: Linux Electron contract suite (no unconditional skip)
         run: cd electron && npm test -- --runInBand --ci
-      - name: Native Wayland same-surface protocol controls (4 valid / 13 invalid / 1 privacy)
+      - name: Native Wayland same-surface protocol controls (4 valid / 13 invalid / 2 privacy)
         shell: bash
         run: |
           set -euo pipefail

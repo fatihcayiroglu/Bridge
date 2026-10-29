@@ -16,11 +16,9 @@ APP_PID=""
 cleanup() {
   [[ -z "${APP_PID}" ]] || { kill "${APP_PID}" 2>/dev/null || true; wait "${APP_PID}" 2>/dev/null || true; }
   [[ -z "${COMPOSITOR_PID}" ]] || { kill "${COMPOSITOR_PID}" 2>/dev/null || true; wait "${COMPOSITOR_PID}" 2>/dev/null || true; }
-  # Closed counts only: no renderer titles, URLs or user text in CI output.
-  if [[ -f "${ROOT}/app.log" ]]; then
-    printf 'wayland-toplevel-size-requests=%s\n' "$(grep -Ec 'xdg_toplevel[@#][0-9]+\.set_(min|max)_size\(' "${ROOT}/app.log" || true)"
-    printf 'wayland-configure-acks=%s\n' "$(grep -Ec 'xdg_surface[@#][0-9]+\.ack_configure\(' "${ROOT}/app.log" || true)"
-  fi
+  # Failure/success evidence is numeric only; raw protocol lines can contain
+  # titles, URLs, profile paths and other sensitive client material.
+  wayland_protocol_summary "${ROOT}/app.log"
   rm -rf "${ROOT}"
 }
 trap cleanup EXIT
@@ -38,14 +36,14 @@ weston --backend=headless-backend.so --socket="${WAYLAND_DISPLAY}" --idle-time=0
 COMPOSITOR_PID=$!
 for i in {1..40}; do
   if ! kill -0 "${COMPOSITOR_PID}" 2>/dev/null; then
-    echo "Weston failed to start:" >&2
-    tail -60 "${ROOT}/weston.log" >&2 || true
+    echo "FAIL: Weston compositor exited before creating its Wayland socket" >&2
+    echo 'wayland-compositor-startup=exited' >&2
     exit 1
   fi
   [[ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]] && break
   sleep 0.25
 done
-[[ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]] || { echo "Weston Wayland socket missing" >&2; exit 1; }
+[[ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]] || { echo "FAIL: Weston Wayland socket missing" >&2; echo 'wayland-compositor-startup=no-socket' >&2; exit 1; }
 
 # All state is isolated. The DEB post-install supplies Chromium sandbox setup.
 # Do not relax the sandbox, impersonate root or allow a fallback to X11.
@@ -54,7 +52,6 @@ APP_PID=$!
 for i in {1..60}; do
   if ! kill -0 "${APP_PID}" 2>/dev/null; then
     echo "Packaged Bridge exited before creating a Wayland toplevel" >&2
-    tail -40 "${ROOT}/app.log" >&2 || true
     exit 1
   fi
   # Weston 13 / Wayland debug prints protocol object IDs as #23, not @23.
@@ -67,5 +64,4 @@ for i in {1..60}; do
   sleep 1
 done
 echo "FAIL: packaged Bridge did not create a Wayland xdg-toplevel surface in 60s" >&2
-tail -60 "${ROOT}/app.log" >&2 || true
 exit 1

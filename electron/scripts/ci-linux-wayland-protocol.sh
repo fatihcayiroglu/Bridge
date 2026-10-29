@@ -52,3 +52,28 @@ wayland_protocol_ready() {
     END { exit !complete }
   ' "${log}" 2>/dev/null
 }
+
+# Emit only fixed metric names and integer counts. Do not copy raw Wayland,
+# compositor, GTK, Electron or renderer messages into public CI transcripts.
+# The private capture is removed by the smoke script's EXIT trap.
+wayland_protocol_summary() {
+  local protocol_log="${1:?protocol log required}"
+  if [[ ! -r "${protocol_log}" ]]; then
+    echo 'wayland-log=unavailable'
+    return 0
+  fi
+  local field pattern count
+  while IFS='|' read -r field pattern; do
+    count="$(grep -Ec -- "${pattern}" "${protocol_log}" 2>/dev/null || true)"
+    printf 'wayland-%s=%s\n' "${field}" "${count:-0}"
+  done <<'PATTERNS'
+surfaces|wl_compositor[@#][0-9]+\.create_surface
+xdg-surfaces|xdg_wm_base[@#][0-9]+\.get_xdg_surface
+get-toplevel|xdg_surface[@#][0-9]+\.get_toplevel
+size-requests|xdg_toplevel[@#][0-9]+\.set_(min|max)_size\(
+configure-acks|xdg_surface[@#][0-9]+\.ack_configure
+gtk-seat-assertions|GDK_IS_SEAT
+gtk-scale-assertions|GTK_IS_WIDGET
+drm-device-errors|drmGetDevices2\(\).*not found any devices
+PATTERNS
+}
