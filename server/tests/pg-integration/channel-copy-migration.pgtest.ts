@@ -10,6 +10,8 @@ const SOURCE = P + '-source';
 const TARGET = P + '-target';
 const up = fs.readFileSync(path.resolve(__dirname, '../../db/migrations_pg/092_channel_copy_source_barrier.sql'), 'utf8');
 const down = fs.readFileSync(path.resolve(__dirname, '../../db/migrations_pg/rollback/092_channel_copy_source_barrier.down.sql'), 'utf8');
+const voiceUp = fs.readFileSync(path.resolve(__dirname, '../../db/migrations_pg/096_voice_channel_write_barrier.sql'), 'utf8');
+const voiceDown = fs.readFileSync(path.resolve(__dirname, '../../db/migrations_pg/rollback/096_voice_channel_write_barrier.down.sql'), 'utf8');
 const CATALOG = `SELECT pg_get_functiondef(p.oid) AS definition, p.provolatile, p.prosecdef,
   pg_get_triggerdef(t.oid) AS trigger, t.tgtype, t.tgenabled, t.tgdeferrable, t.tginitdeferred
   FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
@@ -49,12 +51,16 @@ describe('D2 migration 092 executable recovery contract — real PostgreSQL', ()
       const rows = async () => (await client.query('SELECT to_jsonb(m) AS row FROM messages m WHERE "channelId" IN ($1,$2) ORDER BY _id', [SOURCE, TARGET])).rows;
       const original = await rows();
       expect(original).toHaveLength(2);
+      // Unwind 096 before dropping 092's shared function (ordered rollback).
+      await client.query(voiceDown);
       await client.query(down);
       expect((await client.query(CATALOG)).rows).toEqual([]);
       await client.query(up);
+      await client.query(voiceUp);
       expect((await client.query(CATALOG)).rows).toEqual(before);
       expect(await rows()).toEqual(original);
       await client.query(up);
+      await client.query(voiceUp);
       expect((await client.query(CATALOG)).rows).toEqual(before);
       expect(await rows()).toEqual(original);
     } finally { await client.query('ROLLBACK'); client.release(); }
