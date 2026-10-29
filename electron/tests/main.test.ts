@@ -62,6 +62,56 @@ function bridgeHealthResponse(body: unknown = { status: 'ok', check: 'liveness' 
 }
 
 describe('first run — connect to a server', () => {
+  it('reveals a successfully loaded first-run page when Wayland never emits ready-to-show', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    expect(connect.options.show).toBe(false);
+    connect.webContents.emit('dom-ready');
+    expect(connect.show).not.toHaveBeenCalled();
+    connect.webContents.emit('did-finish-load');
+    expect(connect.show).toHaveBeenCalledTimes(1);
+    expect(connect.isVisible()).toBe(true);
+    connect.emit('ready-to-show');
+    expect(connect.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reveal an unfinished or failed first-run page', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    connect.webContents.emit('dom-ready');
+    connect.webContents.emit('did-fail-load', {}, -2, 'private-load-error', 'file:///private-profile');
+    expect(connect.show).not.toHaveBeenCalled();
+    connect.emit('ready-to-show');
+    expect(connect.show).toHaveBeenCalledTimes(1);
+    connect.webContents.emit('did-finish-load');
+    expect(connect.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reveal a stale first-run window after it closes and is replaced', async () => {
+    const { electron, main } = await loadMain();
+    const original = connectWindowOf(electron);
+    original.close();
+    electron.app.emit('activate');
+    const replacement = main._testing.getConnectWindow();
+    expect(replacement).toBeTruthy();
+    expect(replacement).not.toBe(original);
+    original.webContents.emit('did-finish-load');
+    original.emit('ready-to-show');
+    expect(original.show).not.toHaveBeenCalled();
+    expect(replacement!.show).not.toHaveBeenCalled();
+    replacement!.webContents.emit('did-finish-load');
+    expect(replacement!.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reveal a destroyed window on late loading/paint notifications', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    connect.isDestroyed.mockReturnValue(true);
+    connect.webContents.emit('did-finish-load');
+    connect.emit('ready-to-show');
+    expect(connect.show).not.toHaveBeenCalled();
+  });
+
   it('opens only the connect window, with the connect preload and the local connect page', async () => {
     const { electron } = await loadMain();
     const connect = connectWindowOf(electron);
