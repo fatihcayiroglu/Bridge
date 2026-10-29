@@ -1,0 +1,155 @@
+name: P7 Packaged Desktop Performance Subset (NOT full acceptance)
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/perf-acceptance/**'
+      - 'scripts/perf-acceptance.test.js'
+      - 'scripts/perf-packaged.test.mjs'
+      - '.github/workflows/p7-packaged-performance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-idle-history-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge_perf_test
+          POSTGRES_PASSWORD: disposable_perf_ci_only
+          POSTGRES_DB: bridge_perf_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bridge_perf_test -d bridge_perf_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql://bridge_perf_test:disposable_perf_ci_only@localhost:5432/bridge_perf_test
+      PG_TEST_URL: postgresql://bridge_perf_test:disposable_perf_ci_only@localhost:5432/bridge_perf_test
+      REDIS_URL: redis://localhost:6379/0
+      NODE_ENV: production
+      HOST: 127.0.0.1
+      PORT: '3000'
+      PUBLIC_URL: https://127.0.0.1:3443
+      ALLOWED_ORIGINS: https://127.0.0.1:3443
+      TRUST_PROXY: loopback
+      BRIDGE_PERF_DISPOSABLE: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Locked build and executor dependencies
+        env:
+          NODE_ENV: development
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix server
+          npm ci --prefix electron
+          npm ci --prefix e2e --ignore-scripts
+      - name: Executor/report integrity contracts, zero skipped tests
+        run: node --test scripts/perf-acceptance.test.js scripts/perf-packaged.test.mjs
+      - name: Build actual Svelte UI, backend and packaged Electron DEB
+        run: |
+          node scripts/build.js
+          npm run build --prefix server
+          npm run compile --prefix electron
+          cd electron && npx electron-builder --linux deb --x64 --publish never
+      - name: Install real packaged app and keep OS sandbox enabled
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb dbus-x11 libnss3-tools
+          mapfile -t packages < <(find electron/release -maxdepth 1 -name '*.deb')
+          test "${#packages[@]}" -eq 1
+          sudo apt-get install -y --no-install-recommends "$(realpath "${packages[0]}")"
+          test -x /opt/Bridge/bridge || { echo 'PACKAGED_EXECUTABLE_MISSING'; exit 1; }
+          stat -c 'sandbox before CI provisioning: owner=%u mode=%a' /opt/Bridge/chrome-sandbox
+          # Configure the installed, lockfile-pinned Chromium helper for the
+          # strong setuid sandbox in this disposable runner. Keep the assertions.
+          sudo chown root:root /opt/Bridge/chrome-sandbox
+          sudo chmod 4755 /opt/Bridge/chrome-sandbox
+          test "$(stat -c %u /opt/Bridge/chrome-sandbox)" = 0
+          test "$(stat -c %a /opt/Bridge/chrome-sandbox)" = 4755
+      - name: Disposable TLS trust and authentication secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          fixture_dir="${RUNNER_TEMP}/bridge-perf-fixture"
+          mkdir "${fixture_dir}"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=Bridge Perf CI CA' -keyout "${fixture_dir}/ca.key" -out "${fixture_dir}/ca.crt" 2>/dev/null
+          openssl req -newkey rsa:2048 -nodes -subj '/CN=localhost' -keyout "${fixture_dir}/server.key" -out "${fixture_dir}/server.csr" 2>/dev/null
+          printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "${fixture_dir}/server.ext"
+          openssl x509 -req -in "${fixture_dir}/server.csr" -CA "${fixture_dir}/ca.crt" -CAkey "${fixture_dir}/ca.key" -CAcreateserial -days 1 -extfile "${fixture_dir}/server.ext" -out "${fixture_dir}/server.crt" 2>/dev/null
+          test ! -e "${HOME}/.pki/nssdb/cert9.db"
+          mkdir -p "${HOME}/.pki/nssdb"
+          certutil -N --empty-password -d "sql:${HOME}/.pki/nssdb"
+          certutil -A -d "sql:${HOME}/.pki/nssdb" -n bridge-perf-ephemeral -t 'C,,' -i "${fixture_dir}/ca.crt"
+          for key in JWT_SECRET REFRESH_SECRET AP_ENCRYPTION_KEY FEDERATION_SECRET METRICS_SECRET; do
+            value="$(openssl rand -hex 32)"
+            echo "::add-mask::${value}"
+            printf '%s=%s\n' "${key}" "${value}" >> "${GITHUB_ENV}"
+          done
+          printf 'NODE_EXTRA_CA_CERTS=%s/ca.crt\nBRIDGE_PERF_TLS_KEY=%s/server.key\nBRIDGE_PERF_TLS_CERT=%s/server.crt\nBRIDGE_PERF_CONFIG=%s/config.json\nBRIDGE_PERF_OUTPUT=%s/perf-evidence\n' "${fixture_dir}" "${fixture_dir}" "${fixture_dir}" "${fixture_dir}" "${RUNNER_TEMP}" >> "${GITHUB_ENV}"
+      - name: Real PostgreSQL schema, 10000 persisted messages and test account
+        run: |
+          node -e "require('./server/dist/lib/env')"
+          node server/dist/db/postgres/index.js
+          node server/dist/db/migrate-postgres.js up
+          node scripts/perf-acceptance/seed-disposable.mjs
+      - name: Start actual backend and TLS termination (loopback only)
+        shell: bash
+        run: |
+          umask 077
+          node server/dist/index.js > "${RUNNER_TEMP}/bridge-perf-backend.private.log" 2>&1 &
+          echo "PERF_BACKEND_PID=$!" >> "${GITHUB_ENV}"
+          node scripts/perf-acceptance/tls-proxy.mjs > "${RUNNER_TEMP}/bridge-perf-tls.log" 2>&1 &
+          echo "PERF_TLS_PID=$!" >> "${GITHUB_ENV}"
+          node - <<'NODE'
+          (async () => {
+            const codes = new Set(['ECONNREFUSED','ETIMEDOUT','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT']);
+            const probe = async url => {
+              try {
+                const r=await fetch(url, {signal: AbortSignal.timeout(1000)});
+                return {status:r.status};
+              } catch(e) { return {status:null, code:codes.has(e.cause?.code)?e.cause.code:'TRANSPORT_UNAVAILABLE'}; }
+            };
+            for (let n=0; n<60; n++) {
+              const tls=await probe('https://127.0.0.1:3443/api/health');
+              if (tls.status===200) return;
+              await new Promise(r=>setTimeout(r,1000));
+            }
+            console.error(JSON.stringify({code:'BACKEND_STARTUP_PROBE',direct:await probe('http://127.0.0.1:3000/api/health'),tls:await probe('https://127.0.0.1:3443/api/health')}));
+            throw Error('BACKEND_HEALTH_DEADLINE');
+          })().catch(()=>{ console.error('REAL_BACKEND_NOT_READY'); process.exitCode=1; });
+          NODE
+      - name: Real packaged PA01 (300s) and PA08 (120s), no gaming/SFU claim
+        run: xvfb-run -a -- dbus-run-session -- node scripts/perf-acceptance/packaged.mjs "${BRIDGE_PERF_CONFIG}"
+      - name: Preserve first-attempt non-secret measurements and failure stage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-perf-subset-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/perf-evidence/report.json
+            ${{ runner.temp }}/perf-evidence/resources.jsonl
+            ${{ runner.temp }}/perf-evidence/attempt.json
+          if-no-files-found: warn
+      - name: Stop only fixture processes
+        if: always()
+        shell: bash
+        run: |
+          for pid in "${PERF_BACKEND_PID:-}" "${PERF_TLS_PID:-}"; do
+            if [[ "${pid}" =~ ^[0-9]+$ ]]; then kill "${pid}" 2>/dev/null || true; fi
+          done

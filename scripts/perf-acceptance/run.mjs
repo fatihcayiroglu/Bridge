@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { SCENARIOS, REQUIREMENT_TEXT } from './scenarios.mjs';
 import { validateReport, summarize } from './report.mjs';
 
@@ -47,7 +48,7 @@ export function buildReport(facts = probe()) {
   return { schema: 1, generatedAt: new Date().toISOString(), host: { os: facts.os, release: os.release(), arch: os.arch(), cpus: os.cpus().length }, scenarios };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const report = buildReport();
   const valid = validateReport(report);
   if (!valid.ok) { console.error(`PERF_REPORT_INVALID ${valid.code} ${valid.detail ?? ''}`); process.exit(2); }

@@ -24,7 +24,7 @@ const REAL = { realBridge: true, realSfu: true };
 export const SCENARIOS = [
   { id: 'PA01', title: 'Idle Bridge (signed in, one server)', durationSec: 300,
     needs: { os: ['windows', 'macos', 'linux'], packagedApp: true, account: 1 },
-    metrics: ['cpuPerProcess', 'ram', 'growth'], ...REAL },
+    metrics: ['cpuPerProcess', 'ram', 'growth'], realBridge: true, realSfu: false },
   { id: 'PA02', title: 'Voice chat with 2 participants', durationSec: 300,
     needs: { os: ['windows', 'macos', 'linux'], packagedApp: true, remoteClients: 1, audioDevice: true },
     metrics: ['cpuPerProcess', 'ram', 'netStats', 'mouthToEar', 'audioGlitches'], ...REAL },
