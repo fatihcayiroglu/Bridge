@@ -75,12 +75,17 @@ describe('first run — connect to a server', () => {
     expect(connect.show).toHaveBeenCalledTimes(1);
   });
 
-  it('does not reveal an unfinished or failed first-run page', async () => {
+  it('does not reveal an unfinished or failed first-run page from DOM/load-error events', async () => {
     const { electron } = await loadMain();
     const connect = connectWindowOf(electron);
     connect.webContents.emit('dom-ready');
     connect.webContents.emit('did-fail-load', {}, -2, 'private-load-error', 'file:///private-profile');
     expect(connect.show).not.toHaveBeenCalled();
+  });
+
+  it('still reveals on ready-to-show, before the load fallback fires', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
     connect.emit('ready-to-show');
     expect(connect.show).toHaveBeenCalledTimes(1);
     connect.webContents.emit('did-finish-load');
