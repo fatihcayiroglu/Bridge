@@ -17,6 +17,7 @@ on:
       - codex/activities-3d-role-access-eviction-20261030
       - codex/activities-3d-automatic-role-revocation-20261030
       - codex/activities-3d-two-node-socket-cluster-20261030
+      - codex/activities-3d-production-socket-bootstrap-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
@@ -38,6 +39,9 @@ on:
       - 'server/scripts/social-room-real-pg-jwt-proof.cjs'
       - 'server/scripts/social-room-two-node-redis-pg-proof.cjs'
       - 'server/scripts/social-room-production-socket-two-node-proof.cjs'
+      - 'server/scripts/social-room-real-browser-fixture.cjs'
+      - 'e2e/scripts/social-room-browser-entry.ts'
+      - 'e2e/scripts/social-room-real-browser-webgl-smoke.mjs'
       - '.github/workflows/bridge-social-space-authority.yml'
   workflow_dispatch:
 
@@ -47,7 +51,7 @@ permissions:
 jobs:
   social-authority:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16-alpine
@@ -141,6 +145,19 @@ jobs:
           BRIDGE_AUTO_MIGRATE: 'true'
           BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
         run: cd server && node scripts/social-room-production-socket-two-node-proof.cjs
+      - name: Real Chromium two-user WebGL2 and WebGL1 + production Socket.IO/PG/Redis
+        env:
+          NODE_ENV: integration
+          DATABASE_URL: postgresql://bridge:social_only_test_password@127.0.0.1:5432/bridge_social_3d_test
+          REDIS_URL: redis://127.0.0.1:6379
+          JWT_SECRET: ci_social_3d_access_secret_32_chars_minimum
+          REFRESH_SECRET: ci_social_3d_refresh_secret_32_chars_minimum
+          BRIDGE_AUTO_MIGRATE: 'true'
+          BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
+        run: |
+          cd e2e
+          npm ci --no-audit --no-fund
+          node scripts/social-room-real-browser-webgl-smoke.mjs
       - name: Preserve exact-head first attempt
         if: always()
         uses: actions/upload-artifact@v4

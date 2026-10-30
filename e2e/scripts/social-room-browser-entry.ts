@@ -1,0 +1,86 @@
+/**
+ * Browser-only entrypoint for the E2E harness, NOT loaded by the shipped app.
+ * Uses the REAL production browser SocialClient and WebGL renderer, and a real
+ * socket.io-client connection to the production Socket.IO middleware fixture.
+ */
+import { io } from 'socket.io-client';
+import { startLocalSocialRoom } from '../../client/js/core/activities/social-room-webgl.ts';
+import { joinSocialRoomPreview, type SocialClient } from '../../client/js/core/activities/social-room-client.ts';
+import type { Social3DSnapshot } from '../../client/js/core/activities/social-room-wire.ts';
+
+export function mountSocialBrowser(
+  port: number,
+  token: string,
+  serverId: string,
+  forceWebGL1: boolean,
+): void {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'width:640px;height:400px;display:block';
+  canvas.tabIndex = 0;
+  document.body.replaceChildren(canvas);
+  if (forceWebGL1) {
+    const actual = canvas.getContext.bind(canvas);
+    canvas.getContext = ((kind: string, attrs?: unknown) =>
+      kind === 'webgl2' ? null : actual(kind as 'webgl', attrs as WebGLContextAttributes)) as typeof canvas.getContext;
+  }
+  const state: {
+    status: string;
+    errors: string[];
+    frames: Social3DSnapshot[];
+    api: string;
+    socketId: string | undefined;
+    session: SocialClient | null;
+    socket: ReturnType<typeof io>;
+    room: NonNullable<ReturnType<typeof startLocalSocialRoom>>;
+    lastFrame: Social3DSnapshot | null;
+    dispose: () => void;
+  } = {
+    status: 'waiting-auth',
+    errors: [], frames: [], api: '',
+    socketId: undefined, session: null,
+    socket: null as unknown as ReturnType<typeof io>,
+    room: null as unknown as NonNullable<ReturnType<typeof startLocalSocialRoom>>,
+    lastFrame: null,
+    dispose: () => {},
+  };
+  const room = startLocalSocialRoom(canvas, direction => state.session?.step(direction),
+    () => {
+      state.session?.dispose();
+      state.session = null;
+      room?.leaveOnline();
+      state.status = 'graphics-lost';
+    });
+  if (!room) throw Error('Actual WebGL context and renderer unavailable');
+  state.room = room;
+  state.api = room.graphicsApi;
+  const socket = io('http://127.0.0.1:' + port, {
+    auth: { token }, transports: ['websocket'],
+    reconnection: false, forceNew: true, timeout: 7000,
+  });
+  state.socket = socket;
+  socket.on('connect_error', error => {
+    state.errors.push(String(error?.message || error));
+    state.status = 'auth-error';
+  });
+  socket.on('userAuthenticated', () => {
+    state.socketId = socket.id;
+    state.session = joinSocialRoomPreview(socket, serverId,
+      (frame, ownSocketId) => {
+        state.lastFrame = frame;
+        state.frames.push(frame);
+        return room.setOnlinePeers(frame.peers, ownSocketId);
+      },
+      status => {
+        state.status = status;
+        if (status !== 'online') room.leaveOnline();
+      },
+    );
+  });
+  state.dispose = () => {
+    state.session?.dispose();
+    state.session = null;
+    socket.disconnect();
+    room.dispose();
+  };
+  (window as typeof window & { __bridge3DSmoke?: typeof state }).__bridge3DSmoke = state;
+}
