@@ -22,6 +22,7 @@ on:
       - codex/activities-3d-real-browser-context-recovery-20261030
       - codex/activities-3d-browser-membership-revocation-20261030
       - codex/activities-3d-social-error-ghost-cleanup-20261030
+      - codex/activities-3d-dual-webgl-context-dpr-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
@@ -45,6 +46,7 @@ on:
       - 'server/scripts/social-room-production-socket-two-node-proof.cjs'
       - 'server/scripts/social-room-real-browser-fixture.cjs'
       - 'client/js/core/activities/social-room-client.ts'
+      - 'client/js/core/activities/bridge-activities-panel.ts'
       - 'e2e/scripts/social-room-browser-entry.ts'
       - 'e2e/scripts/social-room-real-browser-webgl-smoke.mjs'
       - '.github/workflows/bridge-social-space-authority.yml'
@@ -91,9 +93,10 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           cd server && npm ci --no-audit --no-fund
-      - name: Strict server and test types
+      - name: Strict server, client and test types
         run: |
           npm run typecheck:server
+          npm run typecheck:client
           cd server && npm run typecheck:test-strict
       - name: Real social-room handler contract tests, zero skipped
         working-directory: server
@@ -150,7 +153,7 @@ jobs:
           BRIDGE_AUTO_MIGRATE: 'true'
           BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
         run: cd server && node scripts/social-room-production-socket-two-node-proof.cjs
-      - name: Real Chromium two-user WebGL2 and WebGL1 + production Socket.IO/PG/Redis
+      - name: Real Chromium two-user WebGL2/WebGL1 and shipped Activities panel + Socket.IO/PG/Redis
         env:
           NODE_ENV: integration
           DATABASE_URL: postgresql://bridge:social_only_test_password@127.0.0.1:5432/bridge_social_3d_test
