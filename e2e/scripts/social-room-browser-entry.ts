@@ -187,6 +187,7 @@ export function mountGolfOpponent(port: number, token: string, serverId: string)
     shoot(degrees: number, power: number) {
       socket.emit('mini-golf:shoot', { serverId, degrees, power });
     },
+    rematch() { socket.emit('mini-golf:rematch', { serverId }); },
     async dispose() {
       // Deterministic cleanup of the previous two-player match before the
       // eight-seat test reuses its server. No blind sleep/retry.
