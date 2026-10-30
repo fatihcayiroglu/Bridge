@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { webdriverRequest } from '../../e2e/ios/webdriver-http.mjs';
 import { transportProgress } from './integration-proxy-evidence.mjs';
+import { requireSecretKeyboardFocus } from './ios-secret-focus.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('../../server/node_modules/pg');
@@ -146,6 +147,17 @@ async function signIn(user, expectedPid) {
   // (run 40717519808: the password still landed in the username field after the touch action above).
   await native('tap', centerOf(secretRect));
   facts.focusBeforePassword = focusSnapshot(loginEvidence(await command('GET', '/source'), user.username));
+  facts.secretFocusTypes = [];
+  facts.secretFocusMethod = await requireSecretKeyboardFocus({
+    activeType: async () => {
+      const active = await command('GET', '/element/active');
+      assert.ok(key(active), 'LOGIN_ACTIVE_ELEMENT_REQUIRED');
+      return command('GET', `/element/${key(active)}/name`);
+    },
+    pressTab: () => command('POST', '/keys', { value: ['\t'] }),
+    evidence: async () => loginEvidence(await command('GET', '/source'), user.username),
+    record: type => facts.secretFocusTypes.push(type),
+  });
   // Element-addressed typing reached the username field in runs 40700229648, 40706730676, 40717519808 and 40725593481, and
   // `mobile: keys` returned 500 (run 40785140974). Type through the keyboard with W3C key actions into the focused field,
   // then require the password in the secret field AND the username untouched; the method used is recorded.

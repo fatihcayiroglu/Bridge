@@ -101,9 +101,13 @@ test('the page-source focus flag is read as true, false or unknown, never as fre
   assert.deepEqual(focusSnapshot({ textFields: [{ focused: 'yes' }] }), { text: [null], secure: [] });
 });
 
-test('the driver taps natively, then records the focus snapshot before typing the password', () => {
+test('the driver records focus and awaits verified secure keyboard focus before typing the password', () => {
   const s = fs.readFileSync(new URL('../scripts/ios-browser-auth.mjs', import.meta.url), 'utf8');
-  assert.match(s, /await native\('tap', centerOf\(secretRect\)\);\s*facts\.focusBeforePassword = focusSnapshot\(loginEvidence\(await command\('GET', '\/source'\), user\.username\)\);\s*(?:\/\/[^\n]*\s*)*await typeIntoFocused\(password\);/);
+  const tap = s.indexOf("await native('tap', centerOf(secretRect))");
+  const snapshot = s.indexOf('facts.focusBeforePassword = focusSnapshot', tap);
+  const gate = s.indexOf('facts.secretFocusMethod = await requireSecretKeyboardFocus', snapshot);
+  const type = s.indexOf('await typeIntoFocused(password)', gate);
+  assert.ok(tap >= 0 && snapshot > tap && gate > snapshot && type > gate);
 });
 
 import { uiSurvey, routeShape, keyActions, assertPasswordLanded } from '../scripts/ios-login-evidence.mjs';
