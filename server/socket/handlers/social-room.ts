@@ -42,6 +42,8 @@ export function registerSocialRoomHandlers(
 ): void {
   // Never trust a client-supplied user ID or socket ID.
   const joined = new Set<string>();
+  const joining = new Set<string>();
+  const canceledJoins = new Set<string>();
   let disconnected = false;
   const error = () => socket.emit('social:error', { code: 'SOCIAL_ROOM_UNAVAILABLE' });
   const publish = (serverId: string, room: SocialRoom) =>
@@ -62,44 +64,66 @@ export function registerSocialRoomHandlers(
     publish(serverId, remaining);
   }
 
-  socket.on('social:join', isolateSocketHandler(socket, 'social:join', async (payload: unknown) => {
-    const serverId = payloadServerId(payload);
-    if (!serverId || disconnected || !await isAuthorized(socket, userId, serverId)) { error(); return; }
-
-    const state = await socialRoomStore.withLock(serverId, async () => {
+  // A close/timeout may arrive while the database or Redis is still handling
+  // social:join. The request must be cancelable before emitting joined/peers.
+  async function dropReservation(serverId: string): Promise<void> {
+    await socket.leave(socialSocketRoom(serverId));
+    joined.delete(serverId);
+    const updated = await socialRoomStore.withLock(serverId, async () => {
       const room = await socialRoomStore.load(serverId);
-      const present = room.peers.some(p => p.socketId === socket.id);
-      if (!present) {
-        if (room.peers.length >= SOCIAL_SPACE_MAX_PEERS) return null;
-        room.peers.push({ socketId: socket.id, userId, x: 0, z: 2.5, lastStepAt: 0 });
-        await socialRoomStore.save(serverId, room);
-      }
+      room.peers = room.peers.filter(p => p.socketId !== socket.id);
+      await socialRoomStore.save(serverId, room);
       return room;
     });
-    if (!state) { socket.emit('social:error', { code: 'SOCIAL_ROOM_FULL' }); return; }
-    if (disconnected) {
-      // Disconnect between state save and socket-room join. A later disconnect
-      // listener might already have run, so explicitly clean this reservation.
-      await socialRoomStore.withLock(serverId, async () => {
-        const room = await socialRoomStore.load(serverId);
-        room.peers = room.peers.filter(p => p.socketId !== socket.id);
-        await socialRoomStore.save(serverId, room);
-      });
+    publish(serverId, updated);
+  }
+
+  socket.on('social:join', isolateSocketHandler(socket, 'social:join', async (payload: unknown) => {
+    const serverId = payloadServerId(payload);
+    if (!serverId || disconnected || joining.has(serverId)) { error(); return; }
+    if (joined.has(serverId)) {
+      // An idempotent join must not mutate/announce old state; recheck current
+      // authority before considering an already joined user present.
+      if (!await isAuthorized(socket, userId, serverId)) await leave(serverId);
       return;
     }
+    joining.add(serverId);
     try {
-      await socket.join(socialSocketRoom(serverId));
-    } catch (err) {
-      await socialRoomStore.withLock(serverId, async () => {
+      if (!await isAuthorized(socket, userId, serverId)) { error(); return; }
+      if (disconnected || canceledJoins.has(serverId)) return;
+
+      const state = await socialRoomStore.withLock(serverId, async () => {
         const room = await socialRoomStore.load(serverId);
-        room.peers = room.peers.filter(p => p.socketId !== socket.id);
-        await socialRoomStore.save(serverId, room);
+        const present = room.peers.some(p => p.socketId === socket.id);
+        if (!present) {
+          if (room.peers.length >= SOCIAL_SPACE_MAX_PEERS) return null;
+          room.peers.push({ socketId: socket.id, userId, x: 0, z: 2.5, lastStepAt: 0 });
+          await socialRoomStore.save(serverId, room);
+        }
+        return room;
       });
-      throw err;
+      if (!state) { socket.emit('social:error', { code: 'SOCIAL_ROOM_FULL' }); return; }
+      if (disconnected || canceledJoins.has(serverId)) {
+        await dropReservation(serverId);
+        return;
+      }
+      try {
+        await socket.join(socialSocketRoom(serverId));
+      } catch (err) {
+        await dropReservation(serverId);
+        throw err;
+      }
+      if (disconnected || canceledJoins.has(serverId)) {
+        await dropReservation(serverId);
+        return;
+      }
+      joined.add(serverId);
+      socket.emit('social:joined', publicSocialRoom(state));
+      publish(serverId, state);
+    } finally {
+      joining.delete(serverId);
+      canceledJoins.delete(serverId);
     }
-    joined.add(serverId);
-    socket.emit('social:joined', publicSocialRoom(state));
-    publish(serverId, state);
   }));
 
   socket.on('social:step', isolateSocketHandler(socket, 'social:step', async (payload: unknown) => {
@@ -126,7 +150,13 @@ export function registerSocialRoomHandlers(
 
   socket.on('social:leave', isolateSocketHandler(socket, 'social:leave', async (payload: unknown) => {
     const serverId = payloadServerId(payload);
-    if (!serverId || !joined.has(serverId)) { error(); return; }
+    if (!serverId) { error(); return; }
+    if (!joined.has(serverId) && joining.has(serverId)) {
+      canceledJoins.add(serverId);
+      socket.emit('social:left', { serverId });
+      return;
+    }
+    if (!joined.has(serverId)) { error(); return; }
     await leave(serverId);
     socket.emit('social:left', { serverId });
   }));
