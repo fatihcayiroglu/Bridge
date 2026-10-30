@@ -58,7 +58,9 @@ export function focusSnapshot(evidence) {
 
 // What is on screen when the system browser never shows a login form (run 40772071912: 9 web views, 0 fields, no known
 // label). Counts by element type plus a fixed allow-list of control names - never text, values or URLs.
-const PLAIN_LABEL = /^[A-Za-z][A-Za-z .,'!?-]*$/;
+const PLAIN_LABELS = new Set([...LABELS, 'Bridge', 'Reload', 'ReloadButton', 'URL', 'Address',
+  'PageFormatMenuButton', 'Format Options', 'BackButton', 'Back', 'ForwardButton', 'Forward',
+  'Safari cannot open the page.', 'Safari Cannot Open the Page', 'Stop']);
 const SURVEY_NAMES = ['Sign in with your browser', 'Continue', 'Cancel', 'Open', 'Allow', 'Done', 'Sign Out', 'Switch account'];
 export function uiSurvey(source) {
   const all = nodes(source);
@@ -70,12 +72,11 @@ export function uiSurvey(source) {
     byType: Object.fromEntries(Object.entries(byType).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12)),
     namesPresent: SURVEY_NAMES.filter(named),
     visibleWebViews: all.filter((n) => n.type === 'XCUIElementTypeWebView' && n.visible === 'true').length,
-    // Run 40774768212: 3 visible web views, "Cancel" present, none of the known login labels. Plain-word UI copy only
-    // (letters, spaces and . , ' ! ? -), at most 40 characters, at most 12 distinct; anything with a digit, underscore,
-    // slash, colon, @ or similar (user names, URLs, tokens) is dropped by the pattern, never printed.
+    // Alphabetic text can itself be a username, password or private message.
+    // Retain fixed UI labels only, never text selected by a character pattern.
     plainLabels: [...new Set(all.filter((n) => ['XCUIElementTypeButton', 'XCUIElementTypeStaticText', 'XCUIElementTypeLink'].includes(n.type))
       .flatMap((n) => [n.name, n.label].filter((v) => typeof v === 'string').map(decode))
-      .filter((v) => v.length > 0 && v.length <= 40 && PLAIN_LABEL.test(v)))].slice(0, 12),
+      .filter((v) => PLAIN_LABELS.has(v)))].slice(0, 12),
   };
 }
 

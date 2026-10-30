@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { transportProgress } from './integration-proxy-evidence.mjs';
 
 const POD_LINE = /\[(ReactNativeCore|ReactNativeDependencies|Cache)\]/;
 export function pick(obj, keys) { return Object.fromEntries(keys.filter((k) => obj && k in obj).map((k) => [k, obj[k]])); }
@@ -48,6 +49,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   console.log('journey ' + JSON.stringify(journeySummary(readJson(join(dir, 'ios-browser-auth.json')))));
   const proxy = join(dir, 'proxy.log');
   console.log('wire ' + JSON.stringify(existsSync(proxy) ? wireSequence(readFileSync(proxy, 'utf8')) : '(no proxy.log)'));
+  console.log('transport ' + JSON.stringify(existsSync(proxy) ? transportProgress(readFileSync(proxy, 'utf8')) : null));
   const pods = join(dir, 'pods.log');
   for (const l of existsSync(pods) ? podCacheLines(readFileSync(pods, 'utf8')) : ['(no pods.log)']) console.log('pods| ' + l);
   console.log('IOS_EVIDENCE_SUMMARY_END');
