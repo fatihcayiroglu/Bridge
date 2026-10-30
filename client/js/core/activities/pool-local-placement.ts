@@ -85,7 +85,7 @@ export function acceptLocalPoolPlacement(
       (!cueChanged && !eightSpotted)) return null;
   for(let i=0;i<active.length;i++)for(let j=i+1;j<active.length;j++)
     if(Math.hypot(active[i]!.x-active[j]!.x,active[i]!.z-active[j]!.z)
-      < 2*POOL_RADIUS+0.002)return null;
+      < 2*POOL_RADIUS+0.001)return null;
   return {
     ...current,
     pocketed:proposed.pocketed,
