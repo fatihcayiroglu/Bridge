@@ -3,7 +3,7 @@ import { POOL_POCKETS, newPoolPractice, strikePool, stepPool,
   type PoolState, type PoolPocketEvent } from '../js/core/activities/pool-practice-physics.ts';
 import { newLocalEightBallRules, type LocalEightBallRules } from
   '../js/core/activities/pool-eight-ball-rules.ts';
-import { declareLocalPoolCall, evaluateLocalPoolCall } from
+import { declareLocalPoolCall, evaluateLocalPoolCall, resolveLocalCalledEightBallShot } from
   '../js/core/activities/pool-called-pocket.ts';
 
 const assigned=(group:'solids'|'stripes'='solids'):LocalEightBallRules=>({
@@ -147,5 +147,95 @@ describe('8-ball called shot/pocket contract: local-only, not an official match'
     const next=strikePool(running,0,30);
     expect(next.pocketEvents).toEqual([]);
     expect(running.pocketEvents).toContainEqual({ballId:1,pocketIndex:0});
+  });
+});
+
+describe('local called-pocket integration: never award turn for the wrong pocket',()=>{
+  it('retains the assigned-group turn only when the called ball enters the selected pocket',()=>{
+    const r=assigned(),b=table();
+    const call=declareLocalPoolCall(r,b,0,'ball',1,0)!;
+    for(const [pocket,expected] of [[0,0],[1,1]] as const){
+      const after=afterShot(b,[{ballId:1,pocketIndex:pocket}]);
+      const result=resolveLocalCalledEightBallShot(r,b,after,call);
+      expect(result?.rules.currentPlayer).toBe(expected);
+      expect(result?.rules.last?.retainedTurn).toBe(pocket===0);
+      expect(result?.rules.phase).toBe('assigned');
+    }
+  });
+  it('a legal safety passes even if the shooter pockets an own-class target',()=>{
+    const r=assigned(),b=table();
+    const safety=declareLocalPoolCall(r,b,0,'safety')!;
+    const result=resolveLocalCalledEightBallShot(r,b,
+      afterShot(b,[{ballId:1,pocketIndex:0}]),safety)!;
+    expect(result.evidence.safety).toBe(true);
+    expect(result.rules.currentPlayer).toBe(1);
+    expect(result.rules.groups).toEqual(r.groups);
+    expect(result.rules.last?.retainedTurn).toBe(false);
+  });
+  it('open table assigns by the CALLED pocket, not the first mixed ball in the physics list',()=>{
+    const r={...newLocalEightBallRules(),phase:'open' as const,shotsResolved:2};
+    const b=table();
+    const call=declareLocalPoolCall(r,b,0,'ball',9,4)!;
+    const a=afterShot(b,[{ballId:1,pocketIndex:0},{ballId:9,pocketIndex:4}]);
+    const result=resolveLocalCalledEightBallShot(r,b,a,call);
+    expect(result?.rules.groups).toEqual(['stripes','solids']);
+    expect(result?.rules.phase).toBe('assigned');
+    expect(result?.rules.currentPlayer).toBe(0);
+    expect(result?.rules.last?.retainedTurn).toBe(true);
+  });
+  it('a mixed-group safety or missed call leaves open-table ownership unassigned',()=>{
+    const r={...newLocalEightBallRules(),phase:'open' as const,shotsResolved:2};
+    const b=table(),events=[{ballId:1,pocketIndex:0},{ballId:9,pocketIndex:1}];
+    const safety=declareLocalPoolCall(r,b,0,'safety')!;
+    const missed=declareLocalPoolCall(r,b,0,'ball',1,5)!;
+    for(const call of [safety,missed]) {
+      const result=resolveLocalCalledEightBallShot(r,b,afterShot(b,events),call);
+      expect(result?.rules.phase).toBe('open');
+      expect(result?.rules.currentPlayer).toBe(1);
+      expect(result?.rules.groups).toEqual([null,null]);
+    }
+  });
+  it('uncalled eight falling in any pocket loses, even if another called shot succeeds',()=>{
+    const r=assigned(),b=table();
+    const call=declareLocalPoolCall(r,b,0,'ball',1,0)!;
+    const result=resolveLocalCalledEightBallShot(r,b,
+      afterShot(b,[{ballId:1,pocketIndex:0},{ballId:8,pocketIndex:5}]),call)!;
+    expect(result.evidence.calledBallInPocket).toBe(true);
+    expect(result.evidence.eightPocketedOutsideCall).toBe(true);
+    expect(result.rules.phase).toBe('finished');
+    expect(result.rules.winner).toBe(1);
+    expect(result.rules.last?.retainedTurn).toBe(false);
+  });
+  it('correctly called eight wins ONLY in the specified pocket after own group clears',()=>{
+    const r=assigned(),b=table([1,2,3,4,5,6,7]);
+    const call=declareLocalPoolCall(r,b,0,'ball',8,2)!;
+    const correct=resolveLocalCalledEightBallShot(r,b,afterShot(b,[
+      {ballId:8,pocketIndex:2}]),call);
+    expect(correct?.rules.winner).toBe(0);
+    expect(correct?.rules.phase).toBe('finished');
+    const wrong=resolveLocalCalledEightBallShot(r,b,afterShot(b,[
+      {ballId:8,pocketIndex:1}]),call);
+    expect(wrong?.rules.winner).toBe(1);
+    expect(wrong?.evidence.eightPocketedOutsideCall).toBe(true);
+  });
+  it('scratch on a called pocket still transfers turn with explicit cue placement required',()=>{
+    const r=assigned(),b=table();
+    const call=declareLocalPoolCall(r,b,0,'ball',1,0)!;
+    const shot=afterShot(b,[{ballId:1,pocketIndex:0},{ballId:0,pocketIndex:3}],true);
+    const result=resolveLocalCalledEightBallShot(r,b,shot,call);
+    expect(result?.evidence.scratched).toBe(true);
+    expect(result?.rules.last?.foul).toBe('scratch');
+    expect(result?.rules.last?.retainedTurn).toBe(false);
+    expect(result?.rules.ballInHand).toBe('anywhere');
+    expect(result?.rules.currentPlayer).toBe(1);
+  });
+  it('a malformed or replayed pocket trace cannot advance local rule state',()=>{
+    const r=assigned(),b=table();
+    const call=declareLocalPoolCall(r,b,0,'ball',1,0)!;
+    const after=afterShot(b,[{ballId:1,pocketIndex:0}]);
+    expect(resolveLocalCalledEightBallShot(r,b,{
+      ...after,pocketEvents:[{ballId:1,pocketIndex:0},{ballId:1,pocketIndex:0}]},call)).toBeNull();
+    expect(resolveLocalCalledEightBallShot(r,b,{...after,status:'moving'},call)).toBeNull();
+    expect(resolveLocalCalledEightBallShot(r,b,after,{...call,shot:4})).toBeNull();
   });
 });
