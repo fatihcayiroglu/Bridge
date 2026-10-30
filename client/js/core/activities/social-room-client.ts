@@ -84,7 +84,11 @@ export function joinSocialRoomPreview(
   function onError(raw?: unknown): void {
     if (!disposed && raw && typeof raw === 'object' &&
         'code' in raw && typeof raw.code === 'string') {
-      stop('unavailable', false);
+      // A server-side step/protocol error can leave this socket in the
+      // authoritative 3D roster. Tear down the admitted session explicitly,
+      // rather than showing an offline UI while friends see a ghost avatar.
+      // An admission error before join needs no redundant leave.
+      stop('unavailable', joined);
     }
   }
   function onLeft(raw?: unknown): void {

@@ -172,6 +172,37 @@ try {
     return state?.status === 'online' && state.lastFrame?.peers.length === 2;
   }, null, { timeout: 10000 })));
 
+  // Deliberately send an invalid movement intent over Bob's REAL
+  // authenticated Socket.IO transport. The production handler replies with
+  // social:error but does not itself remove a still-authorized avatar.
+  // The production client must send social:leave and remove that Redis peer.
+  await bob.evaluate(() => {
+    const state = window.__bridge3DSmoke;
+    state.socket.emit('social:step', {
+      serverId: state.lastFrame.serverId, direction: 'teleport',
+    });
+  });
+  await bob.waitForFunction(() => {
+    const state = window.__bridge3DSmoke;
+    return state?.status === 'unavailable' &&
+      state.session?.active === false && state.socket.connected &&
+      state.room.isGraphicsAvailable;
+  }, null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+  assert.equal(await alice.evaluate(() =>
+    window.__bridge3DSmoke.lastFrame.peers.length), 1,
+  'server-side protocol rejection must not leave a ghost avatar');
+
+  // The same authenticated socket can join again by explicit user intent,
+  // after the server acknowledged authoritative leave/roster cleanup.
+  await bob.evaluate(() => window.__bridge3DSmoke.rejoin());
+  await Promise.all([alice, bob].map(page => page.waitForFunction(() => {
+    const state = window.__bridge3DSmoke;
+    return state?.status === 'online' && state.lastFrame?.peers.length === 2;
+  }, null, { timeout: 10000 })));
+
   // Real PostgreSQL ban -> actual Bridge membership eviction -> real
   // Socket.IO membership:revoked. No synthetic socket event is injected.
   const revoked = new Promise((resolve, reject) => {
@@ -224,6 +255,7 @@ try {
   assert.ok(postDeny.subsequent.every(count => count === 1),
     'a revoked user must not be broadcast back into the room');
 
+  console.log('SOCIAL_3D_REAL_BROWSER_SERVER_ERROR_LEAVE:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MEMBERSHIP_REVOKED:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_WEBGL_TWO_USERS:2/2:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MOVEMENT_AND_LEAVE:2/2:0_skipped');
