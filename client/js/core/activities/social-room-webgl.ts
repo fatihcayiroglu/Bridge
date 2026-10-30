@@ -2,16 +2,21 @@ import {
   moveRoomAvatar, socialRoomAvatarGeometry, staticSocialRoomGeometry,
   type RoomPosition,
 } from './social-room-geometry.ts';
+import type { Social3DPeer } from './social-room-wire.ts';
 
 /**
  * Actual WebGL-rendered third-person 3D room, local-only proof of concept.
  * No remote libraries/assets, no sockets, no identity, no mic permission.
- * A multiplayer feature must not reuse client-owned coordinates as authority.
+ * An optional network controller can supply authoritative positions and
+ * send discrete movement intent; the renderer NEVER publishes coordinates.
  */
 export type RoomDirection = 'forward' | 'back' | 'left' | 'right';
 export interface SocialRoomHandle {
   dispose(): void;
   setDirection(direction: RoomDirection, pressed: boolean): void;
+  /** The caller must validate the bounded server snapshot before calling. */
+  setOnlinePeers(peers: readonly Social3DPeer[], ownSocketId: string): boolean;
+  leaveOnline(): void;
 }
 
 function perspective(aspect: number): Float32Array {
@@ -60,7 +65,10 @@ function compileShader(gl: WebGLRenderingContext, kind: number, source: string):
   return shader;
 }
 
-export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandle | null {
+export function startLocalSocialRoom(
+  canvas: HTMLCanvasElement,
+  onDirectionStep?: (direction: RoomDirection) => void,
+): SocialRoomHandle | null {
   const context = canvas.getContext('webgl', { alpha: false, antialias: true, powerPreference: 'low-power' });
   if (!context) return null;
   // A narrowed local captured by RAF callbacks; DOM getContext() is nullable.
@@ -101,6 +109,9 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
 
   const pressed = new Set<RoomDirection>();
   let avatar: RoomPosition = { x: 0, z: 2.5 };
+  let onlinePeers: readonly Social3DPeer[] | null = null;
+  let ownSocketId: string | null = null;
+  let lastNetworkStep = 0;
   let avatarChanged = true;
   let avatarVertexCount = 0;
   let disposed = false;
@@ -123,10 +134,17 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
     let dx = Number(pressed.has('right')) - Number(pressed.has('left'));
     let dz = Number(pressed.has('back')) - Number(pressed.has('forward'));
     if (dx !== 0 || dz !== 0) {
-      const scale = Math.hypot(dx, dz);
-      dx /= scale; dz /= scale;
-      avatar = moveRoomAvatar(avatar, dx * delta * 3, dz * delta * 3);
-      avatarChanged = true;
+      if (onlinePeers !== null && onDirectionStep && timestamp - lastNetworkStep >= 350) {
+        const direction: RoomDirection = Math.abs(dx) >= Math.abs(dz)
+          ? (dx > 0 ? 'right' : 'left')
+          : (dz > 0 ? 'back' : 'forward');
+        lastNetworkStep = timestamp;
+        onDirectionStep(direction); // intent only; coordinates remain server-owned
+      } else if (onlinePeers === null) {
+        const scale = Math.hypot(dx, dz);
+        avatar = moveRoomAvatar(avatar, dx / scale * delta * 3, dz / scale * delta * 3);
+        avatarChanged = true;
+      }
     }
     // ~30 FPS cap; the host does not render while the room tab is hidden.
     if (!lastDraw || timestamp - lastDraw >= 33) {
@@ -145,10 +163,16 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
       ));
       renderBuffer(staticBuffer, staticData.length / 6);
       if (avatarChanged) {
-        const mesh = socialRoomAvatarGeometry(avatar);
+        const meshes = onlinePeers === null
+          ? [socialRoomAvatarGeometry(avatar)]
+          : onlinePeers.map(peer => socialRoomAvatarGeometry({ x: peer.x, z: peer.z }));
+        const count = meshes.reduce((sum, mesh) => sum + mesh.length, 0);
+        const combined = new Float32Array(count);
+        let offset = 0;
+        for (const mesh of meshes) { combined.set(mesh, offset); offset += mesh.length; }
         gl.bindBuffer(gl.ARRAY_BUFFER, avatarBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, mesh, gl.DYNAMIC_DRAW);
-        avatarVertexCount = mesh.length / 6;
+        gl.bufferData(gl.ARRAY_BUFFER, combined, gl.DYNAMIC_DRAW);
+        avatarVertexCount = count / 6;
         avatarChanged = false;
       }
       renderBuffer(avatarBuffer, avatarVertexCount);
@@ -193,9 +217,10 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
     if (animationId) cancelAnimationFrame(animationId);
     animationId = 0;
   }
+  function onBlur(): void { pressed.clear(); }
   canvas.addEventListener('keydown', onKeyDown);
   canvas.addEventListener('keyup', onKeyUp);
-  canvas.addEventListener('blur', () => pressed.clear());
+  canvas.addEventListener('blur', onBlur);
   canvas.addEventListener('webglcontextlost', onContextLost);
   document.addEventListener('visibilitychange', onVisibility);
   resume();
@@ -205,6 +230,23 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
       if (down) pressed.add(direction);
       else pressed.delete(direction);
     },
+    setOnlinePeers(peers, selfId) {
+      if (disposed || !selfId || peers.length > 16 || !peers.some(p => p.socketId === selfId)) return false;
+      if (peers.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.z) || Math.abs(p.x) > 5.6 || Math.abs(p.z) > 5.2)) return false;
+      onlinePeers = peers.map(p => ({ ...p }));
+      ownSocketId = selfId;
+      const me = onlinePeers.find(p => p.socketId === ownSocketId)!;
+      avatar = { x: me.x, z: me.z };
+      avatarChanged = true;
+      return true;
+    },
+    leaveOnline() {
+      onlinePeers = null;
+      ownSocketId = null;
+      lastNetworkStep = 0;
+      avatarChanged = true;
+      pressed.clear();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -212,6 +254,7 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
       if (animationId) cancelAnimationFrame(animationId);
       canvas.removeEventListener('keydown', onKeyDown);
       canvas.removeEventListener('keyup', onKeyUp);
+      canvas.removeEventListener('blur', onBlur);
       canvas.removeEventListener('webglcontextlost', onContextLost);
       document.removeEventListener('visibilitychange', onVisibility);
       gl.deleteBuffer(staticBuffer); gl.deleteBuffer(avatarBuffer);
