@@ -8,7 +8,7 @@ import {
 } from '../js/core/activities/pool-eight-ball-rules.ts';
 
 type Options={
-  pocket?:number[]; first?:number|null; rail?:boolean; scratch?:boolean;
+  pocket?:readonly number[]; first?:number|null; rail?:boolean; scratch?:boolean;
 };
 function shot(before:PoolState, o:Options={}) {
   const newly=new Set(o.pocket??[]);
