@@ -110,6 +110,24 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     expect(statuses).toHaveBeenCalledWith('unavailable');
     expect(t.count('mini-golf:leave')).toBe(1);
   });
+  it('accepts eight legitimate seats and rejects a ninth seat from the server', () => {
+    const t=transport(), statuses=vi.fn();
+    const session=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    const players=Array.from({length:8},(_,i)=>({
+      userId:i===0?'alice':'g'+i,x:0,z:3.6,strokes:0,won:false,
+    }));
+    t.incoming('mini-golf:state',{...waiting,revision:5,players});
+    expect(session.match?.players).toHaveLength(8);
+    expect(session.start()).toBe(true);
+    t.incoming('mini-golf:state',{...playing,revision:6,players});
+    expect(session.match?.phase).toBe('playing');
+    session.dispose();
+    const second=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    t.incoming('mini-golf:state',{...waiting,players:[...players,
+      {userId:'g8',x:0,z:3.6,strokes:0,won:false}]});
+    expect(second.active).toBe(false);
+    expect(statuses).toHaveBeenCalledWith('invalid');
+  });
   it('times out pending admissions and leaves without creating a ghost session', () => {
     vi.useFakeTimers();
     const t=transport(), statuses=vi.fn();
