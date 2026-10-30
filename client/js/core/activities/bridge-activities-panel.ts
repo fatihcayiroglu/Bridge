@@ -36,6 +36,7 @@ const translations = {
     golfStart: 'Maçı başlat (2–8 kişi)', golfLobby: 'Bekleme odası',
     golfWaitStart: 'Maçın başlaması bekleniyor…',
     golfRematch: 'Rövanşa hazır', golfRematchReady: 'Rövanş onayları', golfRematchMarked: 'Rövanşa onay verdin',
+    golfRankings: 'Raund sonuçları', golfRank: 'Sıra', golfStrokeLimit: 'Vuruş sınırı',
     golfReconnecting: 'Bağlantı yeniden kuruluyor', golfPaused: 'Oyuncu yeniden bağlanıyor · vuruşlar geçici olarak durduruldu.',
     socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
     roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
@@ -71,6 +72,7 @@ const translations = {
     golfStart: 'Start match (2–8 players)', golfLobby: 'Lobby',
     golfWaitStart: 'Waiting for host to start…',
     golfRematch: 'Ready for rematch', golfRematchReady: 'Rematch confirmations', golfRematchMarked: 'You accepted the rematch',
+    golfRankings: 'Round results', golfRank: 'Place', golfStrokeLimit: 'Stroke limit',
     golfReconnecting: 'Reconnecting', golfPaused: 'A player is reconnecting · shots temporarily paused.',
     socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
     roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
@@ -183,6 +185,9 @@ function showMiniGolf(container: HTMLElement): void {
   onlineStatus.setAttribute('role','status');
   onlineStatus.setAttribute('aria-live','polite');
   const scoreboard = element('ol', 'bridge-mini-golf-scoreboard');
+  const resultsHeading = element('h4', 'bridge-mini-golf-results-heading', s.golfRankings);
+  const results = element('ul', 'bridge-mini-golf-results');
+  resultsHeading.hidden = true;
   const startButton = makeButton(s.golfStart, 'bridge-room-direction bridge-mini-golf-start', () => {
     onlineGolf?.start();
   });
@@ -195,6 +200,18 @@ function showMiniGolf(container: HTMLElement): void {
   let joiningOnline = false;
   function updateMatch(match: OnlineGolfMatch): void {
     scoreboard.replaceChildren();
+    results.replaceChildren();
+    resultsHeading.hidden = match.phase !== 'finished';
+    if (match.phase === 'finished') {
+      for (const item of match.results) {
+        const seat = match.players.findIndex(p => p.userId === item.userId) + 1;
+        const description = s.golfRank + ' ' + item.rank + ' · ' +
+          s.golfPlayer + ' ' + seat + (item.userId === match.you ? ' ' + s.golfYou : '') +
+          ' · ' + s.golfStrokes + ': ' + item.strokes +
+          ' · ' + (item.holed ? s.golfGoal : s.golfStrokeLimit);
+        results.append(element('li', '', description));
+      }
+    }
     match.players.forEach((p, index) => {
       const label = s.golfPlayer + ' ' + (index + 1) +
         (p.userId === match.you ? ' ' + s.golfYou : '') +
@@ -250,6 +267,8 @@ function showMiniGolf(container: HTMLElement): void {
     onlineGolf = null;
     miniGolf?.leaveOnline();
     scoreboard.replaceChildren();
+    results.replaceChildren();
+    resultsHeading.hidden = true;
     startButton.hidden = true;
     rematchButton.hidden = true;
     onlineButton.textContent = s.golfJoin;
@@ -311,7 +330,8 @@ function showMiniGolf(container: HTMLElement): void {
   }
   controls.append(aimLabel, powerLabel, shoot, reset);
   container.append(back, heading, help, canvas, status, controls,
-    onlineHelp, onlineStatus, onlineButton, startButton, rematchButton, scoreboard);
+    onlineHelp, onlineStatus, onlineButton, startButton, rematchButton,
+    scoreboard, resultsHeading, results);
   try {
     miniGolf = startMiniGolfPractice(canvas, update, () => {
       onlineGolf?.dispose();
