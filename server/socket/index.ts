@@ -35,6 +35,7 @@ import { bindVoiceEvictionClusterControl, registerLocalVoiceEvictor, registerLoc
 import { evictLocalVoiceSessions, revokeLocalVoicePublishing } from './voiceEviction';
 // Sprint 82: Yeni handler import'ları
 import { registerActivityHandlers }      from './handlers/activities';
+import { registerSocialRoomHandlers } from './handlers/social-room';
 import { registerSuperReactionHandlers } from './handlers/super-reactions';
 import { registerClipHandlers }          from './handlers/clips';
 import { registerDrawTogetherHandlers }  from './handlers/activities/draw-together'; // Sprint 83
@@ -353,6 +354,10 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
 
     // Sprint 82: Activities, Super Reactions, Clips
     registerActivityHandlers(rateLimitedSocket, io, user._id);
+    // Opt-in protocol only; social-room presence is not yet a shipped product.
+    if (process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER === '1') {
+      registerSocialRoomHandlers(rateLimitedSocket, io, user._id);
+    }
     registerSuperReactionHandlers(rateLimitedSocket, io, user._id);
     registerClipHandlers(rateLimitedSocket, user._id);
     // Sprint 83: Draw Together
