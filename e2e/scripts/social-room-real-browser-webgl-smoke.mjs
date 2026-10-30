@@ -60,7 +60,7 @@ try {
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
   async function openSession(token, webgl1, expectedPeers) {
-    const context = await browser.newContext({ viewport: { width: 770, height: 520 } });
+    const context = await browser.newContext({ viewport: { width: 770, height: 520 }, deviceScaleFactor: 3 });
     const page = await context.newPage();
     pages.push({ page, context });
     await page.goto('http://127.0.0.1:' + fixture.port + '/');
@@ -106,6 +106,28 @@ try {
   assert.deepEqual(both[0].ids, both[1].ids);
   assert.equal(both[0].ids.length, 2);
 
+  // A real 3x-DPR Chromium page must cap the framebuffer to the selected
+  // quality budget, instead of allocating a potentially enormous WebView.
+  // 640x400 CSS pixels: low 1x, high 2x, balanced 1.5x despite actual DPR=3.
+  for (const [quality, width, height] of [
+    ['low', 640, 400],
+    ['high', 1280, 800],
+    ['balanced', 960, 600],
+  ]) {
+    await alice.evaluate(q => window.__bridge3DSmoke.room.setQuality(q), quality);
+    await alice.waitForFunction(([w, h]) => {
+      const canvas = document.querySelector('canvas');
+      return canvas.width === w && canvas.height === h;
+    }, [width, height], { timeout: 12000 });
+    const render = await alice.evaluate(() => ({
+      actualDpr: window.devicePixelRatio,
+      width: document.querySelector('canvas').width,
+      height: document.querySelector('canvas').height,
+    }));
+    assert.equal(render.actualDpr, 3, 'real high-DPR browser must be used');
+    assert.deepEqual([render.width, render.height], [width, height]);
+  }
+
   const ownId = await alice.evaluate(() => window.__bridge3DSmoke.socketId);
   await alice.evaluate(() => window.__bridge3DSmoke.session.step('right'));
   await bob.waitForFunction(id => {
@@ -113,6 +135,43 @@ try {
     const peer = s.lastFrame?.peers.find(p => p.socketId === id);
     return Boolean(peer && peer.x === 0.35 && peer.z === 2.5);
   }, ownId, { timeout: 10000 });
+
+  // WebGL2 is the default desktop path; losing this real GPU context must
+  // remove Alice from Bob's authoritative Redis/Socket.IO roster. Recovery
+  // recreates a working GLSL ES 3.00 program but may NOT silently rejoin.
+  await alice.evaluate(() => {
+    const canvas = document.querySelector('canvas');
+    const gl = canvas.getContext('webgl2');
+    const lose = gl?.getExtension('WEBGL_lose_context');
+    if (!lose) throw Error('Real Chromium WebGL2 context-loss extension missing');
+    window.__bridge3DWebGL2Restore = () => lose.restoreContext();
+    lose.loseContext();
+  });
+  await alice.waitForFunction(() => {
+    const s = window.__bridge3DSmoke;
+    return s?.status === 'graphics-lost' &&
+      !s.room.isGraphicsAvailable && s.session === null && s.socket.connected;
+  }, null, { timeout: 10000 });
+  await bob.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+
+  await alice.evaluate(() => window.__bridge3DWebGL2Restore());
+  await alice.waitForFunction(() => {
+    const s = window.__bridge3DSmoke;
+    const gl = document.querySelector('canvas').getContext('webgl2');
+    return s.room.isGraphicsAvailable &&
+      Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)) &&
+      s.session === null && s.status === 'graphics-lost' && s.socket.connected;
+  }, null, { timeout: 10000 });
+  assert.equal(await bob.evaluate(() =>
+    window.__bridge3DSmoke.lastFrame.peers.length), 1,
+  'WebGL2 restoration must not resurrect presence');
+  await alice.evaluate(() => window.__bridge3DSmoke.rejoin());
+  await Promise.all([alice, bob].map(page => page.waitForFunction(() => {
+    const s = window.__bridge3DSmoke;
+    return s?.status === 'online' && s.lastFrame?.peers.length === 2;
+  }, null, { timeout: 10000 })));
 
   // Lose the REAL WebGL1 context while Bob is online. This must tear down
   // the authoritative socket-room membership, not just hide the GPU pixels.
@@ -260,6 +319,8 @@ try {
   console.log('SOCIAL_3D_REAL_BROWSER_WEBGL_TWO_USERS:2/2:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MOVEMENT_AND_LEAVE:2/2:0_skipped');
   console.log('SOCIAL_3D_REAL_WEBGL1_CONTEXT_LOSS_REJOIN:1/1:0_skipped');
+  console.log('SOCIAL_3D_REAL_WEBGL2_CONTEXT_LOSS_REJOIN:1/1:0_skipped');
+  console.log('SOCIAL_3D_REAL_BROWSER_DPR_QUALITY_BOUNDS:3/3:0_skipped');
 } finally {
   for (const { page, context } of pages) {
     try { await page.evaluate(() => window.__bridge3DSmoke?.dispose()); } catch {}
