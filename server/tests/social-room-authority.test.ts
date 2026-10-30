@@ -212,7 +212,6 @@ describe('3D Social Space authority and presence', () => {
     // captured the old generation and is blocked on actual membership lookup.
     await membershipStarted;
     await socialRoomStore.withLock(sid, () => socialRoomStore.markRevocationFence(sid, 'revoked'));
-    s.rooms.delete('server:' + sid);
     allowMembership({ userId: 'revoked', banned: false });
     await pending;
     expect(last(s, 'social:joined')).toBeUndefined();
@@ -241,7 +240,6 @@ describe('3D Social Space authority and presence', () => {
     // On another node the revoker can advance the shared Redis generation
     // while this socket's adapter is still processing its join.
     await socialRoomStore.withLock(sid, () => socialRoomStore.markRevocationFence(sid, 'revoked'));
-    s.rooms.delete('server:' + sid);
     releaseJoin();
     await pending;
     expect(last(s, 'social:joined')).toBeUndefined();
