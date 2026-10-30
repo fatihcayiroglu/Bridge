@@ -725,6 +725,16 @@ try {
     null, { timeout: 12000 });
   await opponentPage.evaluate(() => window.__miniGolfOpponent.join());
   await opponentPage.waitForFunction(() =>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='waiting' &&
+    window.__miniGolfOpponent.states.at(-1)?.players.length===2,
+    null, { timeout: 12000 });
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===2 &&
+    !!document.querySelector('.bridge-mini-golf-start:not([hidden])'),
+    null, { timeout: 12000 });
+  await fullPage.locator('.bridge-mini-golf-start').click();
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.sync());
+  await opponentPage.waitForFunction(() =>
     window.__miniGolfOpponent.states.at(-1)?.phase==='playing',
     null, { timeout: 12000 });
   await fullPage.waitForFunction(() =>
