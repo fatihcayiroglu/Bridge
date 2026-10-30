@@ -1,0 +1,199 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { showBridgeActivities } from '../js/core/activities/bridge-activities-panel.ts';
+import { BridgeRegistry } from '../js/core/bridge-registry.ts';
+import { startMiniGolfPractice } from '../js/core/activities/mini-golf-webgl.ts';
+import { startPoolPractice } from '../js/core/activities/pool-practice-webgl.ts';
+import { startLocalSocialRoom } from '../js/core/activities/social-room-webgl.ts';
+import { joinSocialRoomPreview } from '../js/core/activities/social-room-client.ts';
+import { joinOnlineMiniGolf } from '../js/core/activities/mini-golf-client.ts';
+
+const callbacks = vi.hoisted(() => ({
+  lost: null as null | (()=>void), restored: null as null | (()=>void),
+  quality: vi.fn(),direction:vi.fn(),roomLeave:vi.fn(),
+}));
+vi.mock('../js/core/exclusive-surface.ts', () => ({ closeExclusivePeers: vi.fn() }));
+vi.mock('../js/core/bridge-registry.ts', () => ({ BridgeRegistry: {
+  register: vi.fn(),call: vi.fn(():unknown => null),get: vi.fn(():unknown => null),
+} }));
+vi.mock('../js/core/activities/mini-golf-webgl.ts', () => ({
+  startMiniGolfPractice: vi.fn((_canvas:HTMLCanvasElement,onState:(s:unknown)=>void,onLost?:()=>void)=>{
+    let state={x:0,z:3.6,vx:0,vz:0,strokes:0,status:'ready'};
+    callbacks.lost=onLost??null;onState(state);
+    return {
+      get state(){return state;},get isGraphicsAvailable(){return true;},
+      shoot:vi.fn((_a:number,_b:number)=>{
+        if(state.status!=='ready')return false;
+        state={...state,strokes:state.strokes+1,status:'won'};
+        onState(state);return true;
+      }),
+      reset:vi.fn(()=>{state={x:0,z:3.6,vx:0,vz:0,strokes:0,status:'ready'};onState(state);}),
+      setAuthoritativeBall:vi.fn(()=>true),
+      leaveOnline:vi.fn(()=>{state={x:0,z:3.6,vx:0,vz:0,strokes:0,status:'ready'};onState(state);}),
+      dispose:vi.fn(),
+    };
+  }),
+}));
+vi.mock('../js/core/activities/pool-practice-webgl.ts', () => ({
+  startPoolPractice: vi.fn((_canvas:HTMLCanvasElement,onState:(s:unknown)=>void,onLost?:()=>void,onRestored?:()=>void)=>{
+    let state={shots:0,pocketed:0,scratches:0,status:'ready',balls:[]};
+    callbacks.lost=onLost??null;callbacks.restored=onRestored??null;onState(state);
+    return {
+      get state(){return state;},get isGraphicsAvailable(){return true;},
+      shoot:vi.fn((_a:number,_b:number)=>{
+        if(state.status!=='ready')return false;
+        state={...state,shots:state.shots+1,status:'moving'};onState(state);return true;
+      }),
+      reset:vi.fn(()=>{state={shots:0,pocketed:0,scratches:0,status:'ready',balls:[]};onState(state);}),
+      dispose:vi.fn(),
+    };
+  }),
+}));
+vi.mock('../js/core/activities/social-room-webgl.ts', () => ({
+  startLocalSocialRoom: vi.fn((_canvas:HTMLCanvasElement,_step:unknown,onLost?:()=>void,onRestored?:()=>void)=>{
+    callbacks.lost=onLost??null;callbacks.restored=onRestored??null;
+    return {
+      graphicsApi:'webgl2',get isGraphicsAvailable(){return true;},
+      setDirection:callbacks.direction,setQuality:callbacks.quality,
+      setOnlinePeers:vi.fn(()=>true),leaveOnline:callbacks.roomLeave,dispose:vi.fn(),
+    };
+  }),
+}));
+vi.mock('../js/core/activities/social-room-client.ts', () => ({
+  joinSocialRoomPreview: vi.fn((_socket:unknown,_server:string,onSnapshot:(s:unknown,id:string)=>boolean,
+    onStatus:(status:'online')=>void)=>{
+    onStatus('online');
+    onSnapshot({ serverId:'server1',peers:[{socketId:'socket1',userId:'alice',x:0,z:0}] },'socket1');
+    return {active:true,dispose:vi.fn(),step:vi.fn()};
+  }),
+}));
+vi.mock('../js/core/activities/mini-golf-client.ts', () => ({
+  joinOnlineMiniGolf: vi.fn((_socket:unknown,_server:string,onUpdate:(s:unknown)=>void,
+    onStatus:(status:'waiting')=>void)=>{
+    const match={
+      serverId:'server1',revision:1,phase:'waiting',you:'alice',turnUserId:null,
+      minPlayers:2,maxPlayers:8,rematchReady:[],results:[],
+      players:[{userId:'alice',x:0,z:3.6,strokes:0,won:false,reconnecting:false}],
+    };
+    onUpdate(match);onStatus('waiting');
+    return {active:true,match,busy:false,shoot:vi.fn(()=>true),start:vi.fn(()=>true),
+      rematch:vi.fn(()=>true),refresh:vi.fn(),dispose:vi.fn()};
+  }),
+}));
+
+function click(selector:string) {
+  const button=document.querySelector<HTMLButtonElement>(selector);
+  expect(button).not.toBeNull();
+  button!.click();
+}
+function setServer(socket:unknown) {
+  vi.mocked(BridgeRegistry.call).mockImplementation((name:string)=>name==='getCurrentServer'?{_id:'server1'}:undefined);
+  vi.mocked(BridgeRegistry.get).mockImplementation((name:string)=>name==='socket'?socket:null);
+}
+beforeEach(() => {
+  document.documentElement.lang='en';
+  document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
+  callbacks.lost=null;callbacks.restored=null;
+  vi.clearAllMocks();
+});
+afterEach(() => {
+  document.dispatchEvent(new Event('bridge:auth-logout'));
+  document.body.replaceChildren();
+});
+
+describe('real Activities panel DOM behavior, with isolated renderer/socket unit doubles',()=>{
+  it('does not open activities over an unauthenticated or hidden shell',()=>{
+    document.getElementById('app')!.style.display='none';
+    showBridgeActivities('games');
+    expect(document.querySelector('[role=dialog]')).toBeNull();
+    document.getElementById('app')!.remove();
+    showBridgeActivities('social');
+    expect(document.querySelector('[role=dialog]')).toBeNull();
+  });
+  it('opens ten cards and independently runs both local practice panels without a socket',()=>{
+    document.getElementById('origin')!.focus();
+    showBridgeActivities();
+    expect(document.querySelectorAll('.bridge-activities-card')).toHaveLength(10);
+    expect(document.querySelectorAll('.bridge-activities-solo')).toHaveLength(2);
+    expect(document.getElementById('app')!.inert).toBe(true);
+    expect(joinOnlineMiniGolf).not.toHaveBeenCalled();
+    click('[data-game-id="eight-ball-pool"]');
+    expect(document.querySelector('canvas.bridge-pool-canvas')).not.toBeNull();
+    expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Shots: 0');
+    click('.bridge-pool-shoot');
+    expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Shots: 1');
+    click('.bridge-pool-reset');
+    expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Shots: 0');
+    click('.bridge-pool-back');
+    click('[data-game-id="mini-golf"]');
+    expect(document.querySelector('.bridge-mini-golf-status')?.textContent).toContain('Strokes: 0');
+    click('.bridge-mini-golf-shoot');
+    expect(document.querySelector('.bridge-mini-golf-status')?.textContent).toContain('Strokes: 1');
+    click('.bridge-mini-golf-reset');
+    expect(document.querySelector('.bridge-mini-golf-status')?.textContent).toContain('Strokes: 0');
+    click('.bridge-mini-golf-back');
+    expect(document.querySelectorAll('.bridge-activities-card')).toHaveLength(10);
+    expect(startMiniGolfPractice).toHaveBeenCalledOnce();
+    expect(startPoolPractice).toHaveBeenCalledOnce();
+    click('.bridge-activities-close');
+    expect(document.querySelector('[role=dialog]')).toBeNull();
+    expect(document.getElementById('app')!.inert).toBe(false);
+    expect(document.activeElement?.id).toBe('origin');
+  });
+  it('rejects online admission until a real selected server and connected transport exist',()=>{
+    showBridgeActivities();
+    click('[data-game-id="mini-golf"]');
+    click('.bridge-mini-golf-online-button');
+    expect(joinOnlineMiniGolf).not.toHaveBeenCalled();
+    expect(document.querySelector('.bridge-mini-golf-online-status')?.textContent).toContain('Select a server');
+    click('.bridge-mini-golf-back');
+    click('[data-tab="social"]');
+    expect(document.querySelector('canvas.bridge-activities-canvas')).not.toBeNull();
+    const quality=document.querySelector<HTMLSelectElement>('.bridge-room-quality')!;
+    quality.value='high';quality.dispatchEvent(new Event('change'));
+    expect(callbacks.quality).toHaveBeenCalledWith('high');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-activities-body > button.bridge-room-direction')?.disabled).toBe(true);
+    expect(joinSocialRoomPreview).not.toHaveBeenCalled();
+    callbacks.lost?.();
+    expect(document.querySelector('.bridge-room-error')?.textContent).toContain('lost');
+    callbacks.restored?.();
+    expect(document.querySelector('.bridge-room-error')?.textContent).toContain('restored');
+    click('[data-tab="games"]');
+    expect(document.querySelectorAll('.bridge-activities-card')).toHaveLength(10);
+    expect(startLocalSocialRoom).toHaveBeenCalledOnce();
+  });
+  it('takes an explicit online choice only with a valid server/socket and closes on logout',()=>{
+    const socket={connected:true,id:'socket1',on:vi.fn(),off:vi.fn(),emit:vi.fn()};
+    setServer(socket);
+    showBridgeActivities('social');
+    const join=document.querySelector<HTMLButtonElement>('.bridge-activities-body > button.bridge-room-direction')!;
+    expect(join.disabled).toBe(false);
+    join.click();
+    expect(joinSocialRoomPreview).toHaveBeenCalledOnce();
+    expect(document.querySelector('.bridge-activities-body')?.textContent).toContain('In shared room');
+    join.click();
+    expect(callbacks.roomLeave).toHaveBeenCalled();
+    click('[data-tab="games"]');
+    click('[data-game-id="mini-golf"]');
+    click('.bridge-mini-golf-online-button');
+    expect(joinOnlineMiniGolf).toHaveBeenCalledOnce();
+    expect(document.querySelectorAll('.bridge-mini-golf-scoreboard li')).toHaveLength(1);
+    expect(document.querySelector('.bridge-mini-golf-heading')?.textContent).toContain('2–8');
+    document.dispatchEvent(new Event('bridge:auth-logout'));
+    expect(document.querySelector('.bridge-activities-overlay')).toBeNull();
+  });
+  it('supports social arrow movement, Escape and backdrop exit without leaving modal state behind',()=>{
+    showBridgeActivities('social');
+    const forward=document.querySelector<HTMLButtonElement>('.bridge-room-direction')!;
+    forward.dispatchEvent(new PointerEvent('pointerdown', {pointerId:1,pointerType:'mouse',button:0}));
+    forward.dispatchEvent(new PointerEvent('pointerup', {pointerId:1,pointerType:'mouse'}));
+    click('[data-tab="games"]');
+    showBridgeActivities('social');
+    expect(document.querySelectorAll('.bridge-activities-overlay')).toHaveLength(1);
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+    expect(document.querySelector('.bridge-activities-overlay')).toBeNull();
+    showBridgeActivities('games');
+    const overlay=document.querySelector<HTMLElement>('.bridge-activities-overlay')!;
+    overlay.dispatchEvent(new Event('pointerdown',{bubbles:true}));
+    expect(document.querySelector('.bridge-activities-overlay')).toBeNull();
+  });
+});
