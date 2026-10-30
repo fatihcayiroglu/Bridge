@@ -1,4 +1,5 @@
 import { BridgeRegistry } from '../bridge-registry.ts';
+import { activityStringsForLanguage } from './bridge-activities-copy.ts';
 import { closeExclusivePeers } from '../exclusive-surface.ts';
 import { BRIDGE_3D_GAME_CATALOG, BRIDGE_SOCIAL_SPACE } from './bridge-game-catalog.ts';
 import { startLocalSocialRoom, type RoomDirection, type SocialRoomHandle } from './social-room-webgl.ts';
@@ -17,83 +18,8 @@ let miniGolf: MiniGolfHandle | null = null;
 let onlineGolf: OnlineGolfSession | null = null;
 let currentTab: ActivitiesTab = 'games';
 
-const translations = {
-  tr: {
-    title: 'Bridge Activities', games: '3D Mini Oyunlar', social: '3D Sosyal Alan',
-    close: 'Kapat', subtitle: 'Arkadaşlarla birlikte oynayacağın etkinlikler',
-    planned: 'Geliştirme planında', gamesHelp: '9 oyun planlama aşamasında. Mini Golf için tek kişilik, çevrimdışı 3D antrenman önizlemesi var; çok oyunculu oyun henüz hazır değil.',
-    solo: 'Tek kişilik 3D antrenman', tryGolf: '3D Mini Golf dene', backToGames: 'Oyunlara dön',
-    golfHelp: 'Yerel antrenman · Sunucuya skor gönderilmez, rakip ve çok oyunculu mod yok.',
-    golfAim: 'Yön (derece)', golfPower: 'Vuruş gücü', golfShoot: 'Vur', golfReset: 'Yeniden başlat',
-    golfStrokes: 'Vuruş', golfReady: 'Top hazır', golfMoving: 'Top hareket ediyor', golfWon: 'Tebrikler! Top deliğe girdi.',
-    golfOnlineHelp: 'Deneysel 2–8 oyunculu mod sunucuda ayrıca açılmalıdır. Yerel antrenman varsayılandır. Çevrimiçi maçta fizik ve skor sunucuya aittir.',
-    golfJoin: 'İki oyunculu maça katıl (deneysel)', golfLeave: 'Çevrimiçi maçtan ayrıl',
-    golfWait: 'İkinci oyuncu bekleniyor…', golfTurn: 'Sıra sende', golfOtherTurn: 'Rakibinin sırası',
-    golfFinished: 'Maç sona erdi', golfConnecting: 'Maç durumuna bağlanıyor…',
-    golfUnavailable: 'Çevrimiçi maç kapalı veya erişim reddedildi. Yerel antrenman açık.',
-    golfInvalid: 'Geçersiz sunucu maç verisi reddedildi.', golfDisconnected: 'Maç bağlantısı kapandı.',
-    golfYou: '(sen)', golfPlayer: 'Oyuncu', golfGoal: 'Deliğe girdi',
-    golfStart: 'Maçı başlat (2–8 kişi)', golfLobby: 'Bekleme odası',
-    golfWaitStart: 'Maçın başlaması bekleniyor…',
-    golfRematch: 'Rövanşa hazır', golfRematchReady: 'Rövanş onayları', golfRematchMarked: 'Rövanşa onay verdin',
-    golfRankings: 'Raund sonuçları', golfRank: 'Sıra', golfStrokeLimit: 'Vuruş sınırı',
-    golfReconnecting: 'Bağlantı yeniden kuruluyor', golfPaused: 'Oyuncu yeniden bağlanıyor · vuruşlar geçici olarak durduruldu.',
-    socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
-    roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
-    moveHelp: 'Hareket etmek için 3D alana dokun, sonra WASD veya ok tuşlarını kullan. Mobilde ekrandaki yön tuşlarını kullan.',
-    forward: 'İleri', back: 'Geri', left: 'Sol', right: 'Sağ',
-    players: 'oyuncu', free: 'Planlanan ücretsiz oyunlar', local: 'Yerel önizleme',
-    tryOnline: 'Ortak odayı dene (deneysel)', leaveOnline: 'Ortak odadan ayrıl',
-    chooseServer: 'Önce erişimin olan bir sunucu seç.',
-    onlineConnecting: 'Sunucudan izin ve oda yanıtı bekleniyor…',
-    onlineOnline: 'Ortak odada · Sunucudan gelen avatarlar çiziliyor',
-    onlineUnavailable: 'Çevrimiçi oda kullanılamıyor veya sunucuda kapalı. Yerel 3D oda çalışmaya devam ediyor.',
-    onlineDisconnected: 'Ortak odadan ayrıldın. Yerel 3D oda açık.',
-    onlineInvalid: 'Güvenilmeyen veya geçersiz oda verisi reddedildi.',
-    graphicsMode: 'Grafik motoru', quality: 'Grafik kalitesi', low: 'Düşük', balanced: 'Dengeli', high: 'Yüksek',
-    graphicsLost: '3D grafik bağlamı kayboldu; çevrimiçi oturum kapatıldı. Geri yükleme bekleniyor…',
-    graphicsRestored: '3D grafikler geri yüklendi. Yerel odadasın; çevrimiçi odaya yalnızca yeniden seçerek katılabilirsin.',
-  },
-  en: {
-    title: 'Bridge Activities', games: '3D Mini Games', social: '3D Social Space',
-    close: 'Close', subtitle: 'Activities to enjoy with friends',
-    planned: 'Planned', gamesHelp: '9 games are planned. Mini Golf has a local, single-player 3D practice preview; multiplayer is not implemented.',
-    solo: 'Solo 3D practice', tryGolf: 'Play 3D Mini Golf practice', backToGames: 'Back to games',
-    golfHelp: 'Local practice only · No server scores, opponents or multiplayer.',
-    golfAim: 'Aim (degrees)', golfPower: 'Shot power', golfShoot: 'Shoot', golfReset: 'Restart',
-    golfStrokes: 'Strokes', golfReady: 'Ball ready', golfMoving: 'Ball rolling', golfWon: 'Nice shot! Ball in the hole.',
-    golfOnlineHelp: 'Experimental 2–8 player mode requires a separate server feature gate. Solo practice is the default. Online ball physics and scores belong to the server.',
-    golfJoin: 'Join two-player match (experimental)', golfLeave: 'Leave online match',
-    golfWait: 'Waiting for second player…', golfTurn: 'Your turn', golfOtherTurn: 'Opponent\'s turn',
-    golfFinished: 'Match finished', golfConnecting: 'Connecting to match…',
-    golfUnavailable: 'Online match disabled or access denied. Solo practice remains available.',
-    golfInvalid: 'Invalid server match rejected.', golfDisconnected: 'Match disconnected.',
-    golfYou: '(you)', golfPlayer: 'Player', golfGoal: 'Holed',
-    golfStart: 'Start match (2–8 players)', golfLobby: 'Lobby',
-    golfWaitStart: 'Waiting for host to start…',
-    golfRematch: 'Ready for rematch', golfRematchReady: 'Rematch confirmations', golfRematchMarked: 'You accepted the rematch',
-    golfRankings: 'Round results', golfRank: 'Place', golfStrokeLimit: 'Stroke limit',
-    golfReconnecting: 'Reconnecting', golfPaused: 'A player is reconnecting · shots temporarily paused.',
-    socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
-    roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
-    moveHelp: 'Focus the 3D room and use WASD or arrow keys. On mobile use the directional controls.',
-    forward: 'Forward', back: 'Back', left: 'Left', right: 'Right',
-    players: 'players', free: 'Planned free games', local: 'Local preview',
-    tryOnline: 'Try shared room (experimental)', leaveOnline: 'Leave shared room',
-    chooseServer: 'Select a server you belong to first.',
-    onlineConnecting: 'Waiting for server permissions and room response…',
-    onlineOnline: 'In shared room · Drawing server-owned avatars',
-    onlineUnavailable: 'Shared room unavailable or disabled on server. Local 3D room remains available.',
-    onlineDisconnected: 'You left the shared room. Local 3D room remains open.',
-    onlineInvalid: 'Untrusted or malformed room snapshot was rejected.',
-    graphicsMode: 'Graphics API', quality: 'Graphics quality', low: 'Low', balanced: 'Balanced', high: 'High',
-    graphicsLost: '3D graphics context lost; the online session was closed. Waiting for restoration…',
-    graphicsRestored: '3D graphics restored in local-only mode. Explicitly opt in again to rejoin the shared room.',
-  },
-} as const;
-
 function strings() {
-  return document.documentElement.lang.toLowerCase().startsWith('tr') ? translations.tr : translations.en;
+  return activityStringsForLanguage(document.documentElement.lang);
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -249,6 +175,7 @@ function showMiniGolf(container: HTMLElement): void {
   }
   function onlineState(status: OnlineGolfStatus): void {
     if (status === 'connecting') {
+      heading.textContent = 'Mini Golf · ' + (joiningOnline || onlineGolf?.active ? s.golfOnlineMode : s.solo);
       onlineStatus.textContent = s.golfConnecting;
       shoot.disabled = true;
       aim.disabled = true;
@@ -259,6 +186,7 @@ function showMiniGolf(container: HTMLElement): void {
       return;
     }
     if (status === 'waiting' || status === 'playing' || status === 'finished') {
+      heading.textContent = 'Mini Golf · ' + s.golfOnlineMode;
       onlineButton.textContent = s.golfLeave;
       joiningOnline = false;
       return;
@@ -271,6 +199,7 @@ function showMiniGolf(container: HTMLElement): void {
     resultsHeading.hidden = true;
     startButton.hidden = true;
     rematchButton.hidden = true;
+    heading.textContent = 'Mini Golf · ' + s.solo;
     onlineButton.textContent = s.golfJoin;
     onlineStatus.textContent = {
       unavailable: s.golfUnavailable, invalid: s.golfInvalid,
