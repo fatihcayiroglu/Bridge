@@ -531,12 +531,12 @@ try {
     null, { timeout: 10000 });
 
   // A real user switching to Games tears down the shared 3D subscription.
-  // The 10 selected mini games remain correctly marked planned, not playable.
+  // Ten catalog cards: eight planned games and two local playable 3D practices.
   await panelPage.getByRole('tab', { name: '3D Mini Games' }).click();
   assert.equal(await panelPage.locator('.bridge-activities-card').count(), 10);
-  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 9);
-  assert.equal(await panelPage.locator('.bridge-activities-solo').count(), 1,
-    'solo-only Mini Golf must not be mistaken for multiplayer ready');
+  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 8);
+  assert.equal(await panelPage.locator('.bridge-activities-solo').count(), 2,
+    'Mini Golf and Pool local practices must not be mistaken for multiplayer ready');
   await panelPage.getByRole('button', { name: 'Play 3D Mini Golf practice' }).click();
   const golfCanvas = panelPage.locator('canvas.bridge-mini-golf-canvas');
   await golfCanvas.waitFor();
