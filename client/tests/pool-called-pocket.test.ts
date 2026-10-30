@@ -229,11 +229,11 @@ describe('local called-pocket integration: never award turn for the wrong pocket
     const r=assigned(),b=table([1,2,3,4,5,6,7]);
     const call=declareLocalPoolCall(r,b,0,'ball',8,2)!;
     const correct=resolveLocalCalledEightBallShot(r,b,afterShot(b,[
-      {ballId:8,pocketIndex:2}]),call);
+      {ballId:8,pocketIndex:2}],false,8),call);
     expect(correct?.rules.winner).toBe(0);
     expect(correct?.rules.phase).toBe('finished');
     const wrong=resolveLocalCalledEightBallShot(r,b,afterShot(b,[
-      {ballId:8,pocketIndex:1}]),call);
+      {ballId:8,pocketIndex:1}],false,8),call);
     expect(wrong?.rules.winner).toBe(1);
     expect(wrong?.evidence.eightPocketedOutsideCall).toBe(true);
   });
