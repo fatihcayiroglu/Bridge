@@ -128,6 +128,38 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     expect(second.active).toBe(false);
     expect(statuses).toHaveBeenCalledWith('invalid');
   });
+  it('rejects shots when a peer is reconnecting, resumes only with newer server revision', () => {
+    const t=transport(), updates=vi.fn();
+    const session=joinOnlineMiniGolf(t.socket,'server1',updates,vi.fn());
+    t.incoming('mini-golf:state',playing);
+    const paused={...playing,revision:3,players:[
+      {...playing.players[0],reconnecting:false},
+      {...playing.players[1],reconnecting:true},
+    ]};
+    t.incoming('mini-golf:state',paused);
+    expect(session.match?.players[1]?.reconnecting).toBe(true);
+    expect(session.shoot(0,60)).toBe(false);
+    expect(t.count('mini-golf:shoot')).toBe(0);
+    t.incoming('mini-golf:state',{...playing,revision:2});
+    expect(session.match?.revision).toBe(3);
+    t.incoming('mini-golf:state',{...paused,revision:4,players:[
+      {...playing.players[0],reconnecting:false},
+      {...playing.players[1],reconnecting:false},
+    ]});
+    expect(session.match?.players[1]?.reconnecting).toBe(false);
+    expect(session.shoot(0,60)).toBe(true);
+    session.dispose();
+  });
+  it('does not silently auto rejoin after transport disconnect', () => {
+    const t=transport(), statuses=vi.fn();
+    const session=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    t.incoming('mini-golf:state',playing);
+    t.disconnect();
+    expect(session.active).toBe(false);
+    expect(statuses).toHaveBeenCalledWith('disconnected');
+    expect(t.count('mini-golf:join')).toBe(1);
+    expect(t.count('mini-golf:leave')).toBe(0);
+  });
   it('times out pending admissions and leaves without creating a ghost session', () => {
     vi.useFakeTimers();
     const t=transport(), statuses=vi.fn();
