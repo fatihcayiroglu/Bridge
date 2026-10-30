@@ -122,6 +122,7 @@ describe('real Activities panel DOM behavior, with isolated renderer/socket unit
     click('[data-game-id="eight-ball-pool"]');
     expect(document.querySelector('canvas.bridge-pool-canvas')).not.toBeNull();
     expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Shots: 0');
+    expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Balls pocketed: 0/15');
     click('.bridge-pool-shoot');
     expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Shots: 1');
     click('.bridge-pool-reset');
