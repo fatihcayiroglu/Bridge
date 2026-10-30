@@ -197,6 +197,95 @@ describe('3D Social Space authority and presence', () => {
     expect(io.events).toHaveLength(0);
   });
 
+  it('rejects a pending stale join when the user is revoked during the DB lookup', async () => {
+    const sid = server(), io = makeIo(), s = wire('revoked', sid, io);
+    let allowMembership!: (value: unknown) => void;
+    let membershipEntered!: () => void;
+    const membershipStarted = new Promise<void>(resolve => { membershipEntered = resolve; });
+    const membershipPending = new Promise(resolve => { allowMembership = resolve; });
+    mockMembersFindOne.mockImplementationOnce(() => {
+      membershipEntered();
+      return membershipPending;
+    });
+    const pending = s.trigger('social:join', { serverId: sid });
+    // This handshake makes the overlap deterministic: the handler already
+    // captured the old generation and is blocked on actual membership lookup.
+    await membershipStarted;
+    await socialRoomStore.withLock(sid, () => socialRoomStore.markRevocationFence(sid, 'revoked'));
+    allowMembership({ userId: 'revoked', banned: false });
+    await pending;
+    expect(last(s, 'social:joined')).toBeUndefined();
+    expect((await socialRoomStore.load(sid)).peers).toEqual([]);
+    expect(s.rooms.has('social-3d:' + sid)).toBe(false);
+    expect(io.events).toHaveLength(0);
+  });
+
+  it('rejects join and removes reservation when revocation hits async Socket.IO join', async () => {
+    const sid = server(), io = makeIo(), s = wire('revoked', sid, io);
+    let releaseJoin!: () => void;
+    let enteredJoin!: () => void;
+    const joinReached = new Promise<void>(resolve => { enteredJoin = resolve; });
+    const joinGate = new Promise<void>(resolve => { releaseJoin = resolve; });
+    const originalJoin = s.join.bind(s);
+    s.join = async (room: string) => {
+      if (room === 'social-3d:' + sid) {
+        enteredJoin();
+        await joinGate;
+      }
+      await originalJoin(room);
+    };
+    const pending = s.trigger('social:join', { serverId: sid });
+    await joinReached;
+    expect((await socialRoomStore.load(sid)).peers).toHaveLength(1);
+    // On another node the revoker can advance the shared Redis generation
+    // while this socket's adapter is still processing its join.
+    await socialRoomStore.withLock(sid, () => socialRoomStore.markRevocationFence(sid, 'revoked'));
+    releaseJoin();
+    await pending;
+    expect(last(s, 'social:joined')).toBeUndefined();
+    expect((await socialRoomStore.load(sid)).peers).toEqual([]);
+    expect(s.rooms.has('social-3d:' + sid)).toBe(false);
+  });
+
+  it('rejects an expired in-flight join even after the short Redis fence could expire', async () => {
+    const sid = server(), io = makeIo(), s = wire('slow-user', sid, io);
+    let releaseMember!: (value: unknown) => void;
+    let membershipEntered!: () => void;
+    const entered = new Promise<void>(resolve => { membershipEntered = resolve; });
+    const held = new Promise(resolve => { releaseMember = resolve; });
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      mockMembersFindOne.mockImplementationOnce(() => {
+        membershipEntered();
+        return held;
+      });
+      const pending = s.trigger('social:join', { serverId: sid });
+      await entered;
+      // Even if a short-lived revocation generation disappears from Redis,
+      // an old stalled admission cannot become a newly authorized join.
+      clock.mockReturnValue(20000);
+      releaseMember({ userId: 'slow-user', banned: false });
+      await pending;
+      expect(last(s, 'social:joined')).toBeUndefined();
+      expect((await socialRoomStore.load(sid)).peers).toEqual([]);
+      expect(s.rooms.has('social-3d:' + sid)).toBe(false);
+      expect(io.events).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('refuses joining if the shared Redis generation cannot be read', async () => {
+    const sid = server(), io = makeIo(), s = wire('u1', sid, io);
+    mockRedisReadFailure = true;
+    await s.trigger('social:join', { serverId: sid });
+    expect(last(s, 'social:joined')).toBeUndefined();
+    expect(last(s, 'error:message')).toMatchObject({ event: 'social:join' });
+    expect(io.events).toEqual([]);
+    mockRedisReadFailure = false;
+    expect((await socialRoomStore.load(sid)).peers).toEqual([]);
+  });
+
   it('double join does not create duplicate participant slots', async () => {
     const sid = server(), io = makeIo(), s = wire('user-one', sid, io);
     await s.trigger('social:join', { serverId: sid });

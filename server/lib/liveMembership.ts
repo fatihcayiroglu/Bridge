@@ -180,6 +180,14 @@ export async function evictUserFromServerRooms(
 ): Promise<number> {
   if (!io || !userId || !serverId) return 0;
 
+  // Mark revocation before any asynchronous channel/voice/socket enumeration.
+  // A late distributed social join must see a different generation, even if
+  // its permission query began before the membership write was committed.
+  const socialEviction = process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER === '1'
+    ? await import('../socket/handlers/social-room-eviction')
+    : null;
+  if (socialEviction) await socialEviction.fenceSocialUserRevocation(userId, serverId);
+
   const channelIds = new Set(await Channels.findIdsByServer(serverId));
   const sockets = await io.in(`user:${userId}`).fetchSockets();
 
@@ -225,9 +233,8 @@ export async function evictUserFromServerRooms(
   // persisted avatars AFTER the target sockets have left their delivery room;
   // then publish the revised roster only to remaining authorized subscribers.
   // Lazy-load only when the still-experimental multiplayer protocol is enabled.
-  if (process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER === '1') {
-    const { evictSocialUserFromRoom } = await import('../socket/handlers/social-room-eviction');
-    await evictSocialUserFromRoom(io, userId, serverId);
+  if (socialEviction) {
+    await socialEviction.evictSocialUserFromRoom(io, userId, serverId);
   }
   return leaves;
 }

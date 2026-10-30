@@ -6,11 +6,16 @@
  * The multiplayer handler is feature-gated OFF in production pending review.
  */
 import { cache, isRedisAvailable } from '../../lib/redisAdapter';
+import { randomUUID } from 'node:crypto';
 
 export const SOCIAL_SPACE_MAX_PEERS = 16;
 export const SOCIAL_SPACE_BOUNDS = Object.freeze({ x: 5.6, z: 5.2 });
 const TTL_SECONDS = 30 * 60;
 const KEY = 'social-3d:server:';
+// A short-lived generation marker survives deleting an empty room. All nodes
+// must observe it; a stale join predating a kick must not resurrect presence.
+const FENCE_KEY = 'social-3d:revocation-fence:';
+const FENCE_TTL_SECONDS = 120;
 const CONFIGURED_REDIS = Boolean(process.env.REDIS_URL);
 
 export interface SocialPeer {
@@ -41,12 +46,38 @@ function assertRoom(serverId: string, raw: unknown): SocialRoom {
   return { serverId, peers: room.peers.map(p => ({ socketId:p.socketId, userId:p.userId, x:p.x, z:p.z, lastStepAt:p.lastStepAt })) };
 }
 const localRooms = new Map<string, SocialRoom>();
+const localFences = new Map<string, string>();
 function requireId(id: string): void {
   if (!validId(id)) throw new TypeError('Invalid social room id');
 }
 function redisDown(): never { throw Error('SOCIAL_ROOM_REDIS_UNAVAILABLE'); }
 
 export const socialRoomStore = {
+  async readRevocationFence(serverId: string, userId: string): Promise<string | null> {
+    requireId(serverId); requireId(userId);
+    const key = FENCE_KEY + serverId + ':' + userId;
+    if (isRedisAvailable()) {
+      const fence = await cache.getAuthoritative<string>(key);
+      if (fence !== null && (typeof fence !== 'string' || fence.length > 128)) {
+        throw Error('SOCIAL_ROOM_FENCE_CORRUPT');
+      }
+      return fence;
+    }
+    if (CONFIGURED_REDIS) return redisDown();
+    return localFences.get(key) ?? null;
+  },
+  async markRevocationFence(serverId: string, userId: string): Promise<void> {
+    requireId(serverId); requireId(userId);
+    const key = FENCE_KEY + serverId + ':' + userId;
+    // Called inside the same server-room lock used for joining/pruning.
+    const generation = randomUUID();
+    if (isRedisAvailable()) {
+      await cache.setAuthoritative(key, generation, FENCE_TTL_SECONDS);
+      return;
+    }
+    if (CONFIGURED_REDIS) return redisDown();
+    localFences.set(key, generation);
+  },
   async load(serverId: string): Promise<SocialRoom> {
     requireId(serverId);
     if (isRedisAvailable()) {
@@ -76,6 +107,7 @@ export const socialRoomStore = {
     });
   },
   _localRooms_TEST_ONLY: localRooms,
+  _localFences_TEST_ONLY: localFences,
 };
 
 export function publicSocialRoom(room: SocialRoom) {

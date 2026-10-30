@@ -38,9 +38,16 @@ if (!process.env.REDIS_URL) {
     process.stdout.write('SOCIAL_3D_REDIS_WORKER_OK:' + identity + '\n');
   }
 
-  function launch(serverId, identity) {
+  async function observeFence(serverId, userId, expectedGeneration) {
+    await initialize();
+    const observed = await socialRoomStore.readRevocationFence(serverId, userId);
+    assert.equal(observed, expectedGeneration, 'remote process must observe revocation fence');
+    process.stdout.write('SOCIAL_3D_REDIS_FENCE_WORKER_OK\n');
+  }
+
+  function launch(serverId, identity, mode = 'worker', expectedGeneration = '') {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [__filename, 'worker', serverId, identity], {
+      const child = spawn(process.execPath, [__filename, mode, serverId, identity, expectedGeneration], {
         env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -51,7 +58,10 @@ if (!process.env.REDIS_URL) {
       child.on('error', reject);
       child.on('exit', (code, signal) => {
         clearTimeout(watchdog);
-        if (code !== 0 || signal || !stdout.includes('SOCIAL_3D_REDIS_WORKER_OK:' + identity)) {
+        const expectedMarker = mode === 'worker'
+          ? 'SOCIAL_3D_REDIS_WORKER_OK:' + identity
+          : 'SOCIAL_3D_REDIS_FENCE_WORKER_OK';
+        if (code !== 0 || signal || !stdout.includes(expectedMarker)) {
           reject(new Error('Real Redis worker failed: ' + identity + ' exit=' + code +
             ' signal=' + signal + ' stderr=' + stderr.slice(-1000)));
         } else resolve();
@@ -65,6 +75,10 @@ if (!process.env.REDIS_URL) {
       await worker(process.argv[3], process.argv[4]);
       return;
     }
+    if (mode === 'observe-fence') {
+      await observeFence(process.argv[3], process.argv[4], process.argv[5]);
+      return;
+    }
     const serverId = 'social-proof-' + Date.now() + '-' + randomBytes(3).toString('hex');
     await initialize();
     try {
@@ -76,6 +90,14 @@ if (!process.env.REDIS_URL) {
       assert.deepEqual(room.peers.map(p => p.x).sort(), [-0.35, 0.35],
         'one shared state, not separate process-local fallbacks');
       process.stdout.write('SOCIAL_3D_REAL_REDIS_TWO_PROCESS_OK:2/2:0_skipped\n');
+      const fencedUser = 'probe-process-a';
+      assert.equal(await socialRoomStore.readRevocationFence(serverId, fencedUser), null);
+      await socialRoomStore.withLock(serverId, () =>
+        socialRoomStore.markRevocationFence(serverId, fencedUser));
+      const generation = await socialRoomStore.readRevocationFence(serverId, fencedUser);
+      assert.equal(typeof generation, 'string');
+      await launch(serverId, fencedUser, 'observe-fence', generation);
+      process.stdout.write('SOCIAL_3D_REAL_REDIS_CROSS_NODE_FENCE_OK:2/2:0_skipped\n');
     } finally {
       await socialRoomStore.withLock(serverId, async () => {
         await socialRoomStore.save(serverId, { serverId, peers: [] });

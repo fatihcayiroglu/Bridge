@@ -11,6 +11,18 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import { publicSocialRoom, socialRoomStore, type SocialRoom } from './social-room-store';
 
+/**
+ * Advance the cross-node revocation generation BEFORE normal membership
+ * audience eviction. In-flight joins capture the old generation and cannot
+ * publish presence after the marker changes.
+ */
+export async function fenceSocialUserRevocation(userId: string, serverId: string): Promise<void> {
+  if (!userId || !serverId) return;
+  await socialRoomStore.withLock(serverId, async () => {
+    await socialRoomStore.markRevocationFence(serverId, userId);
+  });
+}
+
 export async function evictSocialUserFromRoom(
   io: Pick<SocketIOServer, 'to'>,
   userId: string,
