@@ -7,7 +7,7 @@ import { joinSocialRoomPreview, type SocialClient, type SocialClientStatus, type
 import { startMiniGolfPractice, type MiniGolfHandle } from './mini-golf-webgl.ts';
 import type { GolfState } from './mini-golf-physics.ts';
 import { startPoolPractice, type PoolPracticeHandle } from './pool-practice-webgl.ts';
-import type { PoolState } from './pool-practice-physics.ts';
+import { POOL_TARGET_COUNT, type PoolState } from './pool-practice-physics.ts';
 import { joinOnlineMiniGolf, type OnlineGolfSession, type OnlineGolfMatch, type OnlineGolfStatus } from './mini-golf-client.ts';
 
 type ActivitiesTab = 'games' | 'social';
@@ -330,7 +330,7 @@ function showPoolPractice(container:HTMLElement):void {
   });
   function update(state:PoolState):void {
     status.textContent=s.poolShots+': '+state.shots+' · '+s.poolPocketed+': '+state.pocketed+
-      '/5 · '+s.poolScratches+': '+state.scratches+' · '+
+      '/'+POOL_TARGET_COUNT+' · '+s.poolScratches+': '+state.scratches+' · '+
       (state.status==='complete'?s.poolComplete:
         state.status==='moving'?s.poolMoving:s.poolReady);
     const ready=state.status==='ready' && (poolPractice?.isGraphicsAvailable??true);

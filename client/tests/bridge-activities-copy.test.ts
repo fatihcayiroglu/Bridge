@@ -15,6 +15,8 @@ describe('Bridge Mini Golf copy tracks its actual experimental 2–8 player cont
       expect(s.gamesHelp).not.toMatch(/multiplayer is not implemented|çok oyunculu oyun henüz hazır değil/i);
       expect(s.golfOnlineHelp).not.toEqual(s.golfHelp);
       expect(s.poolHelp).toMatch(/8.ball|8-ball|8.ball/i);
+      expect(s.poolHelp).toMatch(/15/);
+      expect(s.poolHelp).not.toMatch(/five target|Beş hedef/i);
       expect(s.tryPool).toBeTruthy();
       expect(s.golfLeave).not.toEqual(s.golfJoin);
       expect(s.golfWait).not.toEqual(s.golfWaitStart);

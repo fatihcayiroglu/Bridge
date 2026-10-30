@@ -39,6 +39,7 @@ on:
       - codex/activities-pool-solo-practice-20261030
       - codex/activities-client-coverage-gate-20261030
       - codex/activities-focus-trap-accessibility-20261030
+      - codex/activities-real-chromium-focus-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
