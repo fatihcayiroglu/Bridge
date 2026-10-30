@@ -415,7 +415,7 @@ try {
       before, { timeout: 10000 });
   }
   await alice.evaluate(serverId =>
-    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+    window.__bridge3DSmoke.socket.emit('mini-golf:start', {serverId}),fixture.serverId);
   await alice.waitForFunction(() =>
     window.__miniGolfProof.states.at(-1)?.phase === 'playing',null,{timeout:10000});
 
