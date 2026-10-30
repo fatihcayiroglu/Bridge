@@ -53,14 +53,16 @@ function validatedEightBreak(
 ):boolean {
   const last=rules.last;
   if(rules.phase!=='eight-respot-required'||rules.winner!==null||
-      rules.ballInHand!==null||!last||!last.eightPocketed||
-      !last.pocketed.includes(8)||!Array.isArray(last.pocketed)||
+      rules.ballInHand!==null||!last||!last.eightPocketed||!Array.isArray(last.pocketed)||
+      !last.pocketed.includes(8)||
+      (last.actor!==0&&last.actor!==1)||
+      (rules.currentPlayer!==0&&rules.currentPlayer!==1)||
       (actor!==0&&actor!==1)||
       actor!==rules.currentPlayer||
       rules.currentPlayer!==(last.foul?other(last.actor):last.actor)||
       table.status!=='ready'||rules.shotsResolved!==1||table.shots!==1||
       !Number.isSafeInteger(table.pocketed)||table.pocketed<1||
-      !Number.isSafeInteger(table.scratches)||table.scratches<0||
+      !Number.isSafeInteger(table.scratches)||table.scratches<0||table.scratches>1||
       table.balls.length!==16||!Array.isArray(table.pocketEvents))return false;
   const ids=new Set<number>();
   for(const b of table.balls) {
