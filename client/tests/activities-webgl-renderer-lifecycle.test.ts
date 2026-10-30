@@ -3,7 +3,6 @@ import { startMiniGolfPractice } from '../js/core/activities/mini-golf-webgl.ts'
 import { startPoolPractice } from '../js/core/activities/pool-practice-webgl.ts';
 import { startLocalSocialRoom } from '../js/core/activities/social-room-webgl.ts';
 
-type FakeGl = ReturnType<typeof fakeGl>;
 function fakeGl() {
   const gl = {
     VERTEX_SHADER: 35633, FRAGMENT_SHADER: 35632, COMPILE_STATUS: 35713,
