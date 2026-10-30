@@ -46,6 +46,23 @@ const LIVE_POLL_PARENT_WRITE_SQL = [
   '   WHERE t."channelId" = c._id))',
 ].join('\n');
 
+/**
+ * The no-op/idempotent paths have no UPDATE statement to carry the parent
+ * predicate. They must still verify the live parent using the same tenant,
+ * tombstone and PostgreSQL-clock rule before returning a poll payload.
+ * This is a pre-COMMIT check, not a serialization guarantee across expiry.
+ */
+async function liveParentForPollNoop(
+  client: import('pg').PoolClient, pollId: string,
+): Promise<boolean> {
+  const result = await client.query<{ parentLive: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM polls WHERE _id = $1
+${LIVE_POLL_PARENT_WRITE_SQL}) AS "parentLive"`,
+    [pollId],
+  );
+  return result.rows.length === 1 && result.rows[0]?.parentLive === true;
+}
+
 function normalizeOptions(value: unknown): PollOption[] {
   if (!Array.isArray(value)) return [];
   return value.map((raw) => {
@@ -146,6 +163,10 @@ class PollRepository {
           await client.query('ROLLBACK');
           return { status: 'vote_change_forbidden' };
         }
+        if (!await liveParentForPollNoop(client, id)) {
+          await client.query('ROLLBACK');
+          return { status: 'parent_unavailable' };
+        }
         await client.query('COMMIT');
         return { status: 'ok', poll };
       }
@@ -231,7 +252,14 @@ class PollRepository {
       }
 
       const entries = Object.entries(fields);
-      if (!entries.length) { await client.query('COMMIT'); return { status: 'ok', poll }; }
+      if (!entries.length) {
+        if (!await liveParentForPollNoop(client, id)) {
+          await client.query('ROLLBACK');
+          return { status: 'parent_unavailable' };
+        }
+        await client.query('COMMIT');
+        return { status: 'ok', poll };
+      }
       const allowed = new Set(['question', 'options', 'expiresAt', 'allowVoteChange']);
       if (entries.some(([k]) => !allowed.has(k))) throw new Error('Unsupported poll edit field');
       const assignments: string[] = [];
