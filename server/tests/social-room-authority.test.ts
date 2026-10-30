@@ -247,6 +247,34 @@ describe('3D Social Space authority and presence', () => {
     expect(s.rooms.has('social-3d:' + sid)).toBe(false);
   });
 
+  it('rejects an expired in-flight join even after the short Redis fence could expire', async () => {
+    const sid = server(), io = makeIo(), s = wire('slow-user', sid, io);
+    let releaseMember!: (value: unknown) => void;
+    let membershipEntered!: () => void;
+    const entered = new Promise<void>(resolve => { membershipEntered = resolve; });
+    const held = new Promise(resolve => { releaseMember = resolve; });
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      mockMembersFindOne.mockImplementationOnce(() => {
+        membershipEntered();
+        return held;
+      });
+      const pending = s.trigger('social:join', { serverId: sid });
+      await entered;
+      // Even if a short-lived revocation generation disappears from Redis,
+      // an old stalled admission cannot become a newly authorized join.
+      clock.mockReturnValue(20000);
+      releaseMember({ userId: 'slow-user', banned: false });
+      await pending;
+      expect(last(s, 'social:joined')).toBeUndefined();
+      expect((await socialRoomStore.load(sid)).peers).toEqual([]);
+      expect(s.rooms.has('social-3d:' + sid)).toBe(false);
+      expect(io.events).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('refuses joining if the shared Redis generation cannot be read', async () => {
     const sid = server(), io = makeIo(), s = wire('u1', sid, io);
     mockRedisReadFailure = true;
