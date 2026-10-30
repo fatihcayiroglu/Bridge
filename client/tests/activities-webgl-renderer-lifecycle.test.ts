@@ -68,7 +68,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   document.body.replaceChildren();
-  delete (document as Document & { hidden?: boolean }).hidden;
+  Reflect.deleteProperty(document, 'hidden');
   vi.unstubAllGlobals();
 });
 
@@ -138,7 +138,7 @@ describe('real renderer lifecycle against a deterministic WebGL command recorder
     expect(handle?.setAuthoritativeBall(Infinity, 0)).toBe(false);
     frames(3);
     handle?.leaveOnline();
-    expect(handle?.state.shots).toBeUndefined();
+    expect(handle?.state.strokes).toBe(0);
     expect(handle?.shoot(0, 60)).toBe(true);
     frames(35);
     expect(handle?.state.strokes).toBe(1);
