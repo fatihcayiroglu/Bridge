@@ -94,6 +94,7 @@ function setServer(socket:unknown) {
 beforeEach(() => {
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
+  document.getElementById('app')!.inert=false;
   callbacks.lost=null;callbacks.restored=null;
   vi.clearAllMocks();
 });
