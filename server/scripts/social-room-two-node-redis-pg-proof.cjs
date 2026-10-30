@@ -275,7 +275,7 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
 
       const outsiderDenied = eventFrom(outsider, 'social:error');
       outsider.emit('social:join', { serverId: ids.server });
-      assert.deepEqual(await outsiderDenied, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+      assert.deepEqual(await outsiderDenied, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: ids.server });
 
       // A join emits a targeted social:joined acknowledgement AND a room
       // social:peers broadcast. Consume/assert both, not just the ack: Redis
@@ -324,7 +324,7 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
       // room again after the cross-node revoke.
       const revokedError = eventFrom(bob, 'social:error');
       bob.emit('social:step', { serverId: ids.server, direction: 'left' });
-      assert.deepEqual(await revokedError, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+      assert.deepEqual(await revokedError, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: ids.server });
 
       const aliceLeft = eventFrom(alice, 'social:left');
       alice.emit('social:leave', { serverId: ids.server });

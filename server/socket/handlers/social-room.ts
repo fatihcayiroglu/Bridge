@@ -45,7 +45,13 @@ export function registerSocialRoomHandlers(
   const joining = new Set<string>();
   const canceledJoins = new Set<string>();
   let disconnected = false;
-  const error = () => socket.emit('social:error', { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+  // Errors share the authenticated Socket.IO transport across ALL joined
+  // servers. Scope every valid server-targeted error to avoid tearing down an
+  // unrelated 3D session; malformed/no-id requests carry no tenant identifier.
+  const error = (serverId: string | null) => socket.emit('social:error', {
+    code: 'SOCIAL_ROOM_UNAVAILABLE',
+    ...(serverId ? { serverId } : {}),
+  });
   const publish = (serverId: string, room: SocialRoom) =>
     io.to(socialSocketRoom(serverId)).emit('social:peers', publicSocialRoom(room));
 
@@ -80,7 +86,7 @@ export function registerSocialRoomHandlers(
 
   socket.on('social:join', isolateSocketHandler(socket, 'social:join', async (payload: unknown) => {
     const serverId = payloadServerId(payload);
-    if (!serverId || disconnected || joining.has(serverId)) { error(); return; }
+    if (!serverId || disconnected || joining.has(serverId)) { error(serverId); return; }
     if (joined.has(serverId)) {
       // Cross-node membership eviction may have removed the Socket.IO room,
       // but the owning handler's local joined Set is still present. Do not
@@ -88,7 +94,7 @@ export function registerSocialRoomHandlers(
       if (!socket.rooms.has(socialSocketRoom(serverId)) ||
           !await isAuthorized(socket, userId, serverId)) {
         await leave(serverId);
-        error();
+        error(serverId);
       }
       return;
     }
@@ -107,7 +113,7 @@ export function registerSocialRoomHandlers(
       const admissionFence = await socialRoomStore.readRevocationFence(serverId, userId);
       // Role bit/assignment changes are server-wide permission revisions.
       const serverPermissionFence = await socialRoomStore.readRevocationFence(serverId, '__all__');
-      if (!await isAuthorized(socket, userId, serverId)) { error(); return; }
+      if (!await isAuthorized(socket, userId, serverId)) { error(serverId); return; }
       if (disconnected || canceledJoins.has(serverId)) return;
 
       const state = await socialRoomStore.withLock(serverId, async () => {
@@ -127,8 +133,8 @@ export function registerSocialRoomHandlers(
         }
         return room;
       });
-      if (state === 'revoked') { error(); return; }
-      if (!state) { socket.emit('social:error', { code: 'SOCIAL_ROOM_FULL' }); return; }
+      if (state === 'revoked') { error(serverId); return; }
+      if (!state) { socket.emit('social:error', { code: 'SOCIAL_ROOM_FULL', serverId }); return; }
       if (disconnected || canceledJoins.has(serverId)) {
         await dropReservation(serverId);
         return;
@@ -150,7 +156,7 @@ export function registerSocialRoomHandlers(
           !socket.rooms.has('server:' + serverId) ||
           !socket.rooms.has(socialSocketRoom(serverId))) {
         await dropReservation(serverId);
-        error();
+        error(serverId);
         return;
       }
       joined.add(serverId);
@@ -167,10 +173,10 @@ export function registerSocialRoomHandlers(
     const direction = payload && typeof payload === 'object' && !Array.isArray(payload)
       ? (payload as Record<string, unknown>).direction : null;
     if (!serverId || !joined.has(serverId) ||
-        !['forward', 'back', 'left', 'right'].includes(String(direction))) { error(); return; }
+        !['forward', 'back', 'left', 'right'].includes(String(direction))) { error(serverId); return; }
     if (!await isAuthorized(socket, userId, serverId)) {
       await leave(serverId);
-      error();
+      error(serverId);
       return;
     }
     const state = await socialRoomStore.withLock(serverId, async () => {
@@ -186,13 +192,13 @@ export function registerSocialRoomHandlers(
 
   socket.on('social:leave', isolateSocketHandler(socket, 'social:leave', async (payload: unknown) => {
     const serverId = payloadServerId(payload);
-    if (!serverId) { error(); return; }
+    if (!serverId) { error(null); return; }
     if (!joined.has(serverId) && joining.has(serverId)) {
       canceledJoins.add(serverId);
       socket.emit('social:left', { serverId });
       return;
     }
-    if (!joined.has(serverId)) { error(); return; }
+    if (!joined.has(serverId)) { error(serverId); return; }
     await leave(serverId);
     socket.emit('social:left', { serverId });
   }));

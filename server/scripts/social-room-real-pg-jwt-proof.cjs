@@ -156,7 +156,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
 
     const denial = waitForEvent(outsider, 'social:error');
     outsider.emit('social:join', { serverId: ids.server });
-    assert.deepEqual(await denial, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    assert.deepEqual(await denial, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: ids.server });
 
     const firstJoin = waitForEvent(a, 'social:joined');
     a.emit('social:join', { serverId: ids.server, userId: ids.outsider, x: 9999 });
@@ -243,13 +243,13 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     // revoked socket; it cannot re-add a peer to the just-cleaned Redis roster.
     const onError = waitForEvent(b, 'social:error');
     b.emit('social:step', { serverId: ids.server, direction: 'left' });
-    assert.deepEqual(await onError, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    assert.deepEqual(await onError, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: ids.server });
     assert.deepEqual((await socialRoomStore.load(ids.server)).peers.map(p => p.userId), [ids.a]);
 
     // Revoking access during an already active connection also blocks join.
     const forbidden = waitForEvent(b, 'social:error');
     b.emit('social:join', { serverId: ids.server });
-    assert.deepEqual(await forbidden, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    assert.deepEqual(await forbidden, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: ids.server });
 
     const left = waitForEvent(a, 'social:left');
     a.emit('social:leave', { serverId: ids.server });

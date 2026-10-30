@@ -110,7 +110,7 @@ if (!process.env.REDIS_URL) {
     // Unauthorized participant gets no room snapshot, despite a server room.
     const denied = nextEvent(unauthorized, 'social:error');
     unauthorized.emit('social:join', { serverId: testServer });
-    assert.deepEqual(await denied, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    assert.deepEqual(await denied, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: testServer });
 
     const aJoined = nextEvent(a, 'social:joined');
     a.emit('social:join', { serverId: testServer, userId: 'intruder', x: 9999 });
@@ -141,7 +141,7 @@ if (!process.env.REDIS_URL) {
     const bError = nextEvent(b, 'social:error');
     const aSeesRemoval = nextEvent(a, 'social:peers');
     b.emit('social:step', { serverId: testServer, direction: 'left' });
-    assert.deepEqual(await bError, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    assert.deepEqual(await bError, { code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: testServer });
     const remaining = await aSeesRemoval;
     assert.deepEqual(remaining.peers.map(p => p.userId), ['user-a']);
 

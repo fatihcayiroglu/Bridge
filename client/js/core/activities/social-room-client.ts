@@ -56,7 +56,17 @@ export function joinSocialRoomPreview(
     onStatus(status);
   }
 
+  function isDifferentServer(raw: unknown): boolean {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !('serverId' in raw)) return false;
+    const candidate = raw.serverId;
+    return typeof candidate === 'string' &&
+      /^[a-zA-Z0-9_-]{1,64}$/.test(candidate) && candidate !== serverId;
+  }
+
   function acceptSnapshot(raw: unknown): void {
+    // The SAME authenticated socket may subscribe to multiple 3D audiences.
+    // A legitimate frame for another server is not corruption of this room.
+    if (isDifferentServer(raw)) return;
     const frame = readSocial3DSnapshot(raw, serverId);
     if (!frame || !frame.peers.some(peer => peer.socketId === ownSocketId)) {
       stop('invalid', true);
@@ -67,7 +77,7 @@ export function joinSocialRoomPreview(
     }
   }
   function onJoined(raw?: unknown): void {
-    if (disposed) return;
+    if (disposed || isDifferentServer(raw)) return;
     const frame = readSocial3DSnapshot(raw, serverId);
     if (!frame || !frame.peers.some(peer => peer.socketId === ownSocketId)) {
       stop('invalid', true);
@@ -82,8 +92,12 @@ export function joinSocialRoomPreview(
     if (!disposed && joined) acceptSnapshot(raw);
   }
   function onError(raw?: unknown): void {
-    if (!disposed && raw && typeof raw === 'object' &&
-        'code' in raw && typeof raw.code === 'string') {
+    if (!disposed && raw && typeof raw === 'object' && !Array.isArray(raw) &&
+        'code' in raw && typeof raw.code === 'string' &&
+        'serverId' in raw && raw.serverId === serverId) {
+      // Protocol errors from other tenants or without an authoritative
+      // server ID must not tear down this room. Legacy unscoped errors will
+      // time out during admission; once online, only scoped errors close it.
       // A server-side step/protocol error can leave this socket in the
       // authoritative 3D roster. Tear down the admitted session explicitly,
       // rather than showing an offline UI while friends see a ghost avatar.

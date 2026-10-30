@@ -94,10 +94,10 @@ beforeEach(() => {
 describe('3D Social Space authority and presence', () => {
   it('rejects missing membership without leaking room contents or writing Redis', async () => {
     const io = makeIo();
-    const s = wire('u1', server(), io);
+    const sid = server(), s = wire('u1', sid, io);
     mockMembersFindOne.mockResolvedValue(null);
-    await s.trigger('social:join', { serverId: [...s.rooms].find(x => x.startsWith('server:'))!.slice(7) });
-    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    await s.trigger('social:join', { serverId: sid });
+    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: sid });
     expect(last(s, 'social:joined')).toBeUndefined();
     expect(io.events).toHaveLength(0);
     expect(mockCacheData.size).toBe(0);
@@ -142,7 +142,7 @@ describe('3D Social Space authority and presence', () => {
     await s.trigger('social:step', { serverId: sid, direction: 'right' });
     expect(io.events).toHaveLength(before);
     await s.trigger('social:step', { serverId: sid, direction: 'teleport', x: 5000 });
-    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: sid });
     room = await socialRoomStore.load(sid);
     expect(room.peers[0]?.x).toBeLessThanOrEqual(SOCIAL_SPACE_BOUNDS.x);
   });
@@ -153,6 +153,25 @@ describe('3D Social Space authority and presence', () => {
     await s.trigger('social:join', { serverId: sid });
     await s.trigger('social:step', { serverId: 'other', direction: 'forward' });
     expect(io.events).toHaveLength(1); // only join publication
+    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: 'other' });
+  });
+
+  it('scopes cross-tenant step/join errors without publishing the other room', async () => {
+    const sid = server(), foreign = server(), io = makeIo();
+    const s = wire('u1', sid, io);
+    await s.trigger('social:join', { serverId: sid });
+    await s.trigger('social:step', { serverId: foreign, direction: 'forward' });
+    expect(last(s, 'social:error')).toEqual({
+      code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: foreign,
+    });
+    expect(s.rooms.has('social-3d:' + sid)).toBe(true);
+    await s.trigger('social:join', { serverId: foreign });
+    expect(last(s, 'social:error')).toEqual({
+      code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: foreign,
+    });
+    expect((await socialRoomStore.load(sid)).peers).toHaveLength(1);
+    expect(io.events.every(e => e.room === 'social-3d:' + sid)).toBe(true);
+    await s.trigger('social:step', { direction: 'forward' }); // malformed no tenant
     expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE' });
   });
 
@@ -163,7 +182,7 @@ describe('3D Social Space authority and presence', () => {
     await s.trigger('social:step', { serverId: sid, direction: 'forward' });
     expect(s.rooms.has('social-3d:' + sid)).toBe(false);
     expect((await socialRoomStore.load(sid)).peers).toHaveLength(0);
-    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE' });
+    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: sid });
   });
 
   it('second tab stays present after first tab leaves or disconnects', async () => {
@@ -319,7 +338,7 @@ describe('3D Social Space authority and presence', () => {
     const peers = Array.from({length: SOCIAL_SPACE_MAX_PEERS + 1}, (_, i) => wire('user-' + i, sid, io));
     for (const p of peers) await p.trigger('social:join', { serverId: sid });
     expect((await socialRoomStore.load(sid)).peers).toHaveLength(SOCIAL_SPACE_MAX_PEERS);
-    expect(last(peers[SOCIAL_SPACE_MAX_PEERS]!, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_FULL' });
+    expect(last(peers[SOCIAL_SPACE_MAX_PEERS]!, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_FULL', serverId: sid });
     expect(peers[SOCIAL_SPACE_MAX_PEERS]!.rooms.has('social-3d:' + sid)).toBe(false);
   });
 
