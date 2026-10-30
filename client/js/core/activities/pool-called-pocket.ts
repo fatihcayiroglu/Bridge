@@ -1,9 +1,8 @@
 import {
   POOL_POCKETS, type PoolState,
 } from './pool-practice-physics.ts';
-import type {
-  EightBallPlayer, LocalEightBallRules,
-} from './pool-eight-ball-rules.ts';
+import { resolveLocalEightBallShot, type EightBallPlayer,
+  type LocalEightBallRules } from './pool-eight-ball-rules.ts';
 
 /**
  * Pure LOCAL-ONLY call-shot candidate, not wired to online or the existing
@@ -124,4 +123,57 @@ export function evaluateLocalPoolCall(
     eightPocketedOutsideCall,
     scratched,
   };
+}
+
+/**
+ * Strict local integration: unlike the older exploratory reducer, table
+ * ownership and turn retention depend on the CALLED ball entering the
+ * declared pocket. A safety always passes; a miscalled black loses.
+ * This does not convert the mode into a server-authoritative match or
+ * cover other unmodeled WPA fouls.
+ */
+export interface LocalCalledEightBallResolution {
+  readonly rules:LocalEightBallRules;
+  readonly evidence:LocalPoolCallOutcome;
+}
+export function resolveLocalCalledEightBallShot(
+  rules:LocalEightBallRules,before:PoolState,after:PoolState,
+  call:LocalPoolCall,
+):LocalCalledEightBallResolution|null {
+  const evidence=evaluateLocalPoolCall(rules,before,after,call);
+  if(!evidence)return null;
+  const next=resolveLocalEightBallShot(rules,before,after);
+  if(!next||!next.last||next.last.actor!==call.player||
+      next.phase==='illegal-break-choice'||next.phase==='break-foul-choice'||
+      next.phase==='eight-respot-required')return null;
+  const opponent:EightBallPlayer=call.player===0?1:0;
+  if(evidence.eightPocketedOutsideCall) {
+    return {evidence,rules:{...next,phase:'finished',winner:opponent,
+      ballInHand:null,last:{...next.last,retainedTurn:false}}};
+  }
+  if(next.phase==='finished') {
+    // Only the declared 8 in its declared pocket can win. Underlying
+    // physics still handles early 8 and scratch losses.
+    if(!evidence.calledBallInPocket||call.kind!=='ball'||call.ballId!==8)
+      return null;
+    return {evidence,rules:next};
+  }
+  const keepTurn=!evidence.safety&&evidence.calledBallInPocket&&next.last.foul===null;
+  const common={...next,currentPlayer:keepTurn?call.player:opponent,
+    last:{...next.last,retainedTurn:keepTurn}};
+  if(rules.phase==='open') {
+    if(keepTurn&&call.kind==='ball'&&call.ballId!==8) {
+      const group: 'solids'|'stripes'=call.ballId<=7?'solids':'stripes';
+      const opposite:'solids'|'stripes'=group==='solids'?'stripes':'solids';
+      const groups:readonly ['solids'|'stripes','solids'|'stripes']=
+        call.player===0?[group,opposite]:[opposite,group];
+      return {evidence,rules:{...common,phase:'assigned',groups}};
+    }
+    // Even if several groups fell, missed/unannounced calls or a safety
+    // NEVER assign ownership by the order of the physics array.
+    return {evidence,rules:{...common,phase:'open',groups:[null,null]}};
+  }
+  if(rules.phase!=='assigned'||(next.phase!=='assigned'&&next.phase!=='choose-group'))
+    return null;
+  return {evidence,rules:{...common,phase:'assigned',groups:rules.groups}};
 }
