@@ -73,7 +73,7 @@ export function playLocalHotSeatTurn(
   if(opening ? intent.kind!=='break' :
       (match.rules.phase!=='open'&&match.rules.phase!=='assigned')||
       intent.kind==='break')return null;
-  const call=opening?null:declareLocalPoolCall(
+  const call=opening||intent.kind==='break'?null:declareLocalPoolCall(
     match.rules,match.table,actor,intent.kind,
     intent.kind==='ball'?intent.ballId:undefined,
     intent.kind==='ball'?intent.pocketIndex:undefined,
