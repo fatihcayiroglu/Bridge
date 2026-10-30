@@ -3,6 +3,8 @@ import { closeExclusivePeers } from '../exclusive-surface.ts';
 import { BRIDGE_3D_GAME_CATALOG, BRIDGE_SOCIAL_SPACE } from './bridge-game-catalog.ts';
 import { startLocalSocialRoom, type RoomDirection, type SocialRoomHandle } from './social-room-webgl.ts';
 import { joinSocialRoomPreview, type SocialClient, type SocialClientStatus, type SocialSocket } from './social-room-client.ts';
+import { startMiniGolfPractice, type MiniGolfHandle } from './mini-golf-webgl.ts';
+import type { GolfState } from './mini-golf-physics.ts';
 
 type ActivitiesTab = 'games' | 'social';
 let overlay: HTMLDivElement | null = null;
@@ -10,13 +12,18 @@ let previousFocus: HTMLElement | null = null;
 let previousAppInert = false;
 let room: SocialRoomHandle | null = null;
 let socialSession: SocialClient | null = null;
+let miniGolf: MiniGolfHandle | null = null;
 let currentTab: ActivitiesTab = 'games';
 
 const translations = {
   tr: {
     title: 'Bridge Activities', games: '3D Mini Oyunlar', social: '3D Sosyal Alan',
     close: 'Kapat', subtitle: 'Arkadaşlarla birlikte oynayacağın etkinlikler',
-    planned: 'Geliştirme planında', gamesHelp: 'Bu 10 oyun henüz oynanabilir değil. İlk geliştirme için seçilen oyunlar burada listelenir.',
+    planned: 'Geliştirme planında', gamesHelp: '9 oyun planlama aşamasında. Mini Golf için tek kişilik, çevrimdışı 3D antrenman önizlemesi var; çok oyunculu oyun henüz hazır değil.',
+    solo: 'Tek kişilik 3D antrenman', tryGolf: '3D Mini Golf dene', backToGames: 'Oyunlara dön',
+    golfHelp: 'Yerel antrenman · Sunucuya skor gönderilmez, rakip ve çok oyunculu mod yok.',
+    golfAim: 'Yön (derece)', golfPower: 'Vuruş gücü', golfShoot: 'Vur', golfReset: 'Yeniden başlat',
+    golfStrokes: 'Vuruş', golfReady: 'Top hazır', golfMoving: 'Top hareket ediyor', golfWon: 'Tebrikler! Top deliğe girdi.',
     socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
     roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
     moveHelp: 'Hareket etmek için 3D alana dokun, sonra WASD veya ok tuşlarını kullan. Mobilde ekrandaki yön tuşlarını kullan.',
@@ -36,7 +43,11 @@ const translations = {
   en: {
     title: 'Bridge Activities', games: '3D Mini Games', social: '3D Social Space',
     close: 'Close', subtitle: 'Activities to enjoy with friends',
-    planned: 'Planned', gamesHelp: 'These 10 games are not playable yet. This is the catalog of games selected for development.',
+    planned: 'Planned', gamesHelp: '9 games are planned. Mini Golf has a local, single-player 3D practice preview; multiplayer is not implemented.',
+    solo: 'Solo 3D practice', tryGolf: 'Play 3D Mini Golf practice', backToGames: 'Back to games',
+    golfHelp: 'Local practice only · No server scores, opponents or multiplayer.',
+    golfAim: 'Aim (degrees)', golfPower: 'Shot power', golfShoot: 'Shoot', golfReset: 'Restart',
+    golfStrokes: 'Strokes', golfReady: 'Ball ready', golfMoving: 'Ball rolling', golfWon: 'Nice shot! Ball in the hole.',
     socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
     roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
     moveHelp: 'Focus the 3D room and use WASD or arrow keys. On mobile use the directional controls.',
@@ -76,6 +87,8 @@ function makeButton(label: string, className: string, action: () => void): HTMLB
 }
 
 function disposeRoom(): void {
+  miniGolf?.dispose();
+  miniGolf = null;
   socialSession?.dispose();
   socialSession = null;
   room?.dispose();
@@ -116,18 +129,84 @@ function onDocumentKeydown(event: KeyboardEvent): void {
   }
 }
 
+function showMiniGolf(container: HTMLElement): void {
+  // This practice mode is strictly local. Never emit activity:start, join a
+  // Socket.IO audience, ask for a microphone or claim multiplayer capability.
+  const s = strings();
+  container.replaceChildren();
+  const back = makeButton(s.backToGames, 'bridge-room-direction', () => {
+    miniGolf?.dispose();
+    miniGolf = null;
+    container.replaceChildren();
+    showGames(container);
+  });
+  back.classList.add('bridge-mini-golf-back');
+  const heading = element('h3', 'bridge-mini-golf-heading', 'Mini Golf · ' + s.solo);
+  const help = element('p', 'bridge-activities-help', s.golfHelp);
+  const canvas = element('canvas', 'bridge-activities-canvas bridge-mini-golf-canvas');
+  canvas.setAttribute('aria-label', 'Mini Golf 3D');
+  const status = element('p', 'bridge-room-status bridge-mini-golf-status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  const controls = element('div', 'bridge-mini-golf-controls');
+  const aimLabel = element('label', 'bridge-mini-golf-label', s.golfAim);
+  const aim = element('input', 'bridge-mini-golf-aim');
+  aim.type = 'range'; aim.min = '-70'; aim.max = '70'; aim.step = '5'; aim.value = '0';
+  aimLabel.append(aim);
+  const powerLabel = element('label', 'bridge-mini-golf-label', s.golfPower);
+  const power = element('input', 'bridge-mini-golf-power');
+  power.type = 'range'; power.min = '10'; power.max = '100'; power.step = '5'; power.value = '60';
+  powerLabel.append(power);
+  const shoot = makeButton(s.golfShoot, 'bridge-room-direction bridge-mini-golf-shoot', () => {
+    miniGolf?.shoot(Number(aim.value), Number(power.value));
+  });
+  const reset = makeButton(s.golfReset, 'bridge-room-direction bridge-mini-golf-reset', () => {
+    miniGolf?.reset();
+  });
+  function update(state: GolfState): void {
+    status.textContent = s.golfStrokes + ': ' + state.strokes + ' · ' + (
+      state.status === 'won' ? s.golfWon : state.status === 'moving' ? s.golfMoving : s.golfReady
+    );
+    const playable = state.status === 'ready' && (miniGolf?.isGraphicsAvailable ?? true);
+    shoot.disabled = !playable;
+    aim.disabled = !playable;
+    power.disabled = !playable;
+  }
+  controls.append(aimLabel, powerLabel, shoot, reset);
+  container.append(back, heading, help, canvas, status, controls);
+  try {
+    miniGolf = startMiniGolfPractice(canvas, update);
+    if (!miniGolf) {
+      status.textContent = s.noWebgl;
+      shoot.disabled = true;
+      return;
+    }
+    update(miniGolf.state);
+  } catch {
+    miniGolf?.dispose();
+    miniGolf = null;
+    status.textContent = s.noWebgl;
+    shoot.disabled = true;
+  }
+}
+
 function showGames(container: HTMLElement): void {
   const s = strings();
-  const info = element('p', 'bridge-activities-help', s.gamesHelp);
-  container.append(info);
+  container.append(element('p', 'bridge-activities-help', s.gamesHelp));
   const grid = element('div', 'bridge-activities-grid');
   for (const game of BRIDGE_3D_GAME_CATALOG) {
     const card = element('article', 'bridge-activities-card');
     card.append(
       element('h3', '', game.title),
       element('p', '', String(game.minPlayers) + '–' + String(game.maxPlayers) + ' ' + s.players),
-      element('span', 'bridge-activities-planned', s.planned),
+      element('span', game.state === 'solo-practice' ? 'bridge-activities-solo' : 'bridge-activities-planned',
+        game.state === 'solo-practice' ? s.solo : s.planned),
     );
+    if (game.state === 'solo-practice') {
+      const play = makeButton(s.tryGolf, 'bridge-room-direction bridge-mini-golf-launch', () => showMiniGolf(container));
+      play.setAttribute('data-game-id', game.id);
+      card.append(play);
+    }
     grid.append(card);
   }
   container.append(grid);
