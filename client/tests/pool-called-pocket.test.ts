@@ -132,6 +132,25 @@ describe('8-ball called shot/pocket contract: local-only, not an official match'
       {ballId:1,pocketIndex:0}]},call)).toBeNull();
     expect(evaluateLocalPoolCall(r,b,{...after,scratches:b.scratches},call)).toBeNull();
   });
+  it('real cue scratch and target pocket produce distinct physical pocket IDs before cue respot',()=>{
+    const init=newPoolPractice(),cuePocket=POOL_POCKETS[1],targetPocket=POOL_POCKETS[0];
+    const before={...init,shots:2,balls:init.balls.map(b=>
+      b.id===0?{...b,x:cuePocket.x-.02,z:cuePocket.z+.02}:
+      b.id===1?{...b,x:targetPocket.x+.02,z:targetPocket.z+.02}:b)};
+    let moving=strikePool(before,0,30);
+    moving=stepPool(moving);
+    expect(moving.pocketEvents).toContainEqual({ballId:0,pocketIndex:1});
+    expect(moving.pocketEvents).toContainEqual({ballId:1,pocketIndex:0});
+    expect(moving.scratches).toBe(1);
+    expect(moving.balls.find(b=>b.id===0)?.pocketed).toBe(false);
+    const call=declareLocalPoolCall(assigned(),before,0,'ball',1,0)!;
+    const out=evaluateLocalPoolCall(assigned(),before,moving,call);
+    expect(out).toMatchObject({calledBallInPocket:true,scratched:true});
+    const next=resolveLocalCalledEightBallShot(assigned(),before,moving,call);
+    expect(next?.rules.last?.foul).toBe('scratch');
+    expect(next?.rules.ballInHand).toBe('anywhere');
+    expect(next?.rules.currentPlayer).toBe(1);
+  });
   it('real fixed-step physics emits actual pocket index, survives shot settle and resets on next strike',()=>{
     const init=newPoolPractice();
     const position=POOL_POCKETS[0];
