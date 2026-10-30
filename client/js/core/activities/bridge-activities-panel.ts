@@ -8,6 +8,7 @@ import { startMiniGolfPractice, type MiniGolfHandle } from './mini-golf-webgl.ts
 import type { GolfState } from './mini-golf-physics.ts';
 import { startPoolPractice, type PoolPracticeHandle } from './pool-practice-webgl.ts';
 import { POOL_TARGET_COUNT, type PoolState } from './pool-practice-physics.ts';
+import { declarePracticePocketCall, settlePracticePocketCall, type PracticePocketCall } from './pool-practice-call.ts';
 import { joinOnlineMiniGolf, type OnlineGolfSession, type OnlineGolfMatch, type OnlineGolfStatus } from './mini-golf-client.ts';
 
 type ActivitiesTab = 'games' | 'social';
@@ -314,6 +315,31 @@ function showPoolPractice(container:HTMLElement):void {
   const status=element('p','bridge-room-status bridge-pool-status');
   status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   const controls=element('div','bridge-mini-golf-controls');
+  const callLabel=element('label','bridge-mini-golf-label',s.poolCallChallenge);
+  const callEnabled=element('input','bridge-pool-call-enabled');
+  callEnabled.type='checkbox';callLabel.append(callEnabled);
+  const ballLabel=element('label','bridge-mini-golf-label',s.poolCallBall);
+  const callBall=element('select','bridge-pool-call-ball');
+  for(let id=1;id<=POOL_TARGET_COUNT;id++) {
+    const option=element('option','',String(id));
+    option.value=String(id);callBall.append(option);
+  }
+  ballLabel.append(callBall);
+  const pocketLabel=element('label','bridge-mini-golf-label',s.poolCallPocket);
+  const callPocket=element('select','bridge-pool-call-pocket');
+  s.poolPocketNames.forEach((name,i)=>{
+    const option=element('option','',name);option.value=String(i);
+    callPocket.append(option);
+  });
+  pocketLabel.append(callPocket);
+  const callResult=element('p','bridge-room-status bridge-pool-call-result',s.poolCallPrompt);
+  callResult.setAttribute('role','status');callResult.setAttribute('aria-live','polite');
+  let pending:PracticePocketCall|null=null;
+  callEnabled.addEventListener('change',()=>{
+    if(!callEnabled.checked)pending=null;
+    callResult.textContent=s.poolCallPrompt;
+    if(poolPractice)update(poolPractice.state);
+  });
   const aimLabel=element('label','bridge-mini-golf-label',s.poolAim);
   const aim=element('input','bridge-pool-aim');
   aim.type='range';aim.min='-70';aim.max='70';aim.step='5';aim.value='0';
@@ -323,9 +349,20 @@ function showPoolPractice(container:HTMLElement):void {
   power.type='range';power.min='10';power.max='100';power.step='5';power.value='60';
   powerLabel.append(power);
   const shoot=makeButton(s.poolShoot,'bridge-room-direction bridge-pool-shoot',()=>{
-    poolPractice?.shoot(Number(aim.value),Number(power.value));
+    if(!poolPractice)return;
+    const call=callEnabled.checked?declarePracticePocketCall(
+      poolPractice.state,Number(callBall.value),Number(callPocket.value)):null;
+    if(callEnabled.checked&&!call){
+      callResult.textContent=s.poolCallInvalid;
+      return;
+    }
+    if(poolPractice.shoot(Number(aim.value),Number(power.value))) {
+      pending=call;
+      if(pending)callResult.textContent=s.poolCallPending;
+    }
   });
   const reset=makeButton(s.poolReset,'bridge-room-direction bridge-pool-reset',()=>{
+    pending=null;callResult.textContent=s.poolCallPrompt;
     poolPractice?.reset();
   });
   function update(state:PoolState):void {
@@ -333,25 +370,39 @@ function showPoolPractice(container:HTMLElement):void {
       '/'+POOL_TARGET_COUNT+' · '+s.poolScratches+': '+state.scratches+' · '+
       (state.status==='complete'?s.poolComplete:
         state.status==='moving'?s.poolMoving:s.poolReady);
+    if(pending&&state.shots===pending.shot&&state.status!=='moving') {
+      const outcome=settlePracticePocketCall(state,pending);
+      callResult.textContent=outcome==='made'?s.poolCallMade:
+        outcome==='missed'?s.poolCallMissed:s.poolCallUnverified;
+      pending=null;
+    }
     const ready=state.status==='ready' && (poolPractice?.isGraphicsAvailable??true);
     shoot.disabled=!ready;aim.disabled=!ready;power.disabled=!ready;
+    callEnabled.disabled=!(poolPractice?.isGraphicsAvailable??true)||
+      state.status==='moving';
+    callBall.disabled=!ready||!callEnabled.checked;
+    callPocket.disabled=!ready||!callEnabled.checked;
   }
-  controls.append(aimLabel,powerLabel,shoot,reset);
-  container.append(back,heading,help,canvas,status,controls);
+  controls.append(callLabel,ballLabel,pocketLabel,aimLabel,powerLabel,shoot,reset);
+  container.append(back,heading,help,canvas,status,callResult,controls);
   try{
     poolPractice=startPoolPractice(canvas,update,()=>{
+      pending=null;callResult.textContent=s.poolCallUnverified;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
+      callEnabled.disabled=true;callBall.disabled=true;callPocket.disabled=true;
       status.textContent=s.graphicsLost;
     },()=>{if(poolPractice)update(poolPractice.state);});
     if(!poolPractice){
       status.textContent=s.noWebgl;shoot.disabled=true;reset.disabled=true;
-      aim.disabled=true;power.disabled=true;return;
+      aim.disabled=true;power.disabled=true;
+      callEnabled.disabled=true;callBall.disabled=true;callPocket.disabled=true;return;
     }
     update(poolPractice.state);
   }catch{
     poolPractice?.dispose();poolPractice=null;
     status.textContent=s.noWebgl;
     shoot.disabled=true;reset.disabled=true;aim.disabled=true;power.disabled=true;
+    callEnabled.disabled=true;callBall.disabled=true;callPocket.disabled=true;
   }
 }
 

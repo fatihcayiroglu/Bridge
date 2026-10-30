@@ -5,7 +5,7 @@ import {
 import {
   chooseLocalEightBallGroup, chooseLocalIllegalBreak, newLocalEightBallRules, resolveLocalEightBallShot,
   type LocalEightBallRules,
-} from '../js/core/activities/pool-eight-ball-rules.ts';
+} from './prototypes/pool-eight-ball-rules.ts';
 
 type Options={
   pocket?:readonly number[]; first?:number|null; rail?:boolean; scratch?:boolean;

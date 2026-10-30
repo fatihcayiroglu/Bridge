@@ -3,6 +3,7 @@ import { showBridgeActivities } from '../js/core/activities/bridge-activities-pa
 import { BridgeRegistry } from '../js/core/bridge-registry.ts';
 import { startMiniGolfPractice } from '../js/core/activities/mini-golf-webgl.ts';
 import { startPoolPractice } from '../js/core/activities/pool-practice-webgl.ts';
+import { newPoolPractice } from '../js/core/activities/pool-practice-physics.ts';
 import { startLocalSocialRoom } from '../js/core/activities/social-room-webgl.ts';
 import { joinSocialRoomPreview } from '../js/core/activities/social-room-client.ts';
 import { joinOnlineMiniGolf } from '../js/core/activities/mini-golf-client.ts';
@@ -10,6 +11,7 @@ import { joinOnlineMiniGolf } from '../js/core/activities/mini-golf-client.ts';
 const callbacks = vi.hoisted(() => ({
   lost: null as null | (()=>void), restored: null as null | (()=>void),
   quality: vi.fn(),direction:vi.fn(),roomLeave:vi.fn(),
+  poolComplete: null as null | ((ballId:number,pocketIndex:number)=>void),
 }));
 vi.mock('../js/core/exclusive-surface.ts', () => ({ closeExclusivePeers: vi.fn() }));
 vi.mock('../js/core/bridge-registry.ts', () => ({ BridgeRegistry: {
@@ -35,7 +37,13 @@ vi.mock('../js/core/activities/mini-golf-webgl.ts', () => ({
 }));
 vi.mock('../js/core/activities/pool-practice-webgl.ts', () => ({
   startPoolPractice: vi.fn((_canvas:HTMLCanvasElement,onState:(s:unknown)=>void,onLost?:()=>void,onRestored?:()=>void)=>{
-    let state={shots:0,pocketed:0,scratches:0,status:'ready',balls:[]};
+    let state={...newPoolPractice()};
+    callbacks.poolComplete=(id,pocketIndex)=>{
+      state={...state,status:'ready',pocketed:id>0?1:0,
+        balls:state.balls.map(b=>b.id===id?{...b,pocketed:true}:b),
+        pocketEvents:id>0?[{ballId:id,pocketIndex}]:[]};
+      onState(state);
+    };
     callbacks.lost=onLost??null;callbacks.restored=onRestored??null;onState(state);
     return {
       get state(){return state;},get isGraphicsAvailable(){return true;},
@@ -43,7 +51,7 @@ vi.mock('../js/core/activities/pool-practice-webgl.ts', () => ({
         if(state.status!=='ready')return false;
         state={...state,shots:state.shots+1,status:'moving'};onState(state);return true;
       }),
-      reset:vi.fn(()=>{state={shots:0,pocketed:0,scratches:0,status:'ready',balls:[]};onState(state);}),
+      reset:vi.fn(()=>{state=newPoolPractice();onState(state);}),
       dispose:vi.fn(),
     };
   }),
@@ -95,7 +103,7 @@ beforeEach(() => {
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
   document.getElementById('app')!.inert=false;
-  callbacks.lost=null;callbacks.restored=null;
+  callbacks.lost=null;callbacks.restored=null;callbacks.poolComplete=null;
   vi.clearAllMocks();
 });
 afterEach(() => {
@@ -142,6 +150,60 @@ describe('real Activities panel DOM behavior, with isolated renderer/socket unit
     expect(document.querySelector('[role=dialog]')).toBeNull();
     expect(document.getElementById('app')!.inert).toBe(false);
     expect(document.activeElement?.id).toBe('origin');
+  });
+  it('calls a chosen target and exact pocket only by explicit solo opt-in; reset cancels',()=>{
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    const active=document.querySelector<HTMLInputElement>('.bridge-pool-call-enabled')!;
+    const ball=document.querySelector<HTMLSelectElement>('.bridge-pool-call-ball')!;
+    const pocket=document.querySelector<HTMLSelectElement>('.bridge-pool-call-pocket')!;
+    const result=()=>document.querySelector<HTMLElement>('.bridge-pool-call-result')!.textContent;
+    expect(active.checked).toBe(false);
+    expect(ball.disabled).toBe(true);
+    expect(pocket.disabled).toBe(true);
+    expect(result()).toContain('not a rules-based 8-ball match');
+    // Existing solo flow continues with no mandatory call.
+    click('.bridge-pool-shoot');
+    callbacks.poolComplete?.(1,0);
+    expect(result()).toContain('not a rules-based');
+    click('.bridge-pool-reset');
+    active.checked=true;active.dispatchEvent(new Event('change'));
+    expect(ball.disabled).toBe(false);
+    expect(pocket.disabled).toBe(false);
+    ball.value='1';pocket.value='4';
+    click('.bridge-pool-shoot');
+    expect(result()).toContain('Evaluating called pocket');
+    expect(ball.disabled).toBe(true);
+    callbacks.poolComplete?.(1,4);
+    expect(result()).toContain('chosen pocket!');
+    click('.bridge-pool-reset');
+    expect(result()).toContain('not a rules-based');
+    ball.value='2';pocket.value='3';
+    click('.bridge-pool-shoot');
+    callbacks.poolComplete?.(2,0);
+    expect(result()).toContain('missed the chosen pocket');
+    active.checked=false;active.dispatchEvent(new Event('change'));
+    expect(ball.disabled).toBe(true);
+    expect(result()).toContain('not a rules-based');
+    click('.bridge-pool-back');
+    expect(document.querySelector('.bridge-pool-call-result')).toBeNull();
+  });
+  it('drops any pending call when the WebGL context is lost and never invents a result',()=>{
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    const enabled=document.querySelector<HTMLInputElement>('.bridge-pool-call-enabled')!;
+    enabled.checked=true;enabled.dispatchEvent(new Event('change'));
+    click('.bridge-pool-shoot');
+    expect(document.querySelector('.bridge-pool-call-result')?.textContent)
+      .toContain('Evaluating called pocket');
+    callbacks.lost?.();
+    expect(document.querySelector('.bridge-pool-call-result')?.textContent)
+      .toContain('could not be verified');
+    expect(document.querySelector<HTMLSelectElement>('.bridge-pool-call-ball')?.disabled)
+      .toBe(true);
+    callbacks.poolComplete?.(1,0);
+    expect(document.querySelector('.bridge-pool-call-result')?.textContent)
+      .toContain('could not be verified');
   });
   it('rejects online admission until a real selected server and connected transport exist',()=>{
     showBridgeActivities();

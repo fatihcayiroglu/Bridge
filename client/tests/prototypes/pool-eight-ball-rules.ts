@@ -1,4 +1,4 @@
-import { newPoolPractice, type PoolState } from './pool-practice-physics.ts';
+import { newPoolPractice, type PoolState } from '../../js/core/activities/pool-practice-physics.ts';
 
 /**
  * LOCAL ONLY: a strict, pure rules foundation for future hot-seat 8-ball.

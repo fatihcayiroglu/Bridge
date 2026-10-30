@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { newPoolPractice, type PoolState } from '../js/core/activities/pool-practice-physics.ts';
 import { chooseLocalBreakFoul, newLocalEightBallRules, resolveLocalEightBallShot } from
-  '../js/core/activities/pool-eight-ball-rules.ts';
+  './prototypes/pool-eight-ball-rules.ts';
 import { placeLocalCueBall, POOL_HEAD_STRING_Z } from
-  '../js/core/activities/pool-ball-in-hand.ts';
+  './prototypes/pool-ball-in-hand.ts';
 
 const base=()=>newPoolPractice();
 function fullRulesFoul(first:number|null, scratch=false) {

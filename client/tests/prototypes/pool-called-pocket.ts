@@ -1,6 +1,6 @@
 import {
   POOL_POCKETS, type PoolState,
-} from './pool-practice-physics.ts';
+} from '../../js/core/activities/pool-practice-physics.ts';
 import { resolveLocalEightBallShot, type EightBallPlayer,
   type LocalEightBallRules } from './pool-eight-ball-rules.ts';
 

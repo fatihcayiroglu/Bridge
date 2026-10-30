@@ -742,6 +742,22 @@ try {
     'cue is locked during physical rolling');
   await fullPage.locator('.bridge-pool-reset').click();
   assert.match(await fullPage.locator('.bridge-pool-status').textContent(),/Shots: 0|Vuruş: 0/);
+  // Real authenticated Chromium: local call challenge is explicit opt-in.
+  // No network call, 8-ball turn, or competitive win is implied by this UI.
+  assert.equal(await fullPage.locator('.bridge-pool-call-ball').isDisabled(),true);
+  await fullPage.locator('.bridge-pool-call-enabled').check();
+  await fullPage.locator('.bridge-pool-call-ball').selectOption('1');
+  await fullPage.locator('.bridge-pool-call-pocket').selectOption('5');
+  assert.equal(await fullPage.locator('.bridge-pool-call-pocket').isDisabled(),false);
+  await fullPage.locator('.bridge-pool-shoot').click();
+  assert.match(await fullPage.locator('.bridge-pool-call-result').textContent(),
+    /Evaluating called pocket|Çağrılı vuruş değerlendiriliyor/);
+  await fullPage.locator('.bridge-pool-reset').click();
+  assert.match(await fullPage.locator('.bridge-pool-call-result').textContent(),
+    /not a rules-based 8-ball match|Bu 8-Ball maçı değildir/);
+  await fullPage.locator('.bridge-pool-call-enabled').uncheck();
+  assert.equal(await fullPage.locator('.bridge-pool-call-ball').isDisabled(),true);
+  console.log('BRIDGE_3D_POOL_REAL_AUTH_CALLED_POCKET_OPT_IN:1/1:0_skipped');
 
   // REAL Chrome keyboard, not a DOM event mock: Pool sliders must be inside
   // the same focus order as buttons. Tabs must wrap inside the modal and

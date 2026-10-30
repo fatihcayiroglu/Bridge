@@ -1,7 +1,7 @@
 import {
   POOL_FOOT_SPOT_Z, POOL_HALF_LENGTH, POOL_RADIUS, newPoolPractice,
   type PoolState,
-} from './pool-practice-physics.ts';
+} from '../../js/core/activities/pool-practice-physics.ts';
 import { newLocalEightBallRules, type EightBallPlayer,
   type LocalEightBallRules } from './pool-eight-ball-rules.ts';
 

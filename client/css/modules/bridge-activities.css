@@ -227,3 +227,20 @@
 .bridge-pool-shoot,
 .bridge-pool-reset,
 .bridge-pool-back { min-height: 44px; }
+
+/* Explicit solo called-pocket challenge; small checkbox and accessible
+   touch-sized native selectors do not expand or overflow the modal. */
+.bridge-mini-golf-label .bridge-pool-call-enabled {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  accent-color: var(--focus-ring);
+}
+.bridge-mini-golf-label select.bridge-pool-call-ball,
+.bridge-mini-golf-label select.bridge-pool-call-pocket {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  min-height: 44px;
+}
+.bridge-pool-call-result { min-height: 1.5em; }
