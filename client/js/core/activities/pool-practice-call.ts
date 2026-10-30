@@ -28,7 +28,11 @@ export function settlePracticePocketCall(
   state:PoolState,call:PracticePocketCall,
 ):PracticePocketResult|null {
   if(!Number.isSafeInteger(call.shot)||state.shots!==call.shot||
-      state.status==='moving'||!Array.isArray(state.pocketEvents)||
+      !Number.isSafeInteger(call.ballId)||call.ballId<1||call.ballId>15||
+      !Number.isSafeInteger(call.pocketIndex)||call.pocketIndex<0||
+      call.pocketIndex>=POOL_POCKETS.length||
+      (state.status!=='ready'&&state.status!=='complete')||
+      !Array.isArray(state.pocketEvents)||
       state.pocketEvents.length>16||state.balls.length!==16)return null;
   const ids=new Set<number>();
   for(const ball of state.balls) {
@@ -48,10 +52,6 @@ export function settlePracticePocketCall(
     if(event.ballId!==0&&!state.balls.some(b=>b.id===event.ballId&&b.pocketed))
       return null;
     if(event.ballId===call.ballId&&event.pocketIndex===call.pocketIndex)found=true;
-  }
-  if(state.pocketEvents.some(e=>e.ballId===0)!==(state.scratches>0&&
-      state.pocketEvents.some(e=>e.ballId===0))) {
-    // Reserved for strict per-shot scratch consistency in full rules mode.
   }
   return found?'made':'missed';
 }
