@@ -75,7 +75,7 @@ try {
     const gpu = await page.evaluate(() => {
       const s = window.__bridge3DSmoke;
       const canvas = document.querySelector('canvas');
-      const gl = canvas.getContext(s.api);
+      const gl = canvas.getContext(s.api === 'webgl1' ? 'webgl' : 'webgl2');
       return {
         api: s.api, available: s.room.isGraphicsAvailable,
         program: Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)),
