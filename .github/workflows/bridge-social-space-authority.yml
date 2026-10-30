@@ -14,11 +14,20 @@ on:
       - codex/activities-3d-social-eviction-scope-20261030
       - codex/activities-3d-redis-peer-eviction-20261030
       - codex/activities-3d-revocation-join-fence-20261030
+      - codex/activities-3d-role-access-eviction-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
       - 'server/lib/liveMembership.ts'
       - 'server/routes/roles.ts'
+      - 'server/lib/socialRoleAccess.ts'
+      - 'server/plugins/actions.ts'
+      - 'server/socket/handlers/messages-edit.ts'
+      - 'server/routes/onboarding.ts'
+      - 'server/tests/social-role-mutation-hooks.test.ts'
+      - 'server/tests/plugin-actions.test.ts'
+      - 'server/tests/messages-edit.test.ts'
+      - 'server/tests/onboarding.test.ts'
       - 'server/tests/live-membership-eviction.test.ts'
       - 'server/socket/index.ts'
       - 'server/tests/social-room-authority.test.ts'
@@ -76,11 +85,11 @@ jobs:
       - name: Real social-room handler contract tests, zero skipped
         working-directory: server
         run: |
-          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts --json --outputFile=social-room-evidence.json
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts tests/social-role-mutation-hooks.test.ts tests/plugin-actions.test.ts tests/messages-edit.test.ts tests/onboarding.test.ts --json --outputFile=social-room-evidence.json
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
-          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 46 ||
+          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 49 ||
               r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
               r.numPassedTests !== r.numTotalTests) {
             console.error('SOCIAL_3D_AUTHORITY_TESTS_UNQUALIFIED');
