@@ -3,15 +3,15 @@ import type { PoolState } from './pool-practice-physics.ts';
 /**
  * LOCAL ONLY: a strict, pure rules foundation for future hot-seat 8-ball.
  * Not yet exposed as a playable competitive mode. Full WPA adjudication still
- * needs called shots, ball-in-hand placement, four-rail break rules and an
+ * needs called shots, ball-in-hand placement, illegal-break choices and an
  * eight-on-break respot. Ambiguous cases fail closed instead of inventing wins.
  */
 export type EightBallGroup = 'solids' | 'stripes';
 export type EightBallPlayer = 0 | 1;
 export type EightBallFoul =
-  | 'scratch' | 'no-first-contact' | 'illegal-first-contact' | 'no-rail-after-contact';
+  | 'scratch' | 'no-first-contact' | 'illegal-first-contact' | 'no-rail-after-contact' | 'illegal-break';
 export type EightBallPhase =
-  | 'break' | 'open' | 'assigned' | 'choose-group' | 'eight-respot-required' | 'finished';
+  | 'break' | 'open' | 'assigned' | 'choose-group' | 'illegal-break-choice' | 'eight-respot-required' | 'finished';
 
 export interface EightBallShotResult {
   readonly actor: EightBallPlayer;
@@ -62,6 +62,7 @@ export function resolveLocalEightBallShot(
   rules: LocalEightBallRules, before: PoolState, after: PoolState,
 ): LocalEightBallRules | null {
   if(rules.phase==='finished'||rules.phase==='choose-group'||
+      rules.phase==='illegal-break-choice'||
       rules.phase==='eight-respot-required'||rules.winner!==null ||
       before.shots!==rules.shotsResolved || after.shots!==before.shots+1 ||
       before.status!=='ready'||after.status==='moving' ||
@@ -69,6 +70,16 @@ export function resolveLocalEightBallShot(
       !Number.isSafeInteger(after.shots)||!Number.isSafeInteger(after.pocketed)||
       !Number.isSafeInteger(before.pocketed)||
       typeof after.railAfterContact!=='boolean')return null;
+  // All observed cushion contacts are unique physical object IDs. The
+  // practice engine only records these on shot one; later shots reset them.
+  const breakRails=after.breakObjectRails;
+  if(!Array.isArray(before.breakObjectRails)||!Array.isArray(breakRails)||
+      (before.shots===0&&before.breakObjectRails.length!==0)||
+      (after.shots!==1&&breakRails.length!==0)||
+      breakRails.length>15||new Set(breakRails).size!==breakRails.length||
+      breakRails.some(id=>!Number.isSafeInteger(id)||id<1||id>15)||
+      (breakRails.length>0&&(!after.railAfterContact||after.firstObjectHit===null)))
+    return null;
   const old=mapBalls(before),now=mapBalls(after);
   if(!old||!now||old.get(0)||now.get(0))return null;
   const pocketed: number[]=[];
@@ -121,6 +132,15 @@ export function resolveLocalEightBallShot(
       winner:legalEight?actor:other(actor),currentPlayer:actor};
   }
   if(isBreak) {
+    // WPA: if no object was pocketed, four DIFFERENT object balls must
+    // reach a cushion. The incoming player may accept the table or choose
+    // who re-breaks. Never auto-resolve those physical choices in this
+    // unfinished candidate mode.
+    if(pocketed.length===0&&breakRails.length<4) {
+      return {...rules,shotsResolved:after.shots,
+        last:{...result,foul:foul??'illegal-break',retainedTurn:false},
+        phase:'illegal-break-choice',currentPlayer:other(actor)};
+    }
     // Table stays open after break even if a solid/stripe was sunk.
     return {...rules,...common,phase:'open',
       currentPlayer:retainedTurn?actor:other(actor)};
