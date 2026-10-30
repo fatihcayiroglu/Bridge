@@ -34,6 +34,7 @@ on:
       - codex/activities-mini-golf-reconnect-grace-20261030
       - codex/activities-mini-golf-consensual-rematch-20261030
       - codex/activities-mini-golf-ranked-results-mobile-touch-20261030
+      - codex/activities-mini-golf-mobile-online-two-player-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
@@ -66,6 +67,8 @@ on:
       - 'client/js/core/activities/mini-golf-webgl.ts'
       - 'client/tests/mini-golf-physics.test.ts'
       - 'client/js/core/activities/bridge-activities-panel.ts'
+      - 'client/js/core/activities/bridge-activities-copy.ts'
+      - 'client/tests/bridge-activities-copy.test.ts'
       - 'client/js/core/activities/bridge-activities-entry.ts'
       - 'client/index.html'
       - 'client/css/style.css'
@@ -137,7 +140,7 @@ jobs:
           console.log('SOCIAL_3D_AUTHORITY_TESTS:' + r.numPassedTests + '/' + r.numTotalTests + ':0_skipped');
           NODE
       - name: Mini Golf local physics and online protocol contract tests
-        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts
+        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts tests/bridge-activities-copy.test.ts
       - name: Design system token and modal stacking ratchets (no exemptions)
         run: cd client && npx vitest run --config vitest.config.mts tests/design-system-tokens.test.ts tests/z-index-scale.test.ts
       - name: Server build
