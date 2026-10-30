@@ -59,9 +59,9 @@ export function declareLocalPoolCall(
     if(ballId!==undefined||pocketIndex!==undefined)return null;
     return {kind,player,shot:before.shots+1};
   }
-  if(kind!=='ball'||!isObject(ballId!)||
-      !Number.isSafeInteger(pocketIndex)||pocketIndex!<0||
-      pocketIndex!>=POOL_POCKETS.length)return null;
+  if(kind!=='ball'||typeof ballId!=='number'||!isObject(ballId)||
+      typeof pocketIndex!=='number'||!Number.isSafeInteger(pocketIndex)||
+      pocketIndex<0||pocketIndex>=POOL_POCKETS.length)return null;
   if(before.balls.some(b=>b.id===ballId&&b.pocketed))return null;
   if(rules.phase==='open') {
     // WPA has an exceptional open-table eight-ball option if one class
@@ -71,9 +71,9 @@ export function declareLocalPoolCall(
     const group=rules.groups[player];
     if(group!=='solids'&&group!=='stripes')return null;
     const remaining=before.balls.some(b=>!b.pocketed&&inGroup(b.id,group));
-    if(remaining ? !inGroup(ballId!,group) : ballId!==8)return null;
+    if(remaining ? !inGroup(ballId,group) : ballId!==8)return null;
   }
-  return {kind:'ball',player,shot:before.shots+1,ballId:ballId!,pocketIndex:pocketIndex!};
+  return {kind:'ball',player,shot:before.shots+1,ballId,pocketIndex};
 }
 
 /**
