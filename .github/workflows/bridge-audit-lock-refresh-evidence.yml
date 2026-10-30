@@ -1,0 +1,56 @@
+name: Bridge audit lock refresh evidence (temporary, read-only)
+
+# This job NEVER changes the repository: only computes the deterministic
+# lockfile update in the disposable runner and prints the changed JSON entries.
+# Existing npm audit gates remain intact. Remove after committing locks.
+on:
+  pull_request:
+    branches:
+      - codex/activities-mini-golf-eight-player-lobby-20261030
+    paths:
+      - 'package.json'
+      - 'server/package.json'
+      - '.github/workflows/bridge-audit-lock-refresh-evidence.yml'
+permissions:
+  contents: read
+jobs:
+  manifest-lock-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Resolve manifests without scripts or changing tracked files
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cd server
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Report exact changed lock JSON fields for manually reviewed commit
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const cp = require('node:child_process');
+          for (const path of ['package-lock.json', 'server/package-lock.json']) {
+            const before=JSON.parse(cp.execFileSync('git',['show','HEAD:'+path],{encoding:'utf8',maxBuffer:20_000_000}));
+            const after=JSON.parse(fs.readFileSync(path,'utf8'));
+            const entries={}, removed=[];
+            const keys=new Set([...Object.keys(before.packages),...Object.keys(after.packages)]);
+            for(const key of keys){
+              const b=before.packages[key],a=after.packages[key];
+              if(JSON.stringify(b)!==JSON.stringify(a)){
+                if(a===undefined) removed.push(key);
+                else entries[key]=a;
+              }
+            }
+            const base={},changedRoots={};
+            for(const [key,value] of Object.entries(after)) if(key!=='packages' && JSON.stringify(before[key])!==JSON.stringify(value)) changedRoots[key]=value;
+            console.log('LOCK_REFRESH_DELTA='+JSON.stringify({path,changedRoots,entries,removed}));
+            console.log('LOCK_REFRESH_SUMMARY='+JSON.stringify({path,changed:Object.keys(entries).length,removed:removed.length}));
+          }
+          NODE
+      - name: Audit root/workspace manifest against refreshed in-memory lock
+        run: npm audit --audit-level=high
+      - name: Audit server manifest against refreshed in-memory lock
+        run: cd server && npm audit --audit-level=high
