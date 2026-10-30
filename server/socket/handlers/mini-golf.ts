@@ -60,12 +60,18 @@ export function registerMiniGolfHandlers(
 
   socket.on('mini-golf:join', isolateSocketHandler(socket, 'mini-golf:join', async (payload: unknown) => {
     const serverId = serverFrom(payload);
-    if (!serverId || disconnected || joining.has(serverId) ||
-        !await authorized(socket, userId, serverId)) {
+    // Mark pending BEFORE awaiting PostgreSQL. A leave may be processed
+    // while authorization awaits, and must cancel that pending admission.
+    if (!serverId || disconnected || joining.has(serverId)) {
       reject(serverId); return;
     }
     joining.add(serverId);
     try {
+    if (!await authorized(socket, userId, serverId)) {
+      if (!canceledJoins.has(serverId)) reject(serverId);
+      return;
+    }
+    if (disconnected || canceledJoins.has(serverId)) return;
     let denial = false;
     const game = await golfMatchStore.withLock(serverId, async () => {
       // Authorization before lock is not enough; a membership kick may race it.
