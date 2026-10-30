@@ -82,3 +82,17 @@ jobs:
           npm run build
           cd server && npm run build
           cd ../electron && npm run compile
+      - name: Real Mini Golf authority, revocation and 3D socket Jest tests (no skips)
+        run: |
+          cd server
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/mini-golf-authority.test.ts tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts --json --outputFile=security-upgrade-jest.json
+          node - <<'NODE'
+          const r=require('./security-upgrade-jest.json');
+          if(r.numTotalTests < 30 || r.numFailedTests || r.numPendingTests ||
+              r.numPassedTests !== r.numTotalTests)process.exit(1);
+          console.log('SECURITY_UPGRADE_JEST:'+r.numPassedTests+'/'+r.numTotalTests+':0_skipped');
+          NODE
+      - name: Real Mini Golf client and local physics tests under upgraded npm lock
+        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts
+      - name: Electron desktop Jest contracts under patched Electron
+        run: cd electron && npm test -- --runInBand --forceExit
