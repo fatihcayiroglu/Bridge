@@ -173,3 +173,24 @@ export function mountShippedActivitiesOpener(
   socket.on('userAuthenticated', () => { state.ready = true; });
   (window as typeof window & { __bridge3DShippedShell?: typeof state }).__bridge3DShippedShell = state;
 }
+
+/** Real second account for the full-SPA Mini Golf UI journey, no fake server. */
+export function mountGolfOpponent(port: number, token: string, serverId: string): void {
+  const socket = io('http://127.0.0.1:' + port, {
+    auth: { token }, transports: ['websocket'],
+    reconnection: false, forceNew: true, timeout: 7000,
+  });
+  const state = {
+    ready: false, socket, states: [] as unknown[], errors: [] as unknown[],
+    join() { socket.emit('mini-golf:join', { serverId }); },
+    sync() { socket.emit('mini-golf:sync', { serverId }); },
+    shoot(degrees: number, power: number) {
+      socket.emit('mini-golf:shoot', { serverId, degrees, power });
+    },
+    dispose() { socket.emit('mini-golf:leave', { serverId }); socket.disconnect(); },
+  };
+  socket.on('userAuthenticated', () => { state.ready = true; });
+  socket.on('mini-golf:state', result => state.states.push(result));
+  socket.on('mini-golf:error', result => state.errors.push(result));
+  (window as typeof window & { __miniGolfOpponent?: typeof state }).__miniGolfOpponent = state;
+}
