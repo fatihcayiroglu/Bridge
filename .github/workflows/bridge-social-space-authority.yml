@@ -12,6 +12,7 @@ on:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/index.ts'
       - 'server/tests/social-room-authority.test.ts'
+      - 'server/scripts/social-room-real-redis-proof.cjs'
       - '.github/workflows/bridge-social-space-authority.yml'
   workflow_dispatch:
 
@@ -22,6 +23,15 @@ jobs:
   social-authority:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd 'redis-cli ping'
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,6 +66,10 @@ jobs:
           NODE
       - name: Server build
         run: cd server && npm run build
+      - name: Two real independent Node processes against real Redis 7
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+        run: cd server && node scripts/social-room-real-redis-proof.cjs
       - name: Preserve exact-head first attempt
         if: always()
         uses: actions/upload-artifact@v4
