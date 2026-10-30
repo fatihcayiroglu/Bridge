@@ -13,10 +13,12 @@ on:
       - codex/activities-3d-postgres-jwt-acceptance-20261030
       - codex/activities-3d-social-eviction-scope-20261030
       - codex/activities-3d-redis-peer-eviction-20261030
+      - codex/activities-3d-revocation-join-fence-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
       - 'server/lib/liveMembership.ts'
+      - 'server/routes/roles.ts'
       - 'server/tests/live-membership-eviction.test.ts'
       - 'server/socket/index.ts'
       - 'server/tests/social-room-authority.test.ts'
@@ -78,7 +80,7 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
-          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 41 ||
+          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 46 ||
               r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
               r.numPassedTests !== r.numTotalTests) {
             console.error('SOCIAL_3D_AUTHORITY_TESTS_UNQUALIFIED');
