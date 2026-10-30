@@ -37,6 +37,8 @@ export interface PoolState {
   readonly firstObjectHit: number | null;
   /** At least one rail hit after first cue/object contact, not a tournament break-rail count. */
   readonly railAfterContact: boolean;
+  /** Unique object IDs driven to a rail after first cue contact on the break. */
+  readonly breakObjectRails: readonly number[];
 }
 const base = (id:number,x:number,z:number):PoolBall =>
   ({ id,x,z,vx:0,vz:0,pocketed:false });
@@ -52,7 +54,7 @@ export function newPoolPractice():PoolState {
       return base(id, (column - row / 2) * spacing, -1.14 - row * depth);
     })],
     shots:0,scratches:0,pocketed:0,status:'ready',
-    firstObjectHit:null,railAfterContact:false,
+    firstObjectHit:null,railAfterContact:false,breakObjectRails:[],
   };
 }
 export function strikePool(s:PoolState, angle:number, power:number):PoolState {
@@ -63,7 +65,7 @@ export function strikePool(s:PoolState, angle:number, power:number):PoolState {
   const r=angle*Math.PI/180, speed=power*.075;
   return {
     ...s,shots:s.shots+1,status:'moving',
-    firstObjectHit:null,railAfterContact:false,
+    firstObjectHit:null,railAfterContact:false,breakObjectRails:[],
     balls:s.balls.map(b=>b.id===0 ? {...b,vx:Math.sin(r)*speed,vz:-Math.cos(r)*speed} : b),
   };
 }
@@ -77,6 +79,7 @@ export function stepPool(s:PoolState):PoolState {
   const balls:MutableBall[]=s.balls.map(b=>({...b}));
   let pocketed=s.pocketed, scratches=s.scratches;
   let firstObjectHit=s.firstObjectHit, railAfterContact=s.railAfterContact;
+  const breakObjectRails=[...s.breakObjectRails];
   for(const b of balls) {
     if(b.pocketed)continue;
     const v=Math.hypot(b.vx,b.vz);
@@ -96,11 +99,19 @@ export function stepPool(s:PoolState):PoolState {
     const boundZ=POOL_HALF_LENGTH-POOL_RADIUS;
     if(Math.abs(b.x)>boundX) {
       b.x=Math.sign(b.x)*boundX;b.vx*=-RESTITUTION;
-      if(firstObjectHit!==null)railAfterContact=true;
+      if(firstObjectHit!==null) {
+        railAfterContact=true;
+        if(s.shots===1 && b.id!==0 && !breakObjectRails.includes(b.id))
+          breakObjectRails.push(b.id);
+      }
     }
     if(Math.abs(b.z)>boundZ) {
       b.z=Math.sign(b.z)*boundZ;b.vz*=-RESTITUTION;
-      if(firstObjectHit!==null)railAfterContact=true;
+      if(firstObjectHit!==null) {
+        railAfterContact=true;
+        if(s.shots===1 && b.id!==0 && !breakObjectRails.includes(b.id))
+          breakObjectRails.push(b.id);
+      }
     }
   }
   // Each unordered pair at most once: deterministic ordering by immutable ball id.
@@ -149,6 +160,6 @@ export function stepPool(s:PoolState):PoolState {
   // Do not freeze the cue or remaining motion when the final target falls.
   // Completion is only announced once the entire table has settled.
   return {balls,shots:s.shots,scratches,pocketed,
-    firstObjectHit,railAfterContact,status:
+    firstObjectHit,railAfterContact,breakObjectRails,status:
     moving?'moving':allPocketed?'complete':'ready'};
 }
