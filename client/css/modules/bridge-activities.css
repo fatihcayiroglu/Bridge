@@ -154,3 +154,18 @@
 .bridge-mini-golf-controls button { flex: 1 1 100px; }
 .bridge-mini-golf-controls button:disabled { opacity: .5; cursor: not-allowed; }
 .bridge-mini-golf-status { min-height: 1.5em; }
+
+/* Experimental Mini Golf scores are text-only; no player identity leak or
+   canvas overlay traps. The authoritative scoreboard stays fully readable. */
+.bridge-mini-golf-scoreboard {
+  list-style: decimal;
+  margin: 10px 0;
+  padding: 10px 18px 10px 32px;
+  border-radius: 10px;
+  background: #183348;
+  color: #e7fcff;
+  line-height: 1.8;
+}
+.bridge-mini-golf-scoreboard:empty { display: none; }
+.bridge-mini-golf-online-status { min-height: 1.5em; }
+.bridge-mini-golf-online-button { margin-bottom: 6px; width: 100%; }
