@@ -23,9 +23,15 @@ export function placeLocalCueBall(
   player: EightBallPlayer, x: number, z: number,
 ): LocalCuePlacement | null {
   if(rules.ballInHand===null||rules.winner!==null||
+      !rules.last||rules.last.foul===null||
+      rules.last.actor===player||
+      rules.last.actor!==0&&rules.last.actor!==1||
       (rules.phase!=='open'&&rules.phase!=='assigned')||
       (player!==0&&player!==1)||rules.currentPlayer!==player||
       table.status!=='ready'||table.shots!==rules.shotsResolved||
+      !Number.isSafeInteger(table.shots)||!Number.isSafeInteger(table.scratches)||
+      table.scratches<0||!Number.isSafeInteger(table.pocketed)||
+      table.pocketed<0||table.pocketed>15||
       !Number.isFinite(x)||!Number.isFinite(z)||
       Math.abs(x)>POOL_HALF_WIDTH-POOL_RADIUS-CLEARANCE||
       Math.abs(z)>POOL_HALF_LENGTH-POOL_RADIUS-CLEARANCE||
@@ -43,7 +49,7 @@ export function placeLocalCueBall(
     if(ball.id!==0&&!ball.pocketed&&
         Math.hypot(x-ball.x,z-ball.z)<2*POOL_RADIUS+CLEARANCE)return null;
   }
-  if(ids.size!==16)return null;
+  if(ids.size!==16||table.pocketed!==table.balls.filter(b=>b.id!==0&&b.pocketed).length)return null;
   // A candidate cannot start in the pocket opening, regardless of its
   // distance to a ball. Do not clamp or silently choose another point.
   if(POOL_POCKETS.some(p=>Math.hypot(x-p.x,z-p.z)<.31+POOL_RADIUS))
