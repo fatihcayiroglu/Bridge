@@ -34,7 +34,7 @@ jest.mock('../lib/logger', () => ({
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 import { registerSocialRoomHandlers } from '../socket/handlers/social-room';
-import { evictSocialUserFromRoom } from '../socket/handlers/social-room-eviction';
+import { evictSocialUserFromRoom, reconcileSocialRoomAccess } from '../socket/handlers/social-room-eviction';
 import {
   SOCIAL_SPACE_BOUNDS, SOCIAL_SPACE_MAX_PEERS, socialRoomStore,
 } from '../socket/handlers/social-room-store';
@@ -370,5 +370,105 @@ describe('3D social roster — membership revocation cleanup', () => {
     expect(io.events).toEqual([]);
     mockRedisReadFailure = false;
     expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['revoked']);
+  });
+});
+
+
+describe('3D Social Space — real role access change reconciliation contract', () => {
+  const peer = (socketId: string, userId: string) => ({
+    socketId, userId, x: 0, z: 2.5, lastStepAt: 0,
+  });
+
+  it('globally revokes only users missing fresh server permissions and preserves another tenant', async () => {
+    const sid = server(), other = server();
+    await socialRoomStore.save(sid, {
+      serverId: sid,
+      peers: [peer('revoked-socket', 'revoked'), peer('friend-socket', 'friend')],
+    });
+    await socialRoomStore.save(other, {
+      serverId: other, peers: [peer('other-tenant-socket', 'revoked')],
+    });
+    const target = {
+      rooms: new Set(['user:revoked', 'social-3d:' + sid, 'social-3d:' + other]),
+      left: [] as string[],
+      emitted: [] as Array<{event:string;data:unknown}>,
+      async leave(room: string) { this.rooms.delete(room); this.left.push(room); },
+      emit(event: string, data: unknown) { this.emitted.push({ event, data }); },
+    };
+    const broadcasts: Event[] = [];
+    const io = {
+      in(room: string) {
+        return { async fetchSockets() { return room === 'user:revoked' ? [target] : []; } };
+      },
+      to(room: string) {
+        return { emit(name: string, data: unknown) { broadcasts.push({ room, name, data }); } };
+      },
+    };
+    mockMembersFindOne.mockImplementation(async (userId: string) =>
+      userId === 'friend' ? { userId, serverId: sid } : null);
+    const removed = await reconcileSocialRoomAccess(io as never, sid);
+    expect(removed).toBe(1);
+    expect(target.left).toEqual(['social-3d:' + sid]);
+    expect(target.rooms.has('social-3d:' + other)).toBe(true);
+    expect(target.emitted).toEqual([{ event: 'social:left', data: { serverId: sid } }]);
+    expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['friend']);
+    expect((await socialRoomStore.load(other)).peers.map(p => p.userId)).toEqual(['revoked']);
+    expect(broadcasts).toEqual([{
+      room: 'social-3d:' + sid, name: 'social:peers',
+      data: { serverId: sid, peers: [{ socketId: 'friend-socket', userId: 'friend', x: 0, z: 2.5 }] },
+    }]);
+    expect(typeof await socialRoomStore.readRevocationFence(sid, '__all__')).toBe('string');
+  });
+
+  it('targeted role removal marks only the target generation and retains other members', async () => {
+    const sid = server();
+    await socialRoomStore.save(sid, {
+      serverId: sid, peers: [peer('revoked-tab-a', 'revoked'), peer('friend', 'friend'), peer('revoked-tab-b', 'revoked')],
+    });
+    const rooms = new Set(['social-3d:' + sid]);
+    const leaves: string[] = [];
+    const io = {
+      in() {
+        return { async fetchSockets() {
+          return [{ rooms, async leave(room: string) { rooms.delete(room); leaves.push(room); }, emit() {} }];
+        } };
+      },
+      to() { return { emit() {} }; },
+    };
+    mockMembersFindOne.mockResolvedValue(null);
+    expect(await reconcileSocialRoomAccess(io as never, sid, 'revoked')).toBe(2);
+    expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['friend']);
+    expect(leaves).toEqual(['social-3d:' + sid]);
+    expect(await socialRoomStore.readRevocationFence(sid, '__all__')).toBeNull();
+    expect(typeof await socialRoomStore.readRevocationFence(sid, 'revoked')).toBe('string');
+  });
+
+  it('marks global revocation before any authorization read and fails closed on Redis errors', async () => {
+    const sid = server(), broadcasts: unknown[] = [];
+    await socialRoomStore.save(sid, { serverId: sid, peers: [peer('user-a', 'revoked')] });
+    const io = {
+      in() { return { async fetchSockets() { return []; } }; },
+      to() { return { emit(...parts: unknown[]) { broadcasts.push(parts); } }; },
+    };
+    mockRedisReadFailure = true;
+    await expect(reconcileSocialRoomAccess(io as never, sid)).rejects.toThrow('Redis read unavailable');
+    expect(broadcasts).toEqual([]);
+    mockRedisReadFailure = false;
+    expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['revoked']);
+  });
+
+  it('keeps the disabled feature completely inert without Redis writes or socket access', async () => {
+    const sid = server();
+    const io = { in: jest.fn(), to: jest.fn() };
+    const previous = process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER;
+    delete process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER;
+    try {
+      expect(await reconcileSocialRoomAccess(io as never, sid)).toBe(0);
+      expect(io.in).not.toHaveBeenCalled();
+      expect(io.to).not.toHaveBeenCalled();
+      expect(await socialRoomStore.readRevocationFence(sid, '__all__')).toBeNull();
+    } finally {
+      if (previous !== undefined) process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER = previous;
+    }
   });
 });
