@@ -179,3 +179,36 @@
 /* A finished match exposes rematch voting only with explicit all-player consent. */
 .bridge-mini-golf-rematch[hidden] { display: none; }
 .bridge-mini-golf-rematch:not([hidden]) { display: block; width: 100%; margin: 8px 0; }
+
+/* Results are derived from an authenticated completed-round snapshot, never
+   from local shot animation. Shared ties retain their actual competition rank. */
+.bridge-mini-golf-results-heading { margin: 14px 0 6px; color: #e8f3fc; font-size: 1rem; }
+.bridge-mini-golf-results-heading[hidden] { display: none; }
+.bridge-mini-golf-results {
+  list-style: none;
+  padding: 10px 14px;
+  margin: 0 0 12px;
+  border: 1px solid #345d6a;
+  border-radius: 10px;
+  background: #152c40;
+  color: #f0f8ff;
+  max-height: min(36dvh, 280px);
+  overflow-y: auto;
+}
+.bridge-mini-golf-results:empty { display: none; }
+.bridge-mini-golf-results li { padding: 5px 0; line-height: 1.45; }
+.bridge-mini-golf-results li + li { border-top: 1px solid #365163; }
+
+/* Emulated touch and mobile WebViews: no 2-column overflow, safe 44px tap
+   targets and selectable sliders. Gameplay remains opt-in and WebGL-gated. */
+.bridge-mini-golf-controls { min-width: 0; }
+.bridge-mini-golf-controls button { min-height: 44px; }
+.bridge-mini-golf-label { min-width: 0; }
+.bridge-mini-golf-label input[type="range"] { touch-action: pan-x; }
+@media (max-width: 580px) {
+  .bridge-mini-golf-canvas { height: clamp(210px, 36dvh, 330px); }
+  .bridge-mini-golf-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .bridge-mini-golf-label { min-width: 0; }
+  .bridge-mini-golf-controls button { min-width: 0; }
+  .bridge-mini-golf-online-button, .bridge-mini-golf-rematch, .bridge-mini-golf-start { min-height: 48px; }
+}
