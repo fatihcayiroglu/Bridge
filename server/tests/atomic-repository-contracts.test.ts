@@ -170,10 +170,25 @@ describe('atomic PostgreSQL repository owners — mocked SQL contract only', () 
 
     it('idempotent replay is accepted when vote changes are disabled', async () => {
       const poll = { _id:'poll-1',channelId:'c',serverId:'s',createdBy:'o',question:'Q',multiSelect:false,allowVoteChange:false,closed:false,options:[{id:'a',text:'A',votes:['u1']}] };
-      const client=pgClient(sql=>/SELECT \* FROM polls/.test(sql)?{rows:[poll]}:{rows:[]}); pool.connect.mockResolvedValue(client);
+      const client=pgClient(sql=>/SELECT \* FROM polls/.test(sql)?{rows:[poll]}:/SELECT EXISTS/.test(sql)?{rows:[{parentLive:true}]}:{rows:[]}); pool.connect.mockResolvedValue(client);
       const out=await PollRepository.mutateVoteAtomic('poll-1','u1',['a'],'toggle');
       expect(out).toEqual({status:'ok',poll}); expect(client.query).toHaveBeenCalledWith('COMMIT');
       expect(client.query.mock.calls.some(([sql])=>/UPDATE polls SET options/.test(String(sql)))).toBe(false);
+    });
+
+    it('does not return an idempotent vote after the parent becomes unavailable', async () => {
+      const poll = { _id:'poll-1', channelId:'c', serverId:'s', createdBy:'o', question:'Q',
+        multiSelect:false, allowVoteChange:false, closed:false, options:[{id:'a',text:'A',votes:['u1']}] };
+      const client = pgClient(sql => /SELECT \* FROM polls/.test(sql) ? {rows:[poll]} :
+        /SELECT EXISTS/.test(sql) ? {rows:[{parentLive:false}]} : {rows:[]});
+      pool.connect.mockResolvedValue(client);
+      await expect(PollRepository.mutateVoteAtomic('poll-1','u1',['a'],'toggle'))
+        .resolves.toEqual({status:'parent_unavailable'});
+      expect(client.query.mock.calls.find(([sql]) => /SELECT EXISTS/.test(String(sql)))?.[0])
+        .toContain('channel_expiry_tombstones');
+      expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+      expect(client.query).not.toHaveBeenCalledWith('COMMIT');
+      expect(client.query.mock.calls.some(([sql]) => /UPDATE polls SET options/.test(String(sql)))).toBe(false);
     });
 
     it('remove is forbidden when vote changes are disabled even before a vote exists', async () => {
@@ -281,11 +296,24 @@ describe('atomic PostgreSQL repository owners — mocked SQL contract only', () 
 
     it('empty edit is an idempotent commit and supported fields use parameterized SQL', async () => {
       const poll={_id:'poll-1',channelId:'c',serverId:'s',createdBy:'o',question:'Q',options:[{id:'a',text:'A',votes:[]}]};
-      let client=pgClient(sql=>/SELECT \* FROM polls/.test(sql)?{rows:[poll]}:{rows:[]}); pool.connect.mockResolvedValue(client);
+      let client=pgClient(sql=>/SELECT \* FROM polls/.test(sql)?{rows:[poll]}:/SELECT EXISTS/.test(sql)?{rows:[{parentLive:true}]}:{rows:[]}); pool.connect.mockResolvedValue(client);
       await expect(PollRepository.updateEditableAtomic('poll-1',{},false)).resolves.toEqual({status:'ok',poll}); expect(client.query).toHaveBeenCalledWith('COMMIT');
       client=pgClient((sql,params)=>/SELECT \* FROM polls/.test(sql)?{rows:[poll]}:/UPDATE polls SET/.test(sql)?{rows:[{...poll,question:params?.[1],options:JSON.parse(String(params?.[2]))}]}:{rows:[]}); pool.connect.mockResolvedValue(client);
       const out=await PollRepository.updateEditableAtomic('poll-1',{question:'New',options:[{id:'a',text:'AA',votes:[]}]},true);
       expect(out?.status).toBe('ok'); expect(client.query.mock.calls.some(([sql])=>/"question" = \$2/.test(String(sql))&&/"options" = \$3::jsonb/.test(String(sql)))).toBe(true);
+    });
+
+    it('does not return a no-op edit after the parent becomes unavailable', async () => {
+      const poll={_id:'poll-1',channelId:'c',serverId:'s',createdBy:'o',question:'Q',options:[{id:'a',text:'A',votes:[]}]};
+      const client=pgClient(sql=>/SELECT \* FROM polls/.test(sql)?{rows:[poll]}:
+        /SELECT EXISTS/.test(sql)?{rows:[{parentLive:false}]}:{rows:[]});
+      pool.connect.mockResolvedValue(client);
+      await expect(PollRepository.updateEditableAtomic('poll-1',{},false))
+        .resolves.toEqual({status:'parent_unavailable'});
+      expect(client.query.mock.calls.find(([sql])=>/SELECT EXISTS/.test(String(sql)))?.[0])
+        .toContain('clock_timestamp()');
+      expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+      expect(client.query).not.toHaveBeenCalledWith('COMMIT');
     });
 
     it('unsupported edit field rolls back instead of interpolating attacker-controlled column names', async () => {
