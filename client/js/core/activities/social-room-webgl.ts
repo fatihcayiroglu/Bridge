@@ -61,8 +61,10 @@ function compileShader(gl: WebGLRenderingContext, kind: number, source: string):
 }
 
 export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandle | null {
-  const gl = canvas.getContext('webgl', { alpha: false, antialias: true, powerPreference: 'low-power' });
-  if (!gl) return null;
+  const context = canvas.getContext('webgl', { alpha: false, antialias: true, powerPreference: 'low-power' });
+  if (!context) return null;
+  // A narrowed local captured by RAF callbacks; DOM getContext() is nullable.
+  const gl: WebGLRenderingContext = context;
   const vertex = compileShader(gl, gl.VERTEX_SHADER, [
     'attribute vec3 aPosition;', 'attribute vec3 aColor;',
     'uniform mat4 uProjection;', 'uniform mat4 uView;', 'varying vec3 vColor;',
@@ -108,10 +110,10 @@ export function startLocalSocialRoom(canvas: HTMLCanvasElement): SocialRoomHandl
   let lastDraw = 0;
 
   function renderBuffer(buffer: WebGLBuffer, vertexCount: number): void {
-    gl!.bindBuffer(gl!.ARRAY_BUFFER, buffer);
-    gl!.vertexAttribPointer(positionAttr, 3, gl!.FLOAT, false, 24, 0);
-    gl!.vertexAttribPointer(colorAttr, 3, gl!.FLOAT, false, 24, 12);
-    gl!.drawArrays(gl!.TRIANGLES, 0, vertexCount);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.vertexAttribPointer(positionAttr, 3, gl.FLOAT, false, 24, 0);
+    gl.vertexAttribPointer(colorAttr, 3, gl.FLOAT, false, 24, 12);
+    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
   }
   function frame(timestamp: number): void {
     animationId = 0;
