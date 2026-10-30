@@ -699,6 +699,76 @@ try {
     null, { timeout: 12000 });
   await fullPage.locator('.bridge-mini-golf-back').click();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+  // FULL SHIPPED UI: real Express login Alice plus a third real PostgreSQL
+  // member on an independent, production-JWT Socket.IO connection. The UI
+  // starts offline and must explicitly join; state/turn/score are server-owned.
+  const opponentContext = await browser.newContext({ viewport: { width: 600, height: 480 } });
+  const opponentPage = await opponentContext.newPage();
+  pages.push({ page: opponentPage, context: opponentContext });
+  await opponentPage.goto(fullOrigin + '/');
+  await opponentPage.addScriptTag({ content: built.outputFiles[0].text });
+  await opponentPage.evaluate(({ port, token, serverId }) =>
+    window.BridgeSocialRealBrowser.mountGolfOpponent(port, token, serverId),
+    { port: fixture.port, token: fixture.charlieToken, serverId: fixture.serverId });
+  await opponentPage.waitForFunction(() => window.__miniGolfOpponent?.ready,
+    null, { timeout: 12000 });
+  await fullPage.locator('[data-game-id="mini-golf"]').click();
+  assert.equal(await fullPage.locator('.bridge-mini-golf-scoreboard li').count(),0,
+    'solo view cannot autojoin experimental multiplayer');
+  await fullPage.locator('.bridge-mini-golf-online-button').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===1,
+    null, { timeout: 12000 });
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.join());
+  await opponentPage.waitForFunction(() =>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='playing',
+    null, { timeout: 12000 });
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===2 &&
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Your turn|Sıra sende/),
+    null, { timeout: 15000 });
+  assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isEnabled(),true);
+  assert.equal(await fullPage.locator('.bridge-mini-golf-reset').isDisabled(),true,
+    'online round reset must remain server-owned, not local');
+  await fullPage.locator('.bridge-mini-golf-shoot').click();
+  await fullPage.waitForFunction(() =>
+    [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
+      .some(li => li.textContent?.match(/Strokes: 1|Vuruş: 1/)),
+    null, { timeout: 12000 });
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.sync());
+  await opponentPage.waitForFunction(() =>
+    window.__miniGolfOpponent.states.at(-1)?.players?.[0]?.won===true,
+    null, { timeout: 12000 });
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.shoot(0,60));
+  await opponentPage.waitForFunction(() =>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='finished',
+    null, { timeout: 12000 });
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Match finished|Maç sona erdi/) &&
+    [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
+      .filter(li => li.textContent?.match(/Strokes: 1|Vuruş: 1/)).length===2,
+    null, { timeout: 16000 });
+  const onlineVisual = await fullPage.evaluate(() => {
+    const canvas=document.querySelector('canvas.bridge-mini-golf-canvas');
+    const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
+    return { program:Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)), width:canvas.width };
+  });
+  assert.equal(onlineVisual.program,true,'online real 3D canvas must render');
+  assert.ok(onlineVisual.width>0);
+  await fullPage.locator('.bridge-mini-golf-online-button').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===0 &&
+    !document.querySelector('.bridge-mini-golf-reset')?.disabled,
+    null, { timeout: 10000 });
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.sync());
+  await opponentPage.waitForFunction(() =>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='waiting' &&
+    window.__miniGolfOpponent.states.at(-1)?.players.length===1,
+    null, { timeout: 12000 });
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.dispose());
+  await fullPage.locator('.bridge-mini-golf-back').click();
+  assert.equal(await fullPage.locator('.bridge-activities-card').count(),10);
+  console.log('BRIDGE_MINI_GOLF_REAL_AUTH_APP_TWO_PLAYER_UI:2/2:0_skipped');
   console.log('BRIDGE_3D_MINI_GOLF_REAL_AUTH_APP_JOURNEY:1/1:0_skipped');
   await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();
   // Language is user-configurable; the join control is the single direct
