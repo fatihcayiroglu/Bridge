@@ -68,7 +68,7 @@ export function showLocalPoolHotSeat(
       {kind:'ball' as const,ballId:Number(ball.value),pocketIndex:Number(pocket.value)};
     if(!live.shoot(state.rules.currentPlayer,Number(aim.value),Number(power.value),intent))
       notice.textContent=s.poolHotSeatInvalid;
-    else{notice.textContent=s.poolHotSeatPending;refresh(live.match);}
+    else{notice.textContent=live.status==='moving'?s.poolHotSeatPending:'';refresh(live.match);}
   });
   controls.append(field(s.poolAim,'bridge-pool-hotseat-aim',aim),
     field(s.poolPower,'bridge-pool-hotseat-power',power),
@@ -103,7 +103,7 @@ export function showLocalPoolHotSeat(
        ' · '+s.poolShots+': '+snapshot.table.shots;
     if(blocked)notice.textContent=s.poolHotSeatBlocked;
     const available=!blocked&&!moving&&(live?.graphicsAvailable??true);
-    const canShoot=available&&rules.ballInHand===null&&
+    const canShoot=available&&snapshot.table.status==='ready'&&rules.ballInHand===null&&
       (rules.phase==='break'||rules.phase==='open'||rules.phase==='assigned');
     shoot.disabled=!canShoot;aim.disabled=!canShoot;power.disabled=!canShoot;
     const called=rules.phase!=='break'&&canShoot;
