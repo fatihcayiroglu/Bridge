@@ -41,6 +41,7 @@ on:
       - codex/activities-focus-trap-accessibility-20261030
       - codex/activities-real-chromium-focus-20261030
       - codex/activities-pool-full-rack-practice-20261030
+      - codex/activities-pool-shot-trace-eightball-rules-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
