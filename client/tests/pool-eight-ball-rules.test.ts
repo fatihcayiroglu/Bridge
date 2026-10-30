@@ -3,7 +3,7 @@ import {
   POOL_POCKETS, newPoolPractice, stepPool, strikePool, type PoolState,
 } from '../js/core/activities/pool-practice-physics.ts';
 import {
-  chooseLocalEightBallGroup, newLocalEightBallRules, resolveLocalEightBallShot,
+  chooseLocalEightBallGroup, chooseLocalIllegalBreak, newLocalEightBallRules, resolveLocalEightBallShot,
   type LocalEightBallRules,
 } from '../js/core/activities/pool-eight-ball-rules.ts';
 
@@ -81,6 +81,35 @@ describe('8-ball local-only adjudication foundation — no online or official ru
     expect(rules.last?.foul).toBe('illegal-break');
     expect(rules.winner).toBeNull();
     expect(resolveLocalEightBallShot(rules,after,shot(after,{first:2}))).toBeNull();
+  });
+  it('requires the incoming player to choose acceptance or an ACTUAL fresh rack',()=>{
+    const before=newPoolPractice();
+    const {rules,after}=resolve(newLocalEightBallRules(),before,
+      {first:1,rail:true,breakRailIds:[1,2]});
+    const accept=chooseLocalIllegalBreak(rules,after,'accept-position');
+    expect(accept?.rules.phase).toBe('open');
+    expect(accept?.rules.currentPlayer).toBe(1);
+    expect(accept?.table).toBe(after);
+    expect(accept?.table.shots).toBe(1);
+    const incoming=chooseLocalIllegalBreak(rules,after,'rerack-incoming-break');
+    const original=chooseLocalIllegalBreak(rules,after,'rerack-original-break');
+    expect(incoming?.rules).toMatchObject({phase:'break',currentPlayer:1,shotsResolved:0});
+    expect(original?.rules).toMatchObject({phase:'break',currentPlayer:0,shotsResolved:0});
+    expect(incoming?.table).toEqual(newPoolPractice());
+    expect(original?.table).toEqual(newPoolPractice());
+    expect(incoming?.table).not.toBe(after);
+    expect(chooseLocalIllegalBreak(accept!.rules,after,'accept-position')).toBeNull();
+    expect(chooseLocalIllegalBreak(rules,after,'arbitrary' as never)).toBeNull();
+    expect(chooseLocalIllegalBreak(rules,{...after,status:'moving'},'accept-position')).toBeNull();
+    expect(chooseLocalIllegalBreak(rules,{...after,shots:99},'accept-position')).toBeNull();
+  });
+  it('never accepts a scratched break via the practice auto-respot workaround',()=>{
+    const {rules,after}=resolve(newLocalEightBallRules(),newPoolPractice(),
+      {first:1,rail:true,breakRailIds:[1],scratch:true});
+    expect(rules.phase).toBe('illegal-break-choice');
+    expect(rules.last?.foul).toBe('scratch');
+    expect(chooseLocalIllegalBreak(rules,after,'accept-position')).toBeNull();
+    expect(chooseLocalIllegalBreak(rules,after,'rerack-incoming-break')?.rules.currentPlayer).toBe(1);
   });
   it('four DIFFERENT object cushions qualify even if nothing is pocketed',()=>{
     const {rules}=resolve(newLocalEightBallRules(),newPoolPractice(),
