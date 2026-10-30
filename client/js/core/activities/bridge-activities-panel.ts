@@ -2,12 +2,14 @@ import { BridgeRegistry } from '../bridge-registry.ts';
 import { closeExclusivePeers } from '../exclusive-surface.ts';
 import { BRIDGE_3D_GAME_CATALOG, BRIDGE_SOCIAL_SPACE } from './bridge-game-catalog.ts';
 import { startLocalSocialRoom, type RoomDirection, type SocialRoomHandle } from './social-room-webgl.ts';
+import { joinSocialRoomPreview, type SocialClient, type SocialClientStatus, type SocialSocket } from './social-room-client.ts';
 
 type ActivitiesTab = 'games' | 'social';
 let overlay: HTMLDivElement | null = null;
 let previousFocus: HTMLElement | null = null;
 let previousAppInert = false;
 let room: SocialRoomHandle | null = null;
+let socialSession: SocialClient | null = null;
 let currentTab: ActivitiesTab = 'games';
 
 const translations = {
@@ -20,6 +22,13 @@ const translations = {
     moveHelp: 'Hareket etmek için 3D alana dokun, sonra WASD veya ok tuşlarını kullan. Mobilde ekrandaki yön tuşlarını kullan.',
     forward: 'İleri', back: 'Geri', left: 'Sol', right: 'Sağ',
     players: 'oyuncu', free: 'Planlanan ücretsiz oyunlar', local: 'Yerel önizleme',
+    tryOnline: 'Ortak odayı dene (deneysel)', leaveOnline: 'Ortak odadan ayrıl',
+    chooseServer: 'Önce erişimin olan bir sunucu seç.',
+    onlineConnecting: 'Sunucudan izin ve oda yanıtı bekleniyor…',
+    onlineOnline: 'Ortak odada · Sunucudan gelen avatarlar çiziliyor',
+    onlineUnavailable: 'Çevrimiçi oda kullanılamıyor veya sunucuda kapalı. Yerel 3D oda çalışmaya devam ediyor.',
+    onlineDisconnected: 'Ortak odadan ayrıldın. Yerel 3D oda açık.',
+    onlineInvalid: 'Güvenilmeyen veya geçersiz oda verisi reddedildi.',
   },
   en: {
     title: 'Bridge Activities', games: '3D Mini Games', social: '3D Social Space',
@@ -30,6 +39,13 @@ const translations = {
     moveHelp: 'Focus the 3D room and use WASD or arrow keys. On mobile use the directional controls.',
     forward: 'Forward', back: 'Back', left: 'Left', right: 'Right',
     players: 'players', free: 'Planned free games', local: 'Local preview',
+    tryOnline: 'Try shared room (experimental)', leaveOnline: 'Leave shared room',
+    chooseServer: 'Select a server you belong to first.',
+    onlineConnecting: 'Waiting for server permissions and room response…',
+    onlineOnline: 'In shared room · Drawing server-owned avatars',
+    onlineUnavailable: 'Shared room unavailable or disabled on server. Local 3D room remains available.',
+    onlineDisconnected: 'You left the shared room. Local 3D room remains open.',
+    onlineInvalid: 'Untrusted or malformed room snapshot was rejected.',
   },
 } as const;
 
@@ -54,6 +70,8 @@ function makeButton(label: string, className: string, action: () => void): HTMLB
 }
 
 function disposeRoom(): void {
+  socialSession?.dispose();
+  socialSession = null;
   room?.dispose();
   room = null;
 }
@@ -147,8 +165,58 @@ function showSocial(container: HTMLElement): void {
   );
   container.append(controls, element('p', 'bridge-activities-help', s.moveHelp));
   try {
-    room = startLocalSocialRoom(canvas);
-    if (!room) container.append(element('p', 'bridge-room-error', s.noWebgl));
+    room = startLocalSocialRoom(canvas, direction => socialSession?.step(direction));
+    if (!room) {
+      container.append(element('p', 'bridge-room-error', s.noWebgl));
+      return;
+    }
+    // The network protocol is an explicit, optional experiment. Merely opening
+    // this tab neither joins a server room nor reads mic/camera permissions.
+    const chosen = BridgeRegistry.call<unknown>('getCurrentServer');
+    const candidate = chosen && typeof chosen === 'object' ? (chosen as { _id?: unknown })._id : null;
+    const serverId = typeof candidate === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(candidate) ? candidate : null;
+    const currentSocket = BridgeRegistry.get<unknown>('socket');
+    const socket = currentSocket && typeof currentSocket === 'object'
+      ? currentSocket as SocialSocket : null;
+    const onlineStatus = element('p', 'bridge-room-status', serverId ? s.roomStatus : s.chooseServer);
+    onlineStatus.setAttribute('role', 'status');
+    onlineStatus.setAttribute('aria-live', 'polite');
+    const joinButton = makeButton(s.tryOnline, 'bridge-room-direction', () => {
+      if (!serverId || !room) return;
+      if (socialSession?.active) {
+        socialSession.dispose();
+        socialSession = null;
+        room.leaveOnline();
+        joinButton.textContent = s.tryOnline;
+        return;
+      }
+      // Read the canonical socket at the moment of the click. Reconnect may
+      // replace it since the modal first opened.
+      const live = BridgeRegistry.get<unknown>('socket');
+      const chosenSocket = live && typeof live === 'object' ? live as SocialSocket : socket;
+      if (!chosenSocket || !chosenSocket.connected ||
+          typeof chosenSocket.on !== 'function' || typeof chosenSocket.off !== 'function' ||
+          typeof chosenSocket.emit !== 'function') {
+        onlineStatus.textContent = s.onlineUnavailable;
+        return;
+      }
+      socialSession = joinSocialRoomPreview(
+        chosenSocket, serverId,
+        (snapshot, ownSocketId) => room?.setOnlinePeers(snapshot.peers, ownSocketId) ?? false,
+        (status: SocialClientStatus) => {
+          if (status !== 'online') room?.leaveOnline();
+          const message = {
+            connecting: s.onlineConnecting, online: s.onlineOnline,
+            unavailable: s.onlineUnavailable, disconnected: s.onlineDisconnected,
+            invalid: s.onlineInvalid,
+          }[status];
+          onlineStatus.textContent = message;
+          joinButton.textContent = status === 'online' ? s.leaveOnline : s.tryOnline;
+        },
+      );
+    });
+    joinButton.disabled = !serverId;
+    container.append(onlineStatus, joinButton);
   } catch {
     disposeRoom();
     container.append(element('p', 'bridge-room-error', s.noWebgl));
