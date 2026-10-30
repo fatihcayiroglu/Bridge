@@ -122,6 +122,44 @@ describe('real renderer lifecycle against a deterministic WebGL command recorder
     expect(handle?.placeLocalTable(candidate)).toBe(false);
     expect(pending.size).toBe(0);
   });
+  it('Pool observer snapshots cannot tamper with authoritative balls or pocket evidence', () => {
+    const {canvas}=surface();
+    let callbacks=0;
+    const game=startPoolPractice(canvas, snapshot=>{
+      callbacks++;
+      // A hostile/misbehaving UI callback must not change the physics state.
+      (snapshot.balls[0] as {x:number}).x=100;
+      (snapshot.balls as unknown as unknown[]).push({id:16});
+      (snapshot.breakObjectRails as number[]).push(15);
+      (snapshot.pocketEvents as {ballId:number;pocketIndex:number}[])
+        .push({ballId:8,pocketIndex:0});
+    });
+    expect(game).not.toBeNull();
+    const exposed=game!.state;
+    (exposed.balls[0] as {x:number}).x=-100;
+    (exposed.balls as unknown as unknown[]).pop();
+    (exposed.breakObjectRails as number[]).push(1);
+    (exposed.pocketEvents as {ballId:number;pocketIndex:number}[])
+      .push({ballId:8,pocketIndex:1});
+    expect(game!.state.balls).toHaveLength(16);
+    expect(game!.state.balls[0]?.x).toBe(0);
+    expect(game!.state.breakObjectRails).toEqual([]);
+    expect(game!.state.pocketEvents).toEqual([]);
+    expect(game!.shoot(0,55)).toBe(true);
+    frames(5);
+    expect(callbacks).toBeGreaterThan(1);
+    expect(game!.state.balls).toHaveLength(16);
+    expect(game!.state.balls[0]!.x).not.toBe(100);
+    expect(game!.state.breakObjectRails).not.toContain(15);
+    expect(game!.state.pocketEvents).toEqual([]);
+    game!.reset();
+    const ready=game!.state;
+    const placed={...ready,balls:ready.balls.map(b=>b.id===0?{...b,x:.55,z:2.5}:b)};
+    expect(game!.placeLocalTable(placed)).toBe(true);
+    expect(game!.state.balls[0]?.x).toBe(.55);
+    game!.dispose();
+    expect(pending.size).toBe(0);
+  });
   it('Pool uploads 16 full spheres with real white caps for stripes 9–15, colored solids and a dark eight', () => {
     const { canvas, gl } = surface('webgl1');
     const game = startPoolPractice(canvas, vi.fn());

@@ -120,6 +120,18 @@ function free(gl:Gl,g:GPU) {
   gl.deleteBuffer(g.staticBuffer);gl.deleteBuffer(g.dynamicBuffer);
   gl.deleteProgram(g.program);gl.deleteShader(g.vs);gl.deleteShader(g.fs);
 }
+/**
+ * The simulation state must never escape by reference. TypeScript readonly is
+ * erased at runtime; callers and UI callbacks may mutate snapshots.
+ */
+function outwardState(state:PoolState):PoolState {
+  return {
+    ...state,
+    balls:state.balls.map(ball=>({...ball})),
+    breakObjectRails:[...state.breakObjectRails],
+    pocketEvents:state.pocketEvents.map(event=>({...event})),
+  };
+}
 export function startPoolPractice(
   canvas:HTMLCanvasElement,onState:(s:PoolState)=>void,onLost?:()=>void,onRestored?:()=>void,
 ):PoolPracticeHandle|null {
@@ -130,7 +142,7 @@ export function startPoolPractice(
   let gpu:GPU|null=allocate(gl,api,staticData);
   let state=newPoolPractice(),disposed=false,lost=false,raf=0,lastTime=0,carry=0,lastDraw=0;
   const camera=view();
-  onState(state);
+  onState(outwardState(state));
   function draw(now:number) {
     if(!gpu)return;
     const rect=canvas.getBoundingClientRect();
@@ -180,7 +192,7 @@ export function startPoolPractice(
       changed ||=next!==state;state=next;carry-=POOL_DT;steps++;
     }
     if(steps===8)carry=0;
-    if(changed)onState(state);
+    if(changed)onState(outwardState(state));
     if(!lastDraw||now-lastDraw>=1000/30)draw(now);
     raf=requestAnimationFrame(tick);
   }
@@ -209,22 +221,22 @@ export function startPoolPractice(
   document.addEventListener('visibilitychange',visibility);
   resume();
   return {
-    get state(){return state;},
+    get state(){return outwardState(state);},
     get isGraphicsAvailable(){return !disposed&&!lost&&gpu!==null;},
     shoot(angle,power){
       if(disposed||lost||!gpu)return false;
       const next=strikePool(state,angle,power);
       if(next===state)return false;
-      state=next;onState(state);return true;
+      state=next;onState(outwardState(state));return true;
     },
     placeLocalTable(next){
       if(disposed||lost||!gpu)return false;
       const accepted=acceptLocalPoolPlacement(state,next);
       if(!accepted)return false;
-      state=accepted;carry=0;lastTime=0;lastDraw=0;onState(state);
+      state=accepted;carry=0;lastTime=0;lastDraw=0;onState(outwardState(state));
       return true;
     },
-    reset(){if(disposed)return;state=newPoolPractice();carry=0;onState(state);},
+    reset(){if(disposed)return;state=newPoolPractice();carry=0;onState(outwardState(state));},
     dispose(){
       if(disposed)return;disposed=true;
       if(raf)cancelAnimationFrame(raf);

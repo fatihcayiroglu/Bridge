@@ -47,6 +47,7 @@ on:
       - codex/activities-pool-called-pocket-contract-20261030
       - codex/activities-pool-eight-break-respot-20261030
       - codex/activities-pool-called-pocket-practice-ui-20261030
+      - codex/activities-pool-safe-local-placement-renderer-20261031
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
