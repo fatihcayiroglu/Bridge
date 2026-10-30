@@ -23,6 +23,7 @@ on:
       - codex/activities-3d-browser-membership-revocation-20261030
       - codex/activities-3d-social-error-ghost-cleanup-20261030
       - codex/activities-3d-dual-webgl-context-dpr-20261030
+      - codex/activities-3d-real-panel-browser-proof-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
@@ -47,6 +48,10 @@ on:
       - 'server/scripts/social-room-real-browser-fixture.cjs'
       - 'client/js/core/activities/social-room-client.ts'
       - 'client/js/core/activities/bridge-activities-panel.ts'
+      - 'client/js/core/activities/bridge-activities-entry.ts'
+      - 'client/index.html'
+      - 'client/css/style.css'
+      - 'client/css/modules/bridge-activities.css'
       - 'e2e/scripts/social-room-browser-entry.ts'
       - 'e2e/scripts/social-room-real-browser-webgl-smoke.mjs'
       - '.github/workflows/bridge-social-space-authority.yml'
@@ -115,6 +120,8 @@ jobs:
           NODE
       - name: Server build
         run: cd server && npm run build
+      - name: Production client HTML and stylesheet build
+        run: npm run build
       - name: Two real independent Node processes against real Redis 7
         env:
           REDIS_URL: redis://127.0.0.1:6379
