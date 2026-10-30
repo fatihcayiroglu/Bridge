@@ -7,6 +7,8 @@ export const POOL_DT = 1 / 120;
 export const POOL_RADIUS = 0.14;
 export const POOL_HALF_WIDTH = 2.1;
 export const POOL_HALF_LENGTH = 4;
+/** Foot spot at the apex of the current 15-object rack, in table coordinates. */
+export const POOL_FOOT_SPOT_Z = -1.14;
 const FRICTION = 0.86;
 const RESTITUTION = 0.91;
 const STOP = 0.018;
@@ -58,7 +60,7 @@ export function newPoolPractice():PoolState {
       const column = index - row * (row + 1) / 2;
       const spacing = POOL_RADIUS * 2 + 0.010;
       const depth = POOL_RADIUS * Math.sqrt(3) + 0.012;
-      return base(id, (column - row / 2) * spacing, -1.14 - row * depth);
+      return base(id, (column - row / 2) * spacing, POOL_FOOT_SPOT_Z - row * depth);
     })],
     shots:0,scratches:0,pocketed:0,status:'ready',
     firstObjectHit:null,railAfterContact:false,breakObjectRails:[],pocketEvents:[],
