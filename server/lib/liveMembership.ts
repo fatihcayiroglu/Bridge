@@ -19,7 +19,9 @@ export function roomBelongsToServer(
   channelIds: ReadonlySet<string>,
   threadIds: ReadonlySet<string>,
 ): boolean {
-  if (room === `server:${serverId}`) return true;
+  // The 3D Social Space is a SERVER-scoped room, not a channel or game.
+  // Kick/ban revocation must remove its socket delivery audience immediately.
+  if (room === `server:${serverId}` || room === `social-3d:${serverId}`) return true;
   const split = room.indexOf(':');
   if (split <= 0) return false;
   const prefix = room.slice(0, split);
