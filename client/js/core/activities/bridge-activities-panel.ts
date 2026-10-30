@@ -30,7 +30,8 @@ const translations = {
     onlineDisconnected: 'Ortak odadan ayrıldın. Yerel 3D oda açık.',
     onlineInvalid: 'Güvenilmeyen veya geçersiz oda verisi reddedildi.',
     graphicsMode: 'Grafik motoru', quality: 'Grafik kalitesi', low: 'Düşük', balanced: 'Dengeli', high: 'Yüksek',
-    graphicsLost: '3D grafik bağlamı kayboldu. Oturum kapatıldı; 3D alanı yeniden açarak tekrar deneyin.',
+    graphicsLost: '3D grafik bağlamı kayboldu; çevrimiçi oturum kapatıldı. Geri yükleme bekleniyor…',
+    graphicsRestored: '3D grafikler geri yüklendi. Yerel odadasın; çevrimiçi odaya yalnızca yeniden seçerek katılabilirsin.',
   },
   en: {
     title: 'Bridge Activities', games: '3D Mini Games', social: '3D Social Space',
@@ -49,7 +50,8 @@ const translations = {
     onlineDisconnected: 'You left the shared room. Local 3D room remains open.',
     onlineInvalid: 'Untrusted or malformed room snapshot was rejected.',
     graphicsMode: 'Graphics API', quality: 'Graphics quality', low: 'Low', balanced: 'Balanced', high: 'High',
-    graphicsLost: '3D graphics context was lost. The room session was closed; reopen 3D Social Space to try again.',
+    graphicsLost: '3D graphics context lost; the online session was closed. Waiting for restoration…',
+    graphicsRestored: '3D graphics restored in local-only mode. Explicitly opt in again to rejoin the shared room.',
   },
 } as const;
 
@@ -171,12 +173,25 @@ function showSocial(container: HTMLElement): void {
   try {
     const graphicsWarning = element('p', 'bridge-room-error');
     graphicsWarning.setAttribute('role', 'status');
-    room = startLocalSocialRoom(canvas, direction => socialSession?.step(direction), () => {
-      socialSession?.dispose();
-      socialSession = null;
-      graphicsWarning.textContent = s.graphicsLost;
-      canvas.setAttribute('aria-disabled', 'true');
-    });
+    graphicsWarning.setAttribute('aria-live', 'polite');
+    let onlineJoin: HTMLButtonElement | null = null;
+    let allowJoinOnRestore = false;
+    room = startLocalSocialRoom(
+      canvas, direction => socialSession?.step(direction),
+      () => {
+        socialSession?.dispose();
+        socialSession = null;
+        room?.leaveOnline();
+        if (onlineJoin) onlineJoin.disabled = true;
+        graphicsWarning.textContent = s.graphicsLost;
+        canvas.setAttribute('aria-disabled', 'true');
+      },
+      () => {
+        canvas.removeAttribute('aria-disabled');
+        graphicsWarning.textContent = s.graphicsRestored;
+        if (onlineJoin) onlineJoin.disabled = !allowJoinOnRestore;
+      },
+    );
     if (!room) {
       container.append(element('p', 'bridge-room-error', s.noWebgl));
       return;
@@ -205,6 +220,7 @@ function showSocial(container: HTMLElement): void {
     const chosen = BridgeRegistry.call<unknown>('getCurrentServer');
     const candidate = chosen && typeof chosen === 'object' ? (chosen as { _id?: unknown })._id : null;
     const serverId = typeof candidate === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(candidate) ? candidate : null;
+    allowJoinOnRestore = Boolean(serverId);
     const currentSocket = BridgeRegistry.get<unknown>('socket');
     const socket = currentSocket && typeof currentSocket === 'object'
       ? currentSocket as SocialSocket : null;
@@ -212,7 +228,7 @@ function showSocial(container: HTMLElement): void {
     onlineStatus.setAttribute('role', 'status');
     onlineStatus.setAttribute('aria-live', 'polite');
     const joinButton = makeButton(s.tryOnline, 'bridge-room-direction', () => {
-      if (!serverId || !room) return;
+      if (!serverId || !room || !room.isGraphicsAvailable) return;
       if (socialSession?.active) {
         socialSession.dispose();
         socialSession = null;
@@ -245,7 +261,8 @@ function showSocial(container: HTMLElement): void {
         },
       );
     });
-    joinButton.disabled = !serverId;
+    onlineJoin = joinButton;
+    joinButton.disabled = !serverId || !room.isGraphicsAvailable;
     container.append(onlineStatus, joinButton);
   } catch {
     disposeRoom();
