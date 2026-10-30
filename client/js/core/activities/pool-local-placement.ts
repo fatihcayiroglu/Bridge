@@ -73,7 +73,8 @@ export function acceptLocalPoolPlacement(
     if(!next.pocketed) {
       if(Math.abs(next.x)>POOL_HALF_WIDTH-POOL_RADIUS-0.002 ||
          Math.abs(next.z)>POOL_HALF_LENGTH-POOL_RADIUS-0.002 ||
-         POOL_POCKETS.some(p=>Math.hypot(next.x-p.x,next.z-p.z)<.31+POOL_RADIUS))
+         (changed && POOL_POCKETS.some(p=>
+           Math.hypot(next.x-p.x,next.z-p.z)<.31+POOL_RADIUS)))
         return null;
       active.push(next);
     }
