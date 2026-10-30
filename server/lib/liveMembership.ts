@@ -221,6 +221,14 @@ export async function evictUserFromServerRooms(
     }
     socket.emit('membership:revoked', { serverId });
   }
+  // The room is server-scoped, not one of the game/activity channels. Remove
+  // persisted avatars AFTER the target sockets have left their delivery room;
+  // then publish the revised roster only to remaining authorized subscribers.
+  // Lazy-load only when the still-experimental multiplayer protocol is enabled.
+  if (process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER === '1') {
+    const { evictSocialUserFromRoom } = await import('../socket/handlers/social-room-eviction');
+    await evictSocialUserFromRoom(io, userId, serverId);
+  }
   return leaves;
 }
 
