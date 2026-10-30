@@ -30,6 +30,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
   const { verifyToken } = require('../dist/middleware/auth');
   const { parseTokenVersion } = require('../dist/lib/tokenVersion');
   const { registerSocialRoomHandlers } = require('../dist/socket/handlers/social-room');
+  const { evictUserFromServerRooms } = require('../dist/lib/liveMembership');
   const { socialRoomStore } = require('../dist/socket/handlers/social-room-store');
   const { applyAdapter, disconnect, isRedisAvailable } = require('../dist/lib/redisAdapter');
   const run = 'social_pg_' + randomBytes(6).toString('hex');
@@ -128,6 +129,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     io.on('connection', async socket => {
       try {
         const userId = socket.data.bridgeTestUserId;
+        await socket.join('user:' + userId);
         if (await Members.findOne(userId, ids.server)) await socket.join('server:' + ids.server);
         registerSocialRoomHandlers(socket, io, userId);
         // Harness-only ready signal after the real DB-based membership join.
@@ -173,17 +175,29 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     assert.equal(position.x, 0.35);
     assert.equal(position.z, 2.5);
 
-    // Persisted membership ban must take effect at the next movement request.
+    // Persisted membership ban must immediately evict socket audience AND
+    // Redis avatar presence, WITHOUT waiting for another client movement.
     await q(
       'UPDATE members SET banned = TRUE WHERE "userId"=$1 AND "serverId"=$2',
       [ids.b, ids.server],
     );
     assert.equal(await Members.findOne(ids.b, ids.server), null);
-    const onError = waitForEvent(b, 'social:error');
+    const membershipRevoked = waitForEvent(b, 'membership:revoked');
     const aSeesEviction = waitForEvent(a, 'social:peers');
+    await evictUserFromServerRooms(io, ids.b, ids.server);
+    assert.deepEqual(await membershipRevoked, { serverId: ids.server });
+    assert.deepEqual((await aSeesEviction).peers.map(p => p.userId), [ids.a]);
+    const revokedSockets = await io.in('user:' + ids.b).fetchSockets();
+    assert.equal(revokedSockets.length, 1);
+    assert.equal(revokedSockets[0].rooms.has('social-3d:' + ids.server), false);
+    assert.deepEqual((await socialRoomStore.load(ids.server)).peers.map(p => p.userId), [ids.a]);
+
+    // Handler authorization continues to fail on any late movement from the
+    // revoked socket; it cannot re-add a peer to the just-cleaned Redis roster.
+    const onError = waitForEvent(b, 'social:error');
     b.emit('social:step', { serverId: ids.server, direction: 'left' });
     assert.deepEqual(await onError, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
-    assert.deepEqual((await aSeesEviction).peers.map(p => p.userId), [ids.a]);
+    assert.deepEqual((await socialRoomStore.load(ids.server)).peers.map(p => p.userId), [ids.a]);
 
     // Revoking access during an already active connection also blocks join.
     const forbidden = waitForEvent(b, 'social:error');
@@ -196,6 +210,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     assert.equal((await socialRoomStore.load(ids.server)).peers.length, 0);
     console.log('SOCIAL_3D_REAL_POSTGRES_JWT_REDIS_SOCKET:2/2:0_skipped');
     console.log('SOCIAL_3D_REAL_POSTGRES_BAN_EVICTION:1/1:0_skipped');
+    console.log('SOCIAL_3D_REAL_POSTGRES_PROACTIVE_REDIS_EVICTION:1/1:0_skipped');
   }
 
   runProof().catch(error => {
