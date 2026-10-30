@@ -153,7 +153,7 @@ describe('3D Social Space authority and presence', () => {
     await s.trigger('social:join', { serverId: sid });
     await s.trigger('social:step', { serverId: 'other', direction: 'forward' });
     expect(io.events).toHaveLength(1); // only join publication
-    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: sid });
+    expect(last(s, 'social:error')).toEqual({ code: 'SOCIAL_ROOM_UNAVAILABLE', serverId: 'other' });
   });
 
   it('scopes cross-tenant step/join errors without publishing the other room', async () => {
