@@ -12,6 +12,8 @@ import { cache, isRedisAvailable } from '../../lib/redisAdapter';
 export const GOLF_MAX_STROKES = 8;
 export const GOLF_MIN_PLAYERS = 2;
 export const GOLF_MAX_PLAYERS = 8;
+/** Short, bounded ownership reservation following a real transport disconnect. */
+export const GOLF_RECONNECT_GRACE_MS = 20_000;
 const KEY = 'bridge-mini-golf:v1:';
 const TTL_SECONDS = 30 * 60;
 export type GolfPhase = 'waiting' | 'playing' | 'finished';
@@ -22,6 +24,8 @@ export interface GolfPlayer {
   z: number;
   strokes: number;
   won: boolean;
+  /** Server-generated expiry; NEVER serialized into client-facing snapshots. */
+  reconnectUntil?: number;
 }
 export interface GolfMatch {
   serverId: string;
@@ -46,7 +50,9 @@ function validate(serverId: string, raw: unknown): GolfMatch {
         Number.isFinite(p.x) && Number.isFinite(p.z) &&
         Math.abs(p.x) <= 2.25 && Math.abs(p.z) <= 4.6 &&
         Number.isSafeInteger(p.strokes) && p.strokes >= 0 && p.strokes <= GOLF_MAX_STROKES &&
-        typeof p.won === 'boolean') ||
+        typeof p.won === 'boolean' &&
+        (p.reconnectUntil === undefined ||
+          (Number.isSafeInteger(p.reconnectUntil) && p.reconnectUntil > 0))) ||
       (game.phase === 'playing' && game.players.length < GOLF_MIN_PLAYERS) ||
       (game.phase === 'finished' && game.players.length < GOLF_MIN_PLAYERS) ||
       new Set(game.players.map(p => p.userId)).size !== game.players.length ||
@@ -168,11 +174,53 @@ export function removeGolfPlayer(game: GolfMatch, socketId: string): boolean {
   }
   return true;
 }
+/** Reserve a seat for a short period after a real disconnect, never on leave. */
+export function suspendGolfSeat(game: GolfMatch, socketId: string, now: number): boolean {
+  if (!Number.isSafeInteger(now) || now < 0) throw Error('GOLF_BAD_CLOCK');
+  const player = game.players.find(p => p.socketId === socketId);
+  if (!player || player.reconnectUntil !== undefined) return false;
+  player.reconnectUntil = now + GOLF_RECONNECT_GRACE_MS;
+  game.revision++;
+  return true;
+}
+
+/**
+ * Authenticated user reclaim only. The handler rechecks DB membership before
+ * invoking this under the same Redis lock; an active socket is never replaced.
+ */
+export function resumeGolfSeat(
+  game: GolfMatch, userId: string, socketId: string, now: number,
+): boolean {
+  if (!idOk(userId) || !idOk(socketId) || !Number.isSafeInteger(now) || now < 0) return false;
+  const player = game.players.find(p => p.userId === userId);
+  if (!player || player.reconnectUntil === undefined ||
+      player.reconnectUntil <= now ||
+      game.players.some(p => p.socketId === socketId && p.userId !== userId)) return false;
+  player.socketId = socketId;
+  delete player.reconnectUntil;
+  game.revision++;
+  return true;
+}
+
+/** Prune only expired disconnected seats; preserve ongoing 2–8 player scores. */
+export function expireGolfSeats(game: GolfMatch, now: number): boolean {
+  if (!Number.isSafeInteger(now) || now < 0) throw Error('GOLF_BAD_CLOCK');
+  let changed = false;
+  for (const player of [...game.players]) {
+    if (player.reconnectUntil !== undefined && player.reconnectUntil <= now) {
+      changed = removeGolfPlayer(game, player.socketId) || changed;
+    }
+  }
+  return changed;
+}
+
 export function publicGolfMatch(game: GolfMatch) {
   return {
     serverId: game.serverId, revision: game.revision, phase: game.phase,
     turnUserId: game.phase === 'playing' ? game.players[game.turn]?.userId ?? null : null,
     minPlayers: GOLF_MIN_PLAYERS, maxPlayers: GOLF_MAX_PLAYERS,
-    players: game.players.map(({ userId, x, z, strokes, won }) => ({ userId, x, z, strokes, won })),
+    players: game.players.map(({ userId, x, z, strokes, won, reconnectUntil }) => ({
+      userId, x, z, strokes, won, reconnecting: reconnectUntil !== undefined,
+    })),
   };
 }
