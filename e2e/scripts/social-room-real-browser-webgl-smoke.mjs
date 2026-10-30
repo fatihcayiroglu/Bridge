@@ -964,6 +964,69 @@ try {
   await fullPage.locator('.bridge-mini-golf-back').click();
   console.log('BRIDGE_MINI_GOLF_REAL_AUTH_APP_EIGHT_PLAYER_CAPACITY:8/8:0_skipped');
 
+  // Emulated smartphone acceptance (NOT a physical Android/iOS device):
+  // actual Bridge Express login, shipped HTML/CSS, touch-enabled Chromium,
+  // actual WebGL canvas, narrow viewport and tap-driven mini-golf controls.
+  const mobileContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    screen: { width: 390, height: 844 },
+    deviceScaleFactor: 2, isMobile: true, hasTouch: true,
+  });
+  const mobilePage = await mobileContext.newPage();
+  pages.push({ page: mobilePage, context: mobileContext });
+  const mobileErrors=[];
+  mobilePage.on('pageerror', error => mobileErrors.push(String(error.message)));
+  const mobileDocument = await mobilePage.goto(fullOrigin + '/index.html',
+    {waitUntil:'domcontentloaded'});
+  assert.equal(mobileDocument?.status(),200);
+  await mobilePage.locator('#l-username').waitFor({state:'visible',timeout:20000});
+  await mobilePage.locator('#l-username').fill(fixture.aliceUsername);
+  await mobilePage.locator('#l-password').fill(fixture.proofPassword);
+  const mobileLoginResponse=mobilePage.waitForResponse(response=>
+    response.url().includes('/api/login') && response.request().method()==='POST',
+    {timeout:15000});
+  await mobilePage.locator('#login-form [data-auth-action="login"]').tap();
+  assert.equal((await mobileLoginResponse).status(),200,
+    'mobile device emulation still authenticates via real PostgreSQL');
+  await mobilePage.locator('#app').waitFor({state:'visible',timeout:20000});
+  await mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]')
+    .waitFor({state:'visible',timeout:20000});
+  await mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]').tap();
+  await mobilePage.locator('#bridge-activities-entry').tap();
+  await mobilePage.getByRole('dialog',{name:'Bridge Activities'}).waitFor();
+  await mobilePage.locator('[data-game-id="mini-golf"]').tap();
+  const mobileCanvas=mobilePage.locator('canvas.bridge-mini-golf-canvas');
+  await mobileCanvas.waitFor({state:'visible',timeout:12000});
+  const touchLayout=await mobilePage.evaluate(()=>{
+    const dialog=document.querySelector('.bridge-activities-dialog');
+    const canvas=document.querySelector('canvas.bridge-mini-golf-canvas');
+    const shoot=document.querySelector('.bridge-mini-golf-shoot');
+    const power=document.querySelector('.bridge-mini-golf-power');
+    const powerRect=power?.getBoundingClientRect();
+    return {
+      dialogWidth:dialog?.clientWidth,dialogScroll:dialog?.scrollWidth,
+      canvasWidth:canvas?.clientWidth,
+      shootHeight:shoot?.getBoundingClientRect().height,
+      powerWidth:powerRect?.width,
+      webgl:Boolean(canvas?.getContext('webgl2')||canvas?.getContext('webgl')),
+    };
+  });
+  assert.equal(touchLayout.webgl,true,'mobile emulation must render a real GPU context');
+  assert.ok(touchLayout.dialogWidth>0 && touchLayout.dialogScroll<=touchLayout.dialogWidth+3,
+    'Mini Golf dialog must not horizontally overflow a 390px viewport');
+  assert.ok(touchLayout.canvasWidth>0 && touchLayout.canvasWidth<=390);
+  assert.ok(touchLayout.shootHeight>=44,'touch shot control must be at least 44px');
+  assert.ok(touchLayout.powerWidth>=100,'touch power range must remain usable');
+  await mobilePage.locator('.bridge-mini-golf-shoot').tap();
+  await mobilePage.waitForFunction(()=>
+    /Strokes: 1|Vuruş: 1/.test(document.querySelector('.bridge-mini-golf-status')?.textContent||''),
+    null,{timeout:12000});
+  assert.deepEqual(mobileErrors,[],'mobile touch journey must not cause runtime errors');
+  await mobilePage.locator('.bridge-mini-golf-back').tap();
+  assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
+  await mobilePage.locator('.bridge-activities-close').tap();
+  console.log('BRIDGE_MINI_GOLF_REAL_MOBILE_CHROMIUM_TOUCH:1/1:0_skipped');
+
   console.log('BRIDGE_3D_MINI_GOLF_REAL_AUTH_APP_JOURNEY:1/1:0_skipped');
   await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();
   // Language is user-configurable; the join control is the single direct
