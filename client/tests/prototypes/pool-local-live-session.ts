@@ -101,7 +101,7 @@ export function startLocalHotSeatLiveSession(
       if(opening?intent.kind!=='break':
           (match.rules.phase!=='open'&&match.rules.phase!=='assigned')||
           (intent.kind!=='safety'&&intent.kind!=='ball'))return false;
-      const call=opening?null:declareLocalPoolCall(match.rules,match.table,
+      const call=intent.kind==='break'?null:declareLocalPoolCall(match.rules,match.table,
         actor,intent.kind,intent.kind==='ball'?intent.ballId:undefined,
         intent.kind==='ball'?intent.pocketIndex:undefined);
       if(!opening&&!call)return false;
