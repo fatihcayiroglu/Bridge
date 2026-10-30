@@ -1,8 +1,9 @@
 name: Bridge dependency lock and audit integrity (supplemental)
 
-# This job NEVER changes the repository: only computes the deterministic
-# lockfile update in the disposable runner and prints the changed JSON entries.
-# Existing npm audit gates remain intact. Remove after committing locks.
+# A read-only supplemental gate: regenerates lockfiles in the disposable
+# runner and asserts ZERO drift against committed manifests, then performs
+# four unmodified npm audits, reproducible installs, strict type/build checks
+# and real client/server/Electron regression tests. No automatic write or merge.
 on:
   pull_request:
     branches:
