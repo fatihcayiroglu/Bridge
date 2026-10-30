@@ -78,7 +78,7 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
-          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 40 ||
+          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 41 ||
               r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
               r.numPassedTests !== r.numTotalTests) {
             console.error('SOCIAL_3D_AUTHORITY_TESTS_UNQUALIFIED');
