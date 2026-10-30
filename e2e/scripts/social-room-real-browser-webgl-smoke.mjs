@@ -549,9 +549,11 @@ try {
   await fullPage.locator('#bridge-activities-entry').click();
   await fullPage.getByRole('dialog', { name: 'Bridge Activities' }).waitFor();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
-  await fullPage.getByRole('tab', { name: '3D Sosyal Alan' }).click();
-  const joinFromRealApp = fullPage.getByRole('button',
-    { name: 'Ortak odayı dene (deneysel)' });
+  await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();
+  // Language is user-configurable; the join control is the single direct
+  // social-body button (directional buttons live in a separate controls div).
+  const joinFromRealApp = fullPage.locator(
+    '.bridge-activities-body > button.bridge-room-direction');
   assert.equal(await joinFromRealApp.isEnabled(), true,
     'real AppState selected server must allow explicit opt-in');
   assert.equal(await alice.evaluate(() =>
@@ -560,7 +562,8 @@ try {
   await joinFromRealApp.click();
   await fullPage.waitForFunction(() =>
     [...document.querySelectorAll('p.bridge-room-status[role="status"]')]
-      .some(node => node.textContent?.includes('Ortak odada')),
+      .some(node => node.textContent?.includes('Ortak odada') ||
+        node.textContent?.includes('In shared room')),
     null, { timeout: 12000 });
   await alice.waitForFunction(() =>
     window.__bridge3DSmoke.lastFrame?.peers.length === 2,
