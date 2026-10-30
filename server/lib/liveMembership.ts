@@ -19,7 +19,9 @@ export function roomBelongsToServer(
   channelIds: ReadonlySet<string>,
   threadIds: ReadonlySet<string>,
 ): boolean {
-  if (room === `server:${serverId}`) return true;
+  // The 3D Social Space is a SERVER-scoped room, not a channel or game.
+  // Kick/ban revocation must remove its socket delivery audience immediately.
+  if (room === `server:${serverId}` || room === `social-3d:${serverId}`) return true;
   const split = room.indexOf(':');
   if (split <= 0) return false;
   const prefix = room.slice(0, split);
@@ -178,6 +180,14 @@ export async function evictUserFromServerRooms(
 ): Promise<number> {
   if (!io || !userId || !serverId) return 0;
 
+  // Mark revocation before any asynchronous channel/voice/socket enumeration.
+  // A late distributed social join must see a different generation, even if
+  // its permission query began before the membership write was committed.
+  const socialEviction = process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER === '1'
+    ? await import('../socket/handlers/social-room-eviction')
+    : null;
+  if (socialEviction) await socialEviction.fenceSocialUserRevocation(userId, serverId);
+
   const channelIds = new Set(await Channels.findIdsByServer(serverId));
   const sockets = await io.in(`user:${userId}`).fetchSockets();
 
@@ -218,6 +228,13 @@ export async function evictUserFromServerRooms(
       mutable.currentVoiceServer = undefined;
     }
     socket.emit('membership:revoked', { serverId });
+  }
+  // The room is server-scoped, not one of the game/activity channels. Remove
+  // persisted avatars AFTER the target sockets have left their delivery room;
+  // then publish the revised roster only to remaining authorized subscribers.
+  // Lazy-load only when the still-experimental multiplayer protocol is enabled.
+  if (socialEviction) {
+    await socialEviction.evictSocialUserFromRoom(io, userId, serverId);
   }
   return leaves;
 }
