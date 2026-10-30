@@ -205,3 +205,55 @@ describe('real Activities panel DOM behavior, with isolated renderer/socket unit
     expect(document.querySelector('.bridge-activities-overlay')).toBeNull();
   });
 });
+
+describe('Activities modal keyboard focus containment', () => {
+  it('keeps Tab and Shift+Tab inside the modal across Pool sliders and social graphics select', () => {
+    // jsdom has no layout engine. Provide visible rects while the production
+    // code still excludes [hidden] and [inert] elements from the tab sequence.
+    const rect=vi.spyOn(HTMLElement.prototype,'getClientRects')
+      .mockReturnValue([{} as DOMRect] as unknown as DOMRectList);
+    try {
+      showBridgeActivities('games');
+      click('[data-game-id="eight-ball-pool"]');
+      const close=document.querySelector<HTMLButtonElement>('.bridge-activities-close')!;
+      const slider=document.querySelector<HTMLInputElement>('.bridge-pool-power')!;
+      const reset=document.querySelector<HTMLButtonElement>('.bridge-pool-reset')!;
+      expect(slider.tabIndex).toBe(0);
+      slider.focus();
+      const intermediate=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});
+      document.dispatchEvent(intermediate);
+      expect(intermediate.defaultPrevented).toBe(false);
+      reset.focus();
+      const forward=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});
+      document.dispatchEvent(forward);
+      expect(forward.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(close);
+      const backward=new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true,cancelable:true});
+      document.dispatchEvent(backward);
+      expect(backward.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(reset);
+      // User agents or assistive tech can force focus outside the dialog.
+      const outside=document.getElementById('origin')!;
+      outside.focus();
+      document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+      expect(document.activeElement).toBe(close);
+      click('[data-tab="social"]');
+      const quality=document.querySelector<HTMLSelectElement>('.bridge-room-quality')!;
+      expect(quality.tabIndex).toBe(0);
+      quality.focus();
+      const qualityTab=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});
+      document.dispatchEvent(qualityTab);
+      expect(qualityTab.defaultPrevented).toBe(false);
+      // The inactive tab is not a legal keyboard focus target.
+      expect(document.querySelector<HTMLButtonElement>('[data-tab="games"]')!.tabIndex).toBe(-1);
+      const final=document.querySelector<HTMLButtonElement>('.bridge-activities-body > button.bridge-room-direction');
+      if(final) {
+        final.focus();
+        document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+        expect(document.activeElement).toBe(close);
+      }
+    } finally {
+      rect.mockRestore();
+    }
+  });
+});
