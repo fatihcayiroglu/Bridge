@@ -26,6 +26,28 @@ describe('solo-only opt-in called-pocket challenge (not tournament 8-ball)',()=>
     expect(declarePracticePocketCall({...initial,balls:initial.balls.map(b=>b.id===1?
       {...b,pocketed:true}:b)},1,0)).toBeNull();
   });
+  it('refuses forged inventory, non-finite coordinates and non-settled balls before a call',()=>{
+    const initial=newPoolPractice();
+    const bad:PoolState[]=[
+      {...initial,balls:initial.balls.map(b=>b.id===2?{...b,id:1}:b)},
+      {...initial,balls:initial.balls.map(b=>b.id===1?{...b,id:16}:b)},
+      {...initial,balls:initial.balls.map(b=>b.id===1?{...b,x:NaN}:b)},
+      {...initial,balls:initial.balls.map(b=>b.id===1?{...b,z:Infinity}:b)},
+      {...initial,balls:initial.balls.map(b=>b.id===1?{...b,vx:.001}:b)},
+      {...initial,balls:initial.balls.map(b=>b.id===1?{...b,vz:-.01}:b)},
+      {...initial,balls:initial.balls.map(b=>b.id===0?{...b,pocketed:true}:b)},
+      {...initial,shots:-1},
+      {...initial,scratches:1},
+      {...initial,pocketed:16},
+      {...initial,balls:initial.balls.slice(0,15)},
+    ];
+    for(const forged of bad)expect(declarePracticePocketCall(forged,1,0)).toBeNull();
+    expect(declarePracticePocketCall(initial,1,0)).toEqual({
+      shot:1,ballId:1,pocketIndex:0,pocketedBefore:0,scratchesBefore:0,
+    });
+    const settled=completed();
+    expect(declarePracticePocketCall(settled,2,1)).toMatchObject({shot:4,ballId:2,pocketIndex:1});
+  });
   it('real fixed-step physics accepts the EXACT chosen pocket, not any pocket',()=>{
     const finished=completed(1,0);
     expect(finished.pocketEvents).toContainEqual({ballId:1,pocketIndex:0});
