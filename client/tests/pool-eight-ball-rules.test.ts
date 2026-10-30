@@ -36,7 +36,7 @@ describe('8-ball local-only adjudication foundation — no online or official ru
     for(let i=0;i<45&&running.firstObjectHit===null;i++)running=stepPool(running);
     expect(running.firstObjectHit).toBe(1);
     const forcedRail=running.balls.map(b=>b.id===2?
-      {...b,x:1.97,z:0,vx:1.6,vz:0}:b);
+      {...b,x:1.97,z:1.0,vx:1.6,vz:0}:b);
     const afterRail=stepPool({...running,balls:forcedRail,status:'moving'});
     expect(afterRail.firstObjectHit).toBe(1);
     expect(afterRail.railAfterContact).toBe(true);
