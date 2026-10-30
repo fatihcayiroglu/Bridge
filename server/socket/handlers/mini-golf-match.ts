@@ -250,12 +250,42 @@ export function expireGolfSeats(game: GolfMatch, now: number): boolean {
   return changed;
 }
 
+export interface GolfRoundResult {
+  readonly userId: string;
+  readonly rank: number;
+  readonly strokes: number;
+  readonly holed: boolean;
+}
+
+/**
+ * Ephemeral, server-authoritative per-round results, not a persistent
+ * leaderboard. Holed balls outrank stroke-limited balls; within each class,
+ * fewer strokes wins. Equal outcomes share competition rank (1, 1, 3).
+ * Keep original seat order for exact ties; never expose socket IDs.
+ */
+export function golfRoundResults(game: GolfMatch): GolfRoundResult[] {
+  if (game.phase !== 'finished') return [];
+  const ordered = game.players.map((p, seat) => ({
+    userId: p.userId, strokes: p.strokes, holed: p.won, seat,
+  })).sort((a, b) =>
+    Number(b.holed) - Number(a.holed) ||
+    a.strokes - b.strokes ||
+    a.seat - b.seat);
+  let rank = 1;
+  return ordered.map((p, index) => {
+    if (index && (ordered[index - 1]!.holed !== p.holed ||
+        ordered[index - 1]!.strokes !== p.strokes)) rank = index + 1;
+    return { userId: p.userId, rank, strokes: p.strokes, holed: p.holed };
+  });
+}
+
 export function publicGolfMatch(game: GolfMatch) {
   return {
     serverId: game.serverId, revision: game.revision, phase: game.phase,
     turnUserId: game.phase === 'playing' ? game.players[game.turn]?.userId ?? null : null,
     minPlayers: GOLF_MIN_PLAYERS, maxPlayers: GOLF_MAX_PLAYERS,
     rematchReady: [...game.rematchReady],
+    results: golfRoundResults(game),
     players: game.players.map(({ userId, x, z, strokes, won, reconnectUntil }) => ({
       userId, x, z, strokes, won, reconnecting: reconnectUntil !== undefined,
     })),

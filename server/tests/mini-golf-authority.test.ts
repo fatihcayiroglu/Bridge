@@ -23,7 +23,7 @@ jest.mock('../lib/logger', () => ({
   __esModule: true, default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 import { registerMiniGolfHandlers } from '../socket/handlers/mini-golf';
-import { golfMatchStore, resolveGolfShot, emptyGolfMatch, GOLF_MAX_STROKES, GOLF_MAX_PLAYERS } from '../socket/handlers/mini-golf-match';
+import { golfMatchStore, resolveGolfShot, emptyGolfMatch, golfRoundResults, publicGolfMatch, GOLF_MAX_STROKES, GOLF_MAX_PLAYERS } from '../socket/handlers/mini-golf-match';
 
 let seq=0;
 function socket(userId: string, serverId: string) {
@@ -453,6 +453,50 @@ describe('2–8 player Mini Golf authority',()=>{
     }finally{clock.mockRestore();}
   });
 
+  it('ranks holed and stroke-capped players without false winners, stable ties or socket leakage',()=>{
+    const game=emptyGolfMatch(sid());
+    game.players=[
+      {userId:'limit',socketId:'secret0',x:1,z:1,strokes:8,won:false},
+      {userId:'winner',socketId:'secret1',x:0,z:-3.8,strokes:1,won:true},
+      {userId:'tied',socketId:'secret2',x:0,z:-3.8,strokes:1,won:true},
+      {userId:'second',socketId:'secret3',x:0,z:-3.8,strokes:3,won:true},
+      {userId:'alsoLimit',socketId:'secret4',x:0,z:0,strokes:8,won:false},
+    ];
+    game.phase='playing';
+    expect(golfRoundResults(game)).toEqual([]);
+    expect(publicGolfMatch(game).results).toEqual([]);
+    game.phase='finished';
+    expect(golfRoundResults(game)).toEqual([
+      {userId:'winner',rank:1,strokes:1,holed:true},
+      {userId:'tied',rank:1,strokes:1,holed:true},
+      {userId:'second',rank:3,strokes:3,holed:true},
+      {userId:'limit',rank:4,strokes:8,holed:false},
+      {userId:'alsoLimit',rank:4,strokes:8,holed:false},
+    ]);
+    const visible=JSON.stringify(publicGolfMatch(game));
+    expect(visible).toContain('"rank":3');
+    expect(visible).not.toContain('secret0');
+    expect(visible).not.toContain('socketId');
+    expect(visible).not.toContain('reconnectUntil');
+  });
+  it('returns eight official shared first places for a real completed eight-person game',async()=>{
+    const server=sid(),players=Array.from({length:8},(_,i)=>socket('rank'+i,server));
+    for(const p of players)await p.trigger('mini-golf:join',{serverId:server});
+    await players[0]!.trigger('mini-golf:start',{serverId:server});
+    for(const p of players)await p.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    const snapshot=players[7]!.last('mini-golf:state') as {
+      results:Array<{userId:string;rank:number;strokes:number;holed:boolean}>;
+    };
+    expect(snapshot.results).toHaveLength(8);
+    expect(snapshot.results.every(p=>p.rank===1&&p.strokes===1&&p.holed)).toBe(true);
+    await players[0]!.trigger('mini-golf:rematch',{serverId:server});
+    const voteSnapshot=players[0]!.last('mini-golf:state') as {results:unknown[]};
+    expect(voteSnapshot.results).toHaveLength(8);
+    for(let i=1;i<8;i++)await players[i]!.trigger('mini-golf:rematch',{serverId:server});
+    const next=players[7]!.last('mini-golf:state') as {results:unknown[];phase:string};
+    expect(next.phase).toBe('playing');
+    expect(next.results).toEqual([]);
+  });
   it('isolates server-specific match records and rejects another tenant',async()=>{
     const first=sid(),second=sid(),a=socket('a',first);
     await a.trigger('mini-golf:join',{serverId:first});

@@ -772,6 +772,12 @@ try {
     [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
       .filter(li => li.textContent?.match(/Strokes: 1|Vuruş: 1/)).length===2,
     null, { timeout: 16000 });
+  const twoResults=await fullPage.locator('.bridge-mini-golf-results li').allTextContents();
+  assert.equal(twoResults.length,2,'the signed two-user match must expose both ranked results');
+  assert.ok(twoResults.every(label => /Place 1|Sıra 1/.test(label)),
+    'two one-shot winners share first place, never a fabricated second place');
+  assert.ok(twoResults.every(label => /Strokes: 1|Vuruş: 1/.test(label)),
+    'results must display the server-owned individual stroke counts');
   const onlineVisual = await fullPage.evaluate(() => {
     const canvas=document.querySelector('canvas.bridge-mini-golf-canvas');
     const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
@@ -894,6 +900,16 @@ try {
       /Strokes: 1|Vuruş: 1/.test(li.textContent||'')).length===8,
     null,{timeout:16000});
   assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isDisabled(),true);
+  const eightResults=await fullPage.locator('.bridge-mini-golf-results li').allTextContents();
+  assert.equal(eightResults.length,8);
+  assert.ok(eightResults.every(label => /Place 1|Sıra 1/.test(label) &&
+    /Strokes: 1|Vuruş: 1/.test(label)),
+    'all eight one-shot winners must tie in the server-owned final ranking');
+  const officialResults=await rosterPage.evaluate(() =>
+    window.__miniGolfRoster.players[6].states.at(-1).results);
+  assert.equal(officialResults.length,8);
+  assert.ok(officialResults.every(p=>p.rank===1&&p.strokes===1&&p.holed));
+  console.log('BRIDGE_MINI_GOLF_REAL_AUTH_EIGHT_PLAYER_RANKED_RESULTS:8/8:0_skipped');
   // All eight independent, authenticated PostgreSQL members must consent
   // to the rematch; 1–7 votes MUST NOT silently erase the first-round scores.
   const rematchControl=fullPage.locator('.bridge-mini-golf-rematch');
@@ -927,6 +943,8 @@ try {
       .every(li => /Strokes: 0|Vuruş: 0/.test(li.textContent||'')),
     null,{timeout:16000});
   assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isEnabled(),true);
+  assert.equal(await fullPage.locator('.bridge-mini-golf-results li').count(),0,
+    'new round must not carry over previous standings');
   await fullPage.locator('.bridge-mini-golf-shoot').click();
   await fullPage.waitForFunction(() =>
     [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
@@ -945,6 +963,79 @@ try {
   await rosterPage.evaluate(()=>window.__miniGolfRoster.dispose());
   await fullPage.locator('.bridge-mini-golf-back').click();
   console.log('BRIDGE_MINI_GOLF_REAL_AUTH_APP_EIGHT_PLAYER_CAPACITY:8/8:0_skipped');
+
+  // Emulated smartphone acceptance (NOT a physical Android/iOS device):
+  // actual Bridge Express login, shipped HTML/CSS, touch-enabled Chromium,
+  // actual WebGL canvas, narrow viewport and tap-driven mini-golf controls.
+  const mobileContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    screen: { width: 390, height: 844 },
+    deviceScaleFactor: 2, isMobile: true, hasTouch: true,
+  });
+  const mobilePage = await mobileContext.newPage();
+  pages.push({ page: mobilePage, context: mobileContext });
+  const mobileErrors=[];
+  mobilePage.on('pageerror', error => mobileErrors.push(String(error.message)));
+  const mobileDocument = await mobilePage.goto(fullOrigin + '/index.html',
+    {waitUntil:'domcontentloaded'});
+  assert.equal(mobileDocument?.status(),200);
+  await mobilePage.locator('#l-username').waitFor({state:'visible',timeout:20000});
+  await mobilePage.locator('#l-username').fill(fixture.aliceUsername);
+  await mobilePage.locator('#l-password').fill(fixture.proofPassword);
+  const mobileLoginResponse=mobilePage.waitForResponse(response=>
+    response.url().includes('/api/login') && response.request().method()==='POST',
+    {timeout:15000});
+  await mobilePage.locator('#login-form [data-auth-action="login"]').tap();
+  assert.equal((await mobileLoginResponse).status(),200,
+    'mobile device emulation still authenticates via real PostgreSQL');
+  await mobilePage.locator('#app').waitFor({state:'visible',timeout:20000});
+  const mobileServerIcon=mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]');
+  await mobileServerIcon.waitFor({state:'visible',timeout:20000});
+  // A selected server may sit under the collapsed rail off-screen on mobile.
+  // Do not fake a click on an already-selected icon; require real active state.
+  if (await mobileServerIcon.getAttribute('aria-current') !== 'true') {
+    await mobileServerIcon.tap();
+  }
+  assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
+    'actual server selection must be active before opening mobile Activities');
+  // The server rail is an off-screen drawer on genuine narrow devices.
+  // Navigate via the shipped bottom tab, not DOM click() on a hidden button.
+  await mobilePage.locator('#mnav-servers').tap();
+  await mobilePage.locator('.server-list').waitFor({state:'visible'});
+  await mobilePage.locator('#bridge-activities-entry').tap();
+  await mobilePage.getByRole('dialog',{name:'Bridge Activities'}).waitFor();
+  await mobilePage.locator('[data-game-id="mini-golf"]').tap();
+  const mobileCanvas=mobilePage.locator('canvas.bridge-mini-golf-canvas');
+  await mobileCanvas.waitFor({state:'visible',timeout:12000});
+  const touchLayout=await mobilePage.evaluate(()=>{
+    const dialog=document.querySelector('.bridge-activities-dialog');
+    const canvas=document.querySelector('canvas.bridge-mini-golf-canvas');
+    const shoot=document.querySelector('.bridge-mini-golf-shoot');
+    const power=document.querySelector('.bridge-mini-golf-power');
+    const powerRect=power?.getBoundingClientRect();
+    return {
+      dialogWidth:dialog?.clientWidth,dialogScroll:dialog?.scrollWidth,
+      canvasWidth:canvas?.clientWidth,
+      shootHeight:shoot?.getBoundingClientRect().height,
+      powerWidth:powerRect?.width,
+      webgl:Boolean(canvas?.getContext('webgl2')||canvas?.getContext('webgl')),
+    };
+  });
+  assert.equal(touchLayout.webgl,true,'mobile emulation must render a real GPU context');
+  assert.ok(touchLayout.dialogWidth>0 && touchLayout.dialogScroll<=touchLayout.dialogWidth+3,
+    'Mini Golf dialog must not horizontally overflow a 390px viewport');
+  assert.ok(touchLayout.canvasWidth>0 && touchLayout.canvasWidth<=390);
+  assert.ok(touchLayout.shootHeight>=44,'touch shot control must be at least 44px');
+  assert.ok(touchLayout.powerWidth>=100,'touch power range must remain usable');
+  await mobilePage.locator('.bridge-mini-golf-shoot').tap();
+  await mobilePage.waitForFunction(()=>
+    /Strokes: 1|Vuruş: 1/.test(document.querySelector('.bridge-mini-golf-status')?.textContent||''),
+    null,{timeout:12000});
+  assert.deepEqual(mobileErrors,[],'mobile touch journey must not cause runtime errors');
+  await mobilePage.locator('.bridge-mini-golf-back').tap();
+  assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
+  await mobilePage.locator('.bridge-activities-close').tap();
+  console.log('BRIDGE_MINI_GOLF_REAL_MOBILE_CHROMIUM_TOUCH:1/1:0_skipped');
 
   console.log('BRIDGE_3D_MINI_GOLF_REAL_AUTH_APP_JOURNEY:1/1:0_skipped');
   await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();

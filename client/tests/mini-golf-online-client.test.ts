@@ -24,10 +24,10 @@ function transport() {
 }
 const waiting = {
   serverId: 'server1', revision: 1, phase: 'waiting', you: 'alice',
-  turnUserId: null, minPlayers: 2, maxPlayers: 8, rematchReady: [], players: [{ userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false }],
+  turnUserId: null, minPlayers: 2, maxPlayers: 8, rematchReady: [], results: [], players: [{ userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false }],
 } as const;
 const playing = {
-  serverId: 'server1', revision: 2, phase: 'playing', you: 'alice', turnUserId: 'alice', minPlayers: 2, maxPlayers: 8, rematchReady: [],
+  serverId: 'server1', revision: 2, phase: 'playing', you: 'alice', turnUserId: 'alice', minPlayers: 2, maxPlayers: 8, rematchReady: [], results: [],
   players: [
     { userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false },
     { userId: 'bob', x: 0, z: 3.6, strokes: 0, won: false },
@@ -167,7 +167,9 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     expect(session.rematch()).toBe(false);
     const finished={...playing,revision:3,phase:'finished',turnUserId:null,
       players:[{...playing.players[0],strokes:1,won:true},
-        {...playing.players[1],strokes:1,won:true}]};
+        {...playing.players[1],strokes:1,won:true}],
+      results:[{userId:'alice',rank:1,strokes:1,holed:true},
+        {userId:'bob',rank:1,strokes:1,holed:true}]};
     t.incoming('mini-golf:state',finished);
     expect(session.rematch()).toBe(true);
     expect(session.rematch()).toBe(false);
@@ -184,7 +186,9 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     const t=transport(), statuses=vi.fn();
     const finished={...playing,revision:3,phase:'finished',turnUserId:null,
       players:[{...playing.players[0],strokes:1,won:true},
-        {...playing.players[1],strokes:1,won:true}]};
+        {...playing.players[1],strokes:1,won:true}],
+      results:[{userId:'alice',rank:1,strokes:1,holed:true},
+        {userId:'bob',rank:1,strokes:1,holed:true}]};
     const one=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
     t.incoming('mini-golf:state',{...finished,rematchReady:['alice','alice']});
     expect(one.active).toBe(false);
@@ -200,6 +204,48 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     expect(three.rematch()).toBe(false);
     expect(t.count('mini-golf:rematch')).toBe(0);
     three.dispose();
+  });
+  it('trusts only exact official results with stable tied ranks and clears them on rematch', () => {
+    const t=transport(),statuses=vi.fn();
+    const session=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    const players=[
+      {...playing.players[0],strokes:1,won:true},
+      {...playing.players[1],strokes:1,won:true},
+    ];
+    const finished={...playing,phase:'finished',turnUserId:null,revision:5,
+      players,results:[
+        {userId:'alice',rank:1,strokes:1,holed:true},
+        {userId:'bob',rank:1,strokes:1,holed:true},
+      ]};
+    t.incoming('mini-golf:state',finished);
+    expect(session.active).toBe(true);
+    expect(session.match?.results.map(x=>x.rank)).toEqual([1,1]);
+    t.incoming('mini-golf:state',{...playing,revision:6});
+    expect(session.match?.results).toEqual([]);
+    session.dispose();
+  });
+  it('rejects forged results, wrong rank and premature standings, fail closed', () => {
+    const bad=[
+      {...playing,results:[{userId:'alice',rank:1,strokes:0,holed:false}]},
+      {...playing,phase:'finished',turnUserId:null,revision:4,
+        players:[{...playing.players[0],strokes:1,won:true},
+          {...playing.players[1],strokes:1,won:true}],
+        results:[{userId:'alice',rank:1,strokes:1,holed:true},
+          {userId:'bob',rank:2,strokes:1,holed:true}]},
+      {...playing,phase:'finished',turnUserId:null,revision:4,
+        players:[{...playing.players[0],strokes:1,won:true},
+          {...playing.players[1],strokes:8,won:false}],
+        results:[{userId:'bob',rank:1,strokes:8,holed:false},
+          {userId:'alice',rank:2,strokes:1,holed:true}]},
+    ];
+    for (const frame of bad) {
+      const t=transport(),statuses=vi.fn();
+      const session=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+      t.incoming('mini-golf:state',frame);
+      expect(session.active).toBe(false);
+      expect(statuses).toHaveBeenCalledWith('invalid');
+      expect(t.count('mini-golf:leave')).toBe(1);
+    }
   });
   it('times out pending admissions and leaves without creating a ghost session', () => {
     vi.useFakeTimers();

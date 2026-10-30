@@ -9,6 +9,12 @@ export interface OnlineGolfPlayer {
   readonly won: boolean;
   readonly reconnecting: boolean;
 }
+export interface OnlineGolfRoundResult {
+  readonly userId: string;
+  readonly rank: number;
+  readonly strokes: number;
+  readonly holed: boolean;
+}
 export interface OnlineGolfMatch {
   readonly serverId: string;
   readonly revision: number;
@@ -19,6 +25,7 @@ export interface OnlineGolfMatch {
   readonly minPlayers: 2;
   readonly maxPlayers: 8;
   readonly rematchReady: readonly string[];
+  readonly results: readonly OnlineGolfRoundResult[];
 }
 export type OnlineGolfStatus =
   'connecting' | 'waiting' | 'playing' | 'finished' |
@@ -45,6 +52,7 @@ function readMatch(raw: unknown, serverId: string): OnlineGolfMatch | null {
       o.minPlayers !== 2 || o.maxPlayers !== 8 ||
       !Array.isArray(o.players) || o.players.length < 1 || o.players.length > 8 ||
       !Array.isArray(o.rematchReady) || o.rematchReady.length > 8 ||
+      !Array.isArray(o.results) || o.results.length > 8 ||
       o.rematchReady.some((u:unknown)=>!idOk(u)) ||
       new Set(o.rematchReady).size !== o.rematchReady.length) return null;
   const players: OnlineGolfPlayer[] = [];
@@ -69,11 +77,34 @@ function readMatch(raw: unknown, serverId: string): OnlineGolfMatch | null {
       (o.phase === 'finished' && players.length < 2) ||
       (o.phase !== 'finished' && o.rematchReady.length > 0) ||
       o.rematchReady.some((u:string) => !players.some(p => p.userId === u))) return null;
+  // The server issues final rankings. Validate them against the same
+  // authoritative score snapshot; never infer a winner from client input.
+  const expected = o.phase === 'finished'
+    ? players.map((p, seat) => ({...p, seat})).sort((a, b) =>
+        Number(b.won) - Number(a.won) ||
+        a.strokes - b.strokes || a.seat - b.seat)
+    : [];
+  if (o.results.length !== expected.length) return null;
+  const results: OnlineGolfRoundResult[] = [];
+  let expectedRank = 1;
+  for (let i = 0; i < expected.length; i++) {
+    const entry = o.results[i] as unknown;
+    const player = expected[i]!;
+    if (i > 0 && (expected[i-1]!.won !== player.won ||
+        expected[i-1]!.strokes !== player.strokes)) expectedRank = i + 1;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const result = entry as Record<string, unknown>;
+    if (result.userId !== player.userId || result.rank !== expectedRank ||
+        result.strokes !== player.strokes || result.holed !== player.won) return null;
+    results.push({
+      userId: player.userId, rank: expectedRank, strokes: player.strokes, holed: player.won,
+    });
+  }
   return {
     serverId, revision: o.revision as number,
     phase: o.phase as OnlineGolfMatch['phase'],
     you: o.you, turnUserId: o.turnUserId as string | null, players,
-    minPlayers: 2, maxPlayers: 8, rematchReady: [...o.rematchReady] as string[],
+    minPlayers: 2, maxPlayers: 8, rematchReady: [...o.rematchReady] as string[], results,
   };
 }
 
