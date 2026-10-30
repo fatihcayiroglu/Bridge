@@ -163,6 +163,68 @@ try {
       count: s.lastFrame.peers.length, errors: s.errors };
   });
   assert.deepEqual(final, { online: 'online', gpu: true, count: 1, errors: [] });
+
+  // Rejoin Bob before revocation so this probes an ACTIVE session rather than
+  // an already disconnected tab. Both users must see a real 2-peer roster.
+  await bob.evaluate(() => window.__bridge3DSmoke.rejoin());
+  await Promise.all([alice, bob].map(page => page.waitForFunction(() => {
+    const state = window.__bridge3DSmoke;
+    return state?.status === 'online' && state.lastFrame?.peers.length === 2;
+  }, null, { timeout: 10000 })));
+
+  // Real PostgreSQL ban -> actual Bridge membership eviction -> real
+  // Socket.IO membership:revoked. No synthetic socket event is injected.
+  const revoked = new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      worker.off('message', onReply);
+      reject(Error('real PostgreSQL membership eviction timed out'));
+    }, 15000);
+    function onReply(msg) {
+      if (msg?.type !== 'bobRevoked' && msg?.type !== 'bobRevokeFailed') return;
+      clearTimeout(deadline);
+      worker.off('message', onReply);
+      if (msg.type === 'bobRevokeFailed') reject(Error('real membership eviction failed in fixture'));
+      else resolve(msg);
+    }
+    worker.on('message', onReply);
+  });
+  worker.send({ type: 'revokeBob' });
+  const outcome = await revoked;
+  assert.ok(outcome.leaves >= 2, 'server and social audiences must both be revoked');
+  assert.equal(outcome.bobSockets, 1, 'revoked browser socket remains authenticated');
+  assert.equal(outcome.bobInSocialAudience, false);
+  assert.equal(outcome.bobInServerAudience, false);
+  assert.equal(outcome.rosterUserIds.length, 1,
+    'authoritative Redis must retain only non-revoked Alice');
+
+  await bob.waitForFunction(() => {
+    const state = window.__bridge3DSmoke;
+    return state?.status === 'disconnected' &&
+      state.session?.active === false &&
+      state.socket.connected && state.room.isGraphicsAvailable;
+  }, null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+
+  // The revoked socket may remain connected for other Bridge features, but
+  // it must NOT silently enter the social audience again.
+  const framesBeforeDeniedJoin = await alice.evaluate(() =>
+    window.__bridge3DSmoke.frames.length);
+  await bob.evaluate(() => window.__bridge3DSmoke.rejoin());
+  await bob.waitForFunction(() => {
+    const state = window.__bridge3DSmoke;
+    return state?.status === 'unavailable' && state.session?.active === false;
+  }, null, { timeout: 10000 });
+  const postDeny = await alice.evaluate(start => ({
+    peers: window.__bridge3DSmoke.lastFrame.peers.length,
+    subsequent: window.__bridge3DSmoke.frames.slice(start).map(f => f.peers.length),
+  }), framesBeforeDeniedJoin);
+  assert.equal(postDeny.peers, 1);
+  assert.ok(postDeny.subsequent.every(count => count === 1),
+    'a revoked user must not be broadcast back into the room');
+
+  console.log('SOCIAL_3D_REAL_BROWSER_MEMBERSHIP_REVOKED:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_WEBGL_TWO_USERS:2/2:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MOVEMENT_AND_LEAVE:2/2:0_skipped');
   console.log('SOCIAL_3D_REAL_WEBGL1_CONTEXT_LOSS_REJOIN:1/1:0_skipped');
