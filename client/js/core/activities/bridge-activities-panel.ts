@@ -387,6 +387,7 @@ function showPoolPractice(container:HTMLElement):void {
   container.append(back,heading,help,canvas,status,callResult,controls);
   try{
     poolPractice=startPoolPractice(canvas,update,()=>{
+      pending=null;callResult.textContent=s.poolCallUnverified;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
       callEnabled.disabled=true;callBall.disabled=true;callPocket.disabled=true;
       status.textContent=s.graphicsLost;
