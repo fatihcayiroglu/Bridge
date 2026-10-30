@@ -143,7 +143,7 @@ describe('2–8 player Mini Golf authority',()=>{
     expect(b.last('mini-golf:error')).toMatchObject({code:'GOLF_UNAVAILABLE'});
     expect((await golfMatchStore.load(server)).players.map(p=>p.userId)).toEqual(['a']);
   });
-  it('leaving drops player and resets remaining round; disconnect cleans match',async()=>{
+  it('explicit leave resets a round; disconnect reserves a short reconnect seat',async()=>{
     const server=sid(),a=socket('a',server),b=socket('b',server);
     await a.trigger('mini-golf:join',{serverId:server});
     await b.trigger('mini-golf:join',{serverId:server});
@@ -154,8 +154,103 @@ describe('2–8 player Mini Golf authority',()=>{
       phase:'waiting',turn:0,players:[{userId:'a',socketId:a.id,x:0,z:3.6,won:false,strokes:0}],
     });
     await a.trigger('disconnect');
-    expect((await golfMatchStore.load(server)).players).toEqual([]);
+    const suspended=await golfMatchStore.load(server);
+    expect(suspended.players).toHaveLength(1);
+    expect(suspended.players[0]).toMatchObject({userId:'a',socketId:a.id,strokes:0});
+    expect(suspended.players[0]?.reconnectUntil).toBeGreaterThan(Date.now());
+    const publicFrame=JSON.stringify(a.last('mini-golf:state'));
+    expect(publicFrame).not.toContain('reconnectUntil');
   });
+  it('reclaims disconnected current-turn seat with fresh authenticated socket and preserves 8-player game',async()=>{
+    const server=sid();
+    const players=Array.from({length:8},(_,i)=>socket('user'+i,server));
+    for(const p of players) await p.trigger('mini-golf:join',{serverId:server});
+    await players[0]!.trigger('mini-golf:start',{serverId:server});
+    await players[0]!.trigger('disconnect');
+    let suspended=await golfMatchStore.load(server);
+    expect(suspended).toMatchObject({phase:'playing',turn:0,players:[{userId:'user0',socketId:players[0]!.id}]});
+    expect(suspended.players[0]?.reconnectUntil).toBeGreaterThan(Date.now());
+    // A different user and a second live socket cannot displace this seat.
+    await players[1]!.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect(players[1]!.last('mini-golf:error')).toMatchObject({code:'GOLF_INVALID_TURN'});
+    const impostor=socket('wrong',server);
+    await impostor.trigger('mini-golf:join',{serverId:server});
+    expect(impostor.last('mini-golf:error')).toMatchObject({code:'GOLF_UNAVAILABLE'});
+    const replacement=socket('user0',server);
+    await replacement.trigger('mini-golf:join',{serverId:server});
+    const resumed=replacement.last('mini-golf:state') as {players:Array<{reconnecting:boolean;userId:string}>};
+    expect(resumed.players).toHaveLength(8);
+    expect(resumed.players[0]).toMatchObject({userId:'user0',reconnecting:false});
+    suspended=await golfMatchStore.load(server);
+    expect(suspended.players[0]?.socketId).toBe(replacement.id);
+    expect(suspended.players[0]?.reconnectUntil).toBeUndefined();
+    await replacement.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect((await golfMatchStore.load(server)).players[0]).toMatchObject({strokes:1,won:true});
+    // A delayed stale disconnect cannot erase the freshly reclaimed seat.
+    await players[0]!.trigger('disconnect');
+    expect((await golfMatchStore.load(server)).players[0]?.socketId).toBe(replacement.id);
+  });
+
+  it('freezes all shots during grace and returns to play after reconnect',async()=>{
+    const server=sid(),a=socket('a',server),b=socket('b',server);
+    await a.trigger('mini-golf:join',{serverId:server});
+    await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
+    await b.trigger('disconnect');
+    await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect(a.last('mini-golf:error')).toMatchObject({code:'GOLF_INVALID_TURN'});
+    expect((await golfMatchStore.load(server)).players[0]?.strokes).toBe(0);
+    await a.trigger('mini-golf:sync',{serverId:server});
+    const frame=a.last('mini-golf:state') as {players:Array<{reconnecting:boolean}>};
+    expect(frame.players[1]?.reconnecting).toBe(true);
+    expect(JSON.stringify(frame)).not.toContain('reconnectUntil');
+    const b2=socket('b',server);
+    await b2.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect((await golfMatchStore.load(server)).players[0]?.won).toBe(true);
+    await b2.trigger('mini-golf:sync',{serverId:server});
+    expect(b2.last('mini-golf:state')).toMatchObject({turnUserId:'b'});
+  });
+
+  it('expires a disconnected seat on an authorized sync without stale roster or lost progress',async()=>{
+    const clock=jest.spyOn(Date,'now').mockReturnValue(1_000_000);
+    try {
+      const server=sid(),a=socket('a',server),b=socket('b',server),c=socket('c',server);
+      await a.trigger('mini-golf:join',{serverId:server});
+      await b.trigger('mini-golf:join',{serverId:server});
+      await c.trigger('mini-golf:join',{serverId:server});
+      await a.trigger('mini-golf:start',{serverId:server});
+      await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+      expect((await golfMatchStore.load(server)).players[0]?.won).toBe(true);
+      await c.trigger('disconnect');
+      expect((await golfMatchStore.load(server)).players).toHaveLength(3);
+      clock.mockReturnValue(1_020_001);
+      await b.trigger('mini-golf:sync',{serverId:server});
+      const data=b.last('mini-golf:state') as {players:Array<{userId:string;strokes:number;won:boolean}>};
+      expect(data.players.map(p=>p.userId)).toEqual(['a','b']);
+      expect(data.players[0]).toMatchObject({strokes:1,won:true});
+      expect((await golfMatchStore.load(server)).phase).toBe('playing');
+      // Expired user cannot overwrite their old live game by reconnecting.
+      const c2=socket('c',server);
+      await c2.trigger('mini-golf:join',{serverId:server});
+      expect(c2.last('mini-golf:error')).toMatchObject({code:'GOLF_UNAVAILABLE'});
+    } finally {clock.mockRestore();}
+  });
+
+  it('fails closed if the reconnecting account was banned or lost membership',async()=>{
+    const server=sid(),a=socket('a',server),b=socket('b',server);
+    await a.trigger('mini-golf:join',{serverId:server});
+    await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
+    await a.trigger('disconnect');
+    members.mockImplementation((id:string) => id==='a'?null:{banned:false});
+    const attempt=socket('a',server);
+    await attempt.trigger('mini-golf:join',{serverId:server});
+    expect(attempt.last('mini-golf:state')).toBeUndefined();
+    expect(attempt.last('mini-golf:error')).toMatchObject({code:'GOLF_UNAVAILABLE'});
+    expect((await golfMatchStore.load(server)).players[0]?.socketId).toBe(a.id);
+  });
+
   it('cancels an in-flight join BEFORE the first awaited membership check, no ghost slot',async()=>{
     const server=sid(),a=socket('a',server);
     let authStarted: (()=>void)|undefined;
