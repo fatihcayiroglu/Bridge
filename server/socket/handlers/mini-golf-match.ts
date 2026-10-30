@@ -1,5 +1,5 @@
 /**
- * Experimental Mini Golf two-player match authority. OFF by default.
+ * Experimental Mini Golf 2–8 player match authority. OFF by default.
  *
  * Only Redis-backed, serialized match state. No client-provided coordinates,
  * scores, identities, round transitions or timing. The caller must check
@@ -10,6 +10,8 @@
 import { cache, isRedisAvailable } from '../../lib/redisAdapter';
 
 export const GOLF_MAX_STROKES = 8;
+export const GOLF_MIN_PLAYERS = 2;
+export const GOLF_MAX_PLAYERS = 8;
 const KEY = 'bridge-mini-golf:v1:';
 const TTL_SECONDS = 30 * 60;
 export type GolfPhase = 'waiting' | 'playing' | 'finished';
@@ -36,7 +38,7 @@ function validate(serverId: string, raw: unknown): GolfMatch {
   const game = raw as Partial<GolfMatch>;
   if (game.serverId !== serverId || !Number.isSafeInteger(game.revision) ||
       (game.revision ?? -1) < 0 || !['waiting', 'playing', 'finished'].includes(game.phase ?? '') ||
-      !Array.isArray(game.players) || game.players.length > 2 ||
+      !Array.isArray(game.players) || game.players.length > GOLF_MAX_PLAYERS ||
       !Number.isSafeInteger(game.turn) || (game.turn ?? -1) < 0 ||
       (game.players.length > 0 && (game.turn ?? 0) >= game.players.length) ||
       (game.players.length === 0 && game.turn !== 0) ||
@@ -45,8 +47,8 @@ function validate(serverId: string, raw: unknown): GolfMatch {
         Math.abs(p.x) <= 2.25 && Math.abs(p.z) <= 4.6 &&
         Number.isSafeInteger(p.strokes) && p.strokes >= 0 && p.strokes <= GOLF_MAX_STROKES &&
         typeof p.won === 'boolean') ||
-      (game.phase === 'playing' && game.players.length !== 2) ||
-      (game.phase === 'waiting' && game.players.length === 2) ||
+      (game.phase === 'playing' && game.players.length < GOLF_MIN_PLAYERS) ||
+      (game.phase === 'finished' && game.players.length < GOLF_MIN_PLAYERS) ||
       new Set(game.players.map(p => p.userId)).size !== game.players.length ||
       new Set(game.players.map(p => p.socketId)).size !== game.players.length) {
     throw Error('GOLF_CORRUPT');
@@ -107,22 +109,70 @@ export function resolveGolfShot(player: GolfPlayer, degrees: number, power: numb
   if (!stopped) throw Error('GOLF_SIMULATION_NOT_SETTLED');
   return { ...player, x, z, strokes: player.strokes + 1, won };
 }
+export function golfPlayerFinished(player: GolfPlayer): boolean {
+  return player.won || player.strokes >= GOLF_MAX_STROKES;
+}
+
+/** Next eligible player by circular ordering; no extra turns after holing. */
 export function currentGolfTurn(game: GolfMatch): number {
-  if (game.players.length !== 2) return 0;
-  for (let i = 1; i <= 2; i++) {
-    const index = (game.turn + i) % 2, p = game.players[index]!;
-    if (!p.won && p.strokes < GOLF_MAX_STROKES) return index;
+  const count = game.players.length;
+  if (count < GOLF_MIN_PLAYERS || count > GOLF_MAX_PLAYERS) return 0;
+  for (let offset = 1; offset <= count; offset++) {
+    const index = (game.turn + offset) % count;
+    if (!golfPlayerFinished(game.players[index]!)) return index;
   }
   return game.turn;
 }
 export function golfGameOver(game: GolfMatch): boolean {
-  return game.players.length === 2 &&
-    game.players.every(p => p.won || p.strokes >= GOLF_MAX_STROKES);
+  return game.players.length >= GOLF_MIN_PLAYERS &&
+    game.players.every(golfPlayerFinished);
+}
+
+/**
+ * A departing player must not give a free turn to the wrong neighbour.
+ * Same turn index now points to the next player when a previous index leaves.
+ * If current player leaves, select the next eligible player starting at their
+ * former seat, not the first player and not the departed user's socket.
+ */
+export function removeGolfPlayer(game: GolfMatch, socketId: string): boolean {
+  const removedIndex = game.players.findIndex(p => p.socketId === socketId);
+  if (removedIndex === -1) return false;
+  const wasPlaying = game.phase === 'playing';
+  const wasCurrent = wasPlaying && removedIndex === game.turn;
+  game.players.splice(removedIndex, 1);
+  game.revision++;
+  if (game.players.length < GOLF_MIN_PLAYERS) {
+    game.phase = 'waiting'; game.turn = 0;
+    for (const player of game.players) {
+      player.x = 0; player.z = 3.6; player.strokes = 0; player.won = false;
+    }
+  } else if (wasPlaying) {
+    // A completed match retains its final score; a running one never admits
+    // new players, but may shrink from 8 down to the minimum of 2.
+    if (golfGameOver(game)) { game.phase = 'finished'; game.turn = 0; }
+    else if (wasCurrent) {
+      const start = removedIndex % game.players.length;
+      game.turn = start;
+      for (let i = 0; i < game.players.length; i++) {
+        const next = (start + i) % game.players.length;
+        if (!golfPlayerFinished(game.players[next]!)) { game.turn = next; break; }
+      }
+    } else {
+      if (removedIndex < game.turn) game.turn--;
+      if (golfPlayerFinished(game.players[game.turn]!)) {
+        game.turn = currentGolfTurn(game);
+      }
+    }
+  } else {
+    game.turn = Math.min(game.turn, game.players.length - 1);
+  }
+  return true;
 }
 export function publicGolfMatch(game: GolfMatch) {
   return {
     serverId: game.serverId, revision: game.revision, phase: game.phase,
     turnUserId: game.phase === 'playing' ? game.players[game.turn]?.userId ?? null : null,
+    minPlayers: GOLF_MIN_PLAYERS, maxPlayers: GOLF_MAX_PLAYERS,
     players: game.players.map(({ userId, x, z, strokes, won }) => ({ userId, x, z, strokes, won })),
   };
 }
