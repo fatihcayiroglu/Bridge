@@ -106,6 +106,64 @@ try {
   assert.deepEqual(both[0].ids, both[1].ids);
   assert.equal(both[0].ids.length, 2);
 
+  // Alice is authenticated to TWO real PostgreSQL servers on the SAME
+  // Socket.IO transport. A second server's legitimate join, authoritative
+  // peer frame and protocol error must not close the first room's 3D UI.
+  await alice.evaluate(otherServerId => {
+    const s = window.__bridge3DSmoke;
+    const foreign = window.__bridge3DForeign = {
+      joined: false, peers: false, errors: [],
+    };
+    s.socket.on('social:joined', frame => {
+      if (frame?.serverId === otherServerId) foreign.joined = true;
+    });
+    s.socket.on('social:peers', frame => {
+      if (frame?.serverId === otherServerId) foreign.peers = true;
+    });
+    s.socket.on('social:error', error => foreign.errors.push(error));
+    s.socket.emit('social:join', { serverId: otherServerId });
+  }, fixture.otherServerId);
+  await alice.waitForFunction(() =>
+    window.__bridge3DForeign?.joined && window.__bridge3DForeign?.peers,
+    null, { timeout: 10000 });
+  assert.deepEqual(await alice.evaluate(() => ({
+    status: window.__bridge3DSmoke.status,
+    active: window.__bridge3DSmoke.session?.active,
+    peers: window.__bridge3DSmoke.lastFrame.peers.length,
+  })), { status: 'online', active: true, peers: 2 },
+  'foreign legitimate roster must not be treated as a corrupt own-server frame');
+
+  await alice.evaluate(otherServerId => {
+    const s = window.__bridge3DSmoke.socket;
+    s.emit('social:step', { serverId: otherServerId, direction: 'teleport' });
+  }, fixture.otherServerId);
+  await alice.waitForFunction(otherServerId =>
+    window.__bridge3DForeign?.errors.some(e =>
+      e.code === 'SOCIAL_ROOM_UNAVAILABLE' && e.serverId === otherServerId),
+    fixture.otherServerId, { timeout: 10000 });
+
+  // Even malformed requests with no server id cannot be attributed to the
+  // live session; the client must ignore their unscoped error event.
+  await alice.evaluate(() =>
+    window.__bridge3DSmoke.socket.emit('social:step', { direction: 'forward' }));
+  await alice.waitForFunction(() =>
+    window.__bridge3DForeign?.errors.some(e =>
+      e.code === 'SOCIAL_ROOM_UNAVAILABLE' && !('serverId' in e)),
+    null, { timeout: 10000 });
+  await alice.evaluate(otherServerId =>
+    window.__bridge3DSmoke.socket.emit('social:leave', { serverId: otherServerId }),
+    fixture.otherServerId);
+  const isolated = await alice.evaluate(() => ({
+    status: window.__bridge3DSmoke.status,
+    active: window.__bridge3DSmoke.session?.active,
+    peers: window.__bridge3DSmoke.lastFrame.peers.length,
+  }));
+  assert.deepEqual(isolated, { status: 'online', active: true, peers: 2 },
+    'leaving a different server may not tear down this social session');
+  assert.equal(await bob.evaluate(() =>
+    window.__bridge3DSmoke.lastFrame.peers.length), 2,
+    'Bob must retain the original room avatars');
+
   // A real 3x-DPR Chromium page must cap the framebuffer to the selected
   // quality budget, instead of allocating a potentially enormous WebView.
   // 640x400 CSS pixels: low 1x, high 2x, balanced 1.5x despite actual DPR=3.
@@ -453,6 +511,7 @@ try {
   assert.deepEqual(await shellPage.evaluate(() =>
     window.__bridge3DShippedShell.errors), [], 'real transport must authenticate');
 
+  console.log('SOCIAL_3D_REAL_BROWSER_MULTISERVER_EVENT_ISOLATION:1/1:0_skipped');
   console.log('SOCIAL_3D_SHIPPED_HTML_CSS_CSP_RAIL_JOIN_ESCAPE:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_ACTIVITIES_PANEL_JOIN_SWITCH_LOGOUT:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_SERVER_ERROR_LEAVE:1/1:0_skipped');
