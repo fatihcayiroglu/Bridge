@@ -16,13 +16,13 @@ const table=(pocketed:readonly number[]=[]):PoolState=>{
     {...b,pocketed:true}:b),pocketed:pocketed.length};
 };
 function afterShot(before:PoolState,events:readonly PoolPocketEvent[],
-  cueScratch=false):PoolState {
+  cueScratch=false,firstObjectHit:number|null=1):PoolState {
   const ids=new Set(events.map(e=>e.ballId).filter(id=>id!==0));
   return {...before,shots:before.shots+1,status:'ready',
     balls:before.balls.map(b=>ids.has(b.id)?{...b,pocketed:true}:b),
     pocketed:before.pocketed+ids.size,
     scratches:before.scratches+(cueScratch?1:0),
-    pocketEvents:events};
+    firstObjectHit,railAfterContact:true,pocketEvents:events};
 }
 describe('8-ball called shot/pocket contract: local-only, not an official match',()=>{
   it('requires a pre-shot ball and valid named pocket for the active player',()=>{
