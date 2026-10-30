@@ -229,9 +229,10 @@ describe('2–8 player Mini Golf authority',()=>{
     expect(game.players[game.turn]?.userId).toBe('u4');
     for (const i of [4,5,6,7]) await players[i]!.trigger('mini-golf:leave',{serverId:server});
     game=await golfMatchStore.load(server);
-    expect(game.phase).toBe('waiting');
+    expect(game.phase).toBe('finished');
     expect(game.players).toHaveLength(2);
-    // u0 won already; u2 won already, but the final departure reopens waiting.
+    // Both remaining players already holed, so their current match is finished.
+    // Only a drop below two resets the score into a fresh waiting lobby.
     // Once only one remains, its score resets for an unambiguous fresh lobby.
     await players[2]!.trigger('mini-golf:leave',{serverId:server});
     game=await golfMatchStore.load(server);
