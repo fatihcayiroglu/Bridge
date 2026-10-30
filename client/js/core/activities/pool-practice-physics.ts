@@ -10,7 +10,12 @@ export const POOL_HALF_LENGTH = 4;
 const FRICTION = 0.86;
 const RESTITUTION = 0.91;
 const STOP = 0.018;
-const MAX_BALLS = 6;
+/** Standard practice inventory: 15 targets plus one cue. Not competitive 8-ball rules. */
+export const POOL_TARGET_COUNT = 15;
+const MAX_BALLS = POOL_TARGET_COUNT + 1;
+// Eight sits at the center of the third row. One solid and one striped ball
+// occupy the last-row corners; all numbers appear exactly once.
+const RACK_ORDER = [1, 9, 2, 4, 8, 10, 11, 3, 12, 5, 6, 13, 7, 14, 15] as const;
 export const POOL_POCKETS = Object.freeze([
   { x: -2.03, z: -3.90 }, { x: 2.03, z: -3.90 },
   { x: -2.03, z: 0 }, { x: 2.03, z: 0 },
@@ -34,8 +39,14 @@ const base = (id:number,x:number,z:number):PoolBall =>
 
 export function newPoolPractice():PoolState {
   return {
-    balls: [base(0,0,2.7), base(1,0,-1.15),base(2,-.30,-1.55),
-      base(3,.30,-1.55),base(4,-.15,-1.96),base(5,.15,-1.96)],
+    balls: [base(0, 0, 2.7), ...RACK_ORDER.map((id, index) => {
+      // A compact five-row triangle with a safe non-overlapping clearance.
+      const row = Math.floor((Math.sqrt(8 * index + 1) - 1) / 2);
+      const column = index - row * (row + 1) / 2;
+      const spacing = POOL_RADIUS * 2 + 0.010;
+      const depth = POOL_RADIUS * Math.sqrt(3) + 0.012;
+      return base(id, (column - row / 2) * spacing, -1.14 - row * depth);
+    })],
     shots:0,scratches:0,pocketed:0,status:'ready',
   };
 }
@@ -106,16 +117,24 @@ export function stepPool(s:PoolState):PoolState {
     // A scratch re-spots the cue after motion stops; it never counts as an object pocket.
     const cue=balls[0]!;
     if(cue.pocketed) {
-      const spawnZ=2.7;
-      if(balls.some(b=>b.id!==0&&!b.pocketed&&
-        Math.hypot(b.x,b.z-spawnZ)<POOL_RADIUS*2.2)) {
-        // Fallback back-half spot, away from the normal cue position.
-        cue.x=0;cue.z=3.35;
-      } else {cue.x=0;cue.z=spawnZ;}
+      // Search a bounded back-half grid: never respot the cue intersecting
+      // a surviving target, even when the normal point is blocked.
+      const xOptions = [0, -.35, .35, -.70, .70, -1.05, 1.05, -1.40, 1.40, -1.75, 1.75];
+      const zOptions = [2.7, 3.05, 3.40, 3.75, 2.35, 2.0, 1.65];
+      let found = false;
+      for(const z of zOptions) {
+        for(const x of xOptions) {
+          if(balls.some(b=>b.id!==0&&!b.pocketed&&
+            Math.hypot(b.x-x,b.z-z)<POOL_RADIUS*2.1))continue;
+          cue.x=x;cue.z=z;found=true;break;
+        }
+        if(found)break;
+      }
+      if(!found)throw Error('POOL_CUE_RESPOT_BLOCKED');
       cue.pocketed=false;cue.vx=0;cue.vz=0;
     }
   }
-  const allPocketed=pocketed===MAX_BALLS-1;
+  const allPocketed=pocketed===POOL_TARGET_COUNT;
   return {balls,shots:s.shots,scratches,pocketed,status:
     allPocketed?'complete':moving?'moving':'ready'};
 }
