@@ -18,6 +18,7 @@ on:
       - codex/activities-3d-automatic-role-revocation-20261030
       - codex/activities-3d-two-node-socket-cluster-20261030
       - codex/activities-3d-production-socket-bootstrap-20261030
+      - codex/activities-3d-real-browser-two-users-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
