@@ -9,6 +9,8 @@ export interface PracticePocketCall {
   readonly shot:number;
   readonly ballId:number;
   readonly pocketIndex:number;
+  readonly pocketedBefore:number;
+  readonly scratchesBefore:number;
 }
 export type PracticePocketResult = 'made' | 'missed';
 
@@ -19,9 +21,13 @@ export function declarePracticePocketCall(
       !Number.isSafeInteger(ballId)||ballId<1||ballId>15||
       !Number.isSafeInteger(pocketIndex)||pocketIndex<0||
       pocketIndex>=POOL_POCKETS.length||
+      !Number.isSafeInteger(state.pocketed)||state.pocketed<0||
+      !Number.isSafeInteger(state.scratches)||state.scratches<0||
       state.balls.length!==16||
+      state.pocketed!==state.balls.filter(b=>b.id!==0&&b.pocketed).length||
       !state.balls.some(b=>b.id===ballId&&!b.pocketed))return null;
-  return {shot:state.shots+1,ballId,pocketIndex};
+  return {shot:state.shots+1,ballId,pocketIndex,
+    pocketedBefore:state.pocketed,scratchesBefore:state.scratches};
 }
 
 export function settlePracticePocketCall(
@@ -32,6 +38,10 @@ export function settlePracticePocketCall(
       !Number.isSafeInteger(call.pocketIndex)||call.pocketIndex<0||
       call.pocketIndex>=POOL_POCKETS.length||
       (state.status!=='ready'&&state.status!=='complete')||
+      !Number.isSafeInteger(state.pocketed)||
+      !Number.isSafeInteger(state.scratches)||
+      !Number.isSafeInteger(call.pocketedBefore)||call.pocketedBefore<0||
+      !Number.isSafeInteger(call.scratchesBefore)||call.scratchesBefore<0||
       !Array.isArray(state.pocketEvents)||
       state.pocketEvents.length>16||state.balls.length!==16)return null;
   const ids=new Set<number>();
@@ -43,15 +53,22 @@ export function settlePracticePocketCall(
   if(ids.size!==16||state.pocketed!==state.balls.filter(b=>b.id!==0&&b.pocketed).length)
     return null;
   const events=new Set<number>();
-  let found=false;
+  let found=false,objectsPocketed=0,cueScratched=0;
   for(const event of state.pocketEvents) {
     if(!Number.isSafeInteger(event.ballId)||event.ballId<0||event.ballId>15||
         !Number.isSafeInteger(event.pocketIndex)||event.pocketIndex<0||
         event.pocketIndex>=POOL_POCKETS.length||events.has(event.ballId))return null;
     events.add(event.ballId);
-    if(event.ballId!==0&&!state.balls.some(b=>b.id===event.ballId&&b.pocketed))
-      return null;
+    if(event.ballId===0)cueScratched++;
+    else {
+      objectsPocketed++;
+      if(!state.balls.some(b=>b.id===event.ballId&&b.pocketed))return null;
+    }
     if(event.ballId===call.ballId&&event.pocketIndex===call.pocketIndex)found=true;
   }
+  // This trace must describe every object pocket and scratch *this shot*.
+  // Missing events are unverified, never mislabeled a missed call.
+  if(state.pocketed-call.pocketedBefore!==objectsPocketed||
+      state.scratches-call.scratchesBefore!==cueScratched)return null;
   return found?'made':'missed';
 }
