@@ -1,0 +1,124 @@
+/* Bridge Activities / Social Space: isolated from message and voice panels. */
+#bridge-activities-entry {
+  flex-shrink: 0;
+  font-size: 1.35rem;
+  color: #baf8eb;
+  background: #173a47;
+  border: 1px solid #286678;
+}
+#bridge-activities-entry:hover,
+#bridge-activities-entry:focus-visible { background: #205c68; outline-offset: 2px; }
+.bridge-activities-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+           max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: rgba(6, 13, 23, 0.88);
+  box-sizing: border-box;
+}
+.bridge-activities-dialog {
+  box-sizing: border-box;
+  width: min(100%, 1000px);
+  max-height: min(94dvh, 900px);
+  overflow: auto;
+  background: #121d2e;
+  color: #e8f3fc;
+  border: 1px solid #39506a;
+  border-radius: 18px;
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.55);
+}
+.bridge-activities-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+  padding: 20px 24px 12px;
+}
+.bridge-activities-header h2 { margin: 0; font-size: 1.35rem; color: #f0fafc; }
+.bridge-activities-header p { margin: 6px 0 0; color: #acc7d4; font-size: 0.9rem; }
+.bridge-activities-close {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px solid #4a5d72;
+  background: #223248;
+  color: inherit;
+  font-size: 1.7rem;
+  cursor: pointer;
+}
+.bridge-activities-tabs { display: flex; gap: 8px; padding: 0 24px 16px; }
+.bridge-activities-tab {
+  border-radius: 10px;
+  padding: 11px 16px;
+  border: 1px solid #3a566a;
+  background: #1f3042;
+  color: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.bridge-activities-tab[aria-selected="true"] {
+  background: #14627a;
+  border-color: #6ce3e2;
+  color: white;
+}
+.bridge-activities-tab:focus-visible,
+.bridge-activities-close:focus-visible,
+.bridge-room-direction:focus-visible { outline: 2px solid #70f0e0; outline-offset: 2px; }
+.bridge-activities-body { padding: 0 24px 24px; }
+.bridge-activities-help { margin: 4px 0 14px; color: #b1c8d6; line-height: 1.5; }
+.bridge-activities-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); gap: 12px; }
+.bridge-activities-card {
+  border: 1px solid #345064;
+  background: #1d2e42;
+  border-radius: 12px;
+  padding: 16px;
+}
+.bridge-activities-card h3 { margin: 0 0 9px; font-size: 1rem; color: #f1f8ff; }
+.bridge-activities-card p { margin: 0 0 12px; color: #b4c4d5; font-size: 0.85rem; }
+.bridge-activities-planned {
+  display: inline-block;
+  color: #d4eac0;
+  background: #355039;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.77rem;
+}
+.bridge-room-status { font-size: 0.84rem; font-weight: 600; color: #85e3de; }
+.bridge-activities-canvas {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: clamp(240px, 48dvh, 510px);
+  border-radius: 12px;
+  background: #0b1627;
+  border: 1px solid #3a556d;
+  outline-offset: 3px;
+}
+.bridge-room-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 12px 0; }
+.bridge-room-direction {
+  border: 1px solid #538296;
+  background: #204459;
+  color: #f8fdff;
+  border-radius: 10px;
+  min-height: 44px;
+  padding: 10px 16px;
+  cursor: pointer;
+  touch-action: none;
+}
+.bridge-room-direction:active { background: #1b7080; }
+.bridge-room-error { color: #ffcfb8; }
+.bridge-room-quality-label { display: inline-flex; margin: 8px 10px 10px 0; color: #dceaf5; }
+.bridge-room-quality { min-height: 44px; min-width: 120px; padding: 8px 12px; border-radius: 9px; border: 1px solid #538296; background: #204459; color: #f8fdff; font: inherit; }
+.bridge-room-quality:focus-visible { outline: 2px solid #70f0e0; outline-offset: 2px; }
+@media (max-width: 580px) {
+  .bridge-activities-header { padding: 14px 14px 10px; }
+  .bridge-activities-tabs { padding: 0 14px 12px; }
+  .bridge-activities-tab { flex: 1; padding: 9px 7px; font-size: 0.85rem; }
+  .bridge-activities-body { padding: 0 14px 16px; }
+  .bridge-activities-grid { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
+}
