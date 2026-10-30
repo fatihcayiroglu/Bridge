@@ -1,5 +1,5 @@
 /**
- * Experimental server-authoritative two-player Mini Golf Socket.IO contract.
+ * Experimental server-authoritative 2–8 player Mini Golf Socket.IO contract.
  * Feature-gated OFF by default. No broadcast subscription / unsafe stale
  * membership delivery. The second player explicitly syncs the shared result.
  */
@@ -9,7 +9,8 @@ import { Members } from '../../db/repositories';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import {
   golfMatchStore, emptyGolfMatch, resolveGolfShot, currentGolfTurn,
-  golfGameOver, publicGolfMatch,
+  golfGameOver, publicGolfMatch, removeGolfPlayer,
+  GOLF_MIN_PLAYERS, GOLF_MAX_PLAYERS,
 } from './mini-golf-match';
 
 const validId = (raw: unknown): raw is string =>
@@ -44,15 +45,7 @@ export function registerMiniGolfHandlers(
   async function remove(serverId: string): Promise<void> {
     await golfMatchStore.withLock(serverId, async () => {
       const game = await golfMatchStore.load(serverId);
-      const count = game.players.length;
-      game.players = game.players.filter(p => p.socketId !== socket.id);
-      if (game.players.length === count) return;
-      // One leftover player starts a fresh fair round after a new peer joins.
-      if (game.players.length === 1) {
-        game.players[0]!.x = 0; game.players[0]!.z = 3.6;
-        game.players[0]!.won = false; game.players[0]!.strokes = 0;
-      }
-      game.phase = 'waiting'; game.turn = 0; game.revision++;
+      if (!removeGolfPlayer(game, socket.id)) return;
       await golfMatchStore.save(serverId, game);
     });
     joined.delete(serverId);
@@ -79,12 +72,14 @@ export function registerMiniGolfHandlers(
       const state = await golfMatchStore.load(serverId);
       const existing = state.players.find(p => p.socketId === socket.id && p.userId === userId);
       if (existing) return state;
-      if (state.players.length === 2 || state.phase === 'finished' ||
+      if (state.players.length >= GOLF_MAX_PLAYERS || state.phase !== 'waiting' ||
           state.players.some(p => p.userId === userId || p.socketId === socket.id)) {
         denial = true; return null;
       }
       state.players.push({ socketId: socket.id, userId, x: 0, z: 3.6, strokes: 0, won: false });
-      state.phase = state.players.length === 2 ? 'playing' : 'waiting';
+      // Explicit host start locks the roster. No silent match start at two:
+      // the lobby must let members join up to eight before playing.
+      state.phase = 'waiting';
       state.turn = 0;
       state.revision++;
       await golfMatchStore.save(serverId, state);
@@ -102,6 +97,38 @@ export function registerMiniGolfHandlers(
       joining.delete(serverId);
       canceledJoins.delete(serverId);
     }
+  }));
+
+  socket.on('mini-golf:start', isolateSocketHandler(socket, 'mini-golf:start', async (payload: unknown) => {
+    const serverId = serverFrom(payload);
+    if (!serverId || disconnected || !joined.has(serverId) ||
+        !await authorized(socket, userId, serverId)) {
+      reject(serverId); return;
+    }
+    let denied = false;
+    const game = await golfMatchStore.withLock(serverId, async () => {
+      if (disconnected || !await authorized(socket, userId, serverId)) {
+        denied = true; return null;
+      }
+      const state = await golfMatchStore.load(serverId);
+      if (state.phase !== 'waiting' ||
+          state.players.length < GOLF_MIN_PLAYERS ||
+          state.players.length > GOLF_MAX_PLAYERS ||
+          state.players[0]?.userId !== userId ||
+          state.players[0]?.socketId !== socket.id) {
+        denied = true; return null;
+      }
+      state.phase = 'playing';
+      state.turn = 0;
+      state.revision++;
+      await golfMatchStore.save(serverId, state);
+      return state;
+    });
+    if (denied || !game) { reject(serverId, 'GOLF_CANNOT_START'); return; }
+    if (!await authorized(socket, userId, serverId)) {
+      await remove(serverId); reject(serverId); return;
+    }
+    reply(game);
   }));
 
   socket.on('mini-golf:sync', isolateSocketHandler(socket, 'mini-golf:sync', async (payload: unknown) => {
