@@ -188,6 +188,23 @@ describe('real Activities panel DOM behavior, with isolated renderer/socket unit
     click('.bridge-pool-back');
     expect(document.querySelector('.bridge-pool-call-result')).toBeNull();
   });
+  it('drops any pending call when the WebGL context is lost and never invents a result',()=>{
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    const enabled=document.querySelector<HTMLInputElement>('.bridge-pool-call-enabled')!;
+    enabled.checked=true;enabled.dispatchEvent(new Event('change'));
+    click('.bridge-pool-shoot');
+    expect(document.querySelector('.bridge-pool-call-result')?.textContent)
+      .toContain('Evaluating called pocket');
+    callbacks.lost?.();
+    expect(document.querySelector('.bridge-pool-call-result')?.textContent)
+      .toContain('could not be verified');
+    expect(document.querySelector<HTMLSelectElement>('.bridge-pool-call-ball')?.disabled)
+      .toBe(true);
+    callbacks.poolComplete?.(1,0);
+    expect(document.querySelector('.bridge-pool-call-result')?.textContent)
+      .toContain('could not be verified');
+  });
   it('rejects online admission until a real selected server and connected transport exist',()=>{
     showBridgeActivities();
     click('[data-game-id="mini-golf"]');
