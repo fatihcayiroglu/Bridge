@@ -115,7 +115,7 @@ function free(gl:Gl,g:GPU) {
   gl.deleteProgram(g.program);gl.deleteShader(g.vs);gl.deleteShader(g.fs);
 }
 export function startPoolPractice(
-  canvas:HTMLCanvasElement,onState:(s:PoolState)=>void,onLost?:()=>void,
+  canvas:HTMLCanvasElement,onState:(s:PoolState)=>void,onLost?:()=>void,onRestored?:()=>void,
 ):PoolPracticeHandle|null {
   const context=selectSocialWebGLContext(canvas);
   if(!context)return null;
@@ -190,7 +190,7 @@ export function startPoolPractice(
   }
   function restoreContext() {
     if(disposed)return;
-    try{gpu=allocate(gl,api,staticData);lost=false;lastDraw=0;resume();}
+    try{gpu=allocate(gl,api,staticData);lost=false;lastDraw=0;resume();onRestored?.();}
     catch{lost=true;gpu=null;onLost?.();}
   }
   canvas.addEventListener('webglcontextlost',lostContext);
