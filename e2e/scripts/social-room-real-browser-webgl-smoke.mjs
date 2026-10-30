@@ -989,9 +989,15 @@ try {
   assert.equal((await mobileLoginResponse).status(),200,
     'mobile device emulation still authenticates via real PostgreSQL');
   await mobilePage.locator('#app').waitFor({state:'visible',timeout:20000});
-  await mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]')
-    .waitFor({state:'visible',timeout:20000});
-  await mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]').tap();
+  const mobileServerIcon=mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]');
+  await mobileServerIcon.waitFor({state:'visible',timeout:20000});
+  // A selected server may sit under the collapsed rail off-screen on mobile.
+  // Do not fake a click on an already-selected icon; require real active state.
+  if (await mobileServerIcon.getAttribute('aria-current') !== 'true') {
+    await mobileServerIcon.tap();
+  }
+  assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
+    'actual server selection must be active before opening mobile Activities');
   await mobilePage.locator('#bridge-activities-entry').tap();
   await mobilePage.getByRole('dialog',{name:'Bridge Activities'}).waitFor();
   await mobilePage.locator('[data-game-id="mini-golf"]').tap();
