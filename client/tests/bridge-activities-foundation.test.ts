@@ -77,7 +77,8 @@ describe('Bridge Activities 3D product foundation (not game acceptance)', () => 
     expect(panel).toContain("if (tab === 'social') showSocial(body)");
     expect(panel).toContain('app.inert = true');
     expect(panel).toContain("bridge:auth-logout");
-    expect(renderer).toContain("canvas.getContext('webgl'");
+    expect(renderer).toContain('selectSocialWebGLContext(canvas)');
+    expect(renderer).toContain('socialRoomShaderSources(api)');
     expect(renderer).toContain('gl.enable(gl.DEPTH_TEST)');
     expect(renderer).toContain('cancelAnimationFrame(animationId)');
     expect(renderer).toContain("document.addEventListener('visibilitychange', onVisibility)");

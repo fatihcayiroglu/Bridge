@@ -28,3 +28,12 @@ No 3D game physics, 10 playable games, global matchmaking, user-generated conten
 4. Gradually implement the remaining seven games. User-generated activities require an explicit isolated sandbox and review system.
 
 This branch starts from main \`c061d72f\` only and does not inherit/integrate #375. **No production merge or deploy** while P7, #321, #209 and other native failures remain open. Abuse Lab B1 is untouched. Keep exact-head CI results separate from conceptual feature promises.
+
+
+## WebGL 2 / WebGL 1 and mobile resource budgets (new draft follow-up)
+
+The 3D Social Space renderer now requests **WebGL 2 first** with GLSL ES 3.00 shaders; if the API is absent or throws on an older WebView, it requests **WebGL 1** and uses ES 1.00 shaders. There is no WebGPU requirement, and no third-party graphics/CDN dependency.
+
+The user can select per-open-session **Low** (target 24 FPS, DPR max 1, pixel area max 1,000,000), **Balanced** (30 FPS, DPR max 1.5, area max 2,073,600), or **High** (60 FPS, DPR max 2, area max 4,147,200). These are **GPU framebuffer/cadence caps, not measured or guaranteed FPS**. The existing app remains lazy-loaded on the dedicated Activities tab. A lost graphics context pauses rendering, stops the online session and informs the user to reopen; it never silently claims a live room. No telemetry, fingerprinting or persistence of the chosen preset.
+
+The Vitest tests cover API choice, exception fallback, correct GLSL sources and finite framebuffer budgets. A separate **actual Chromium** smoke compiles/links both GLSL profiles and draws/reads pixels using its software GPU; this is meaningful graphics execution evidence, **not** real Android/iOS hardware FPS, sustained frame pacing or power-use proof. Hardware device/performance acceptance remains a release blocker.

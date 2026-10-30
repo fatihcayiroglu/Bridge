@@ -4,7 +4,7 @@ name: Bridge Activities 3D foundation (supplemental)
 # Quality Gate/security audit/native acceptance. The audit remains blocking.
 on:
   pull_request:
-    branches: [main, codex/activities-3d-social-presence-authority-20261030]
+    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030]
     paths:
       - 'client/js/core/activities/**'
       - 'client/js/core/exclusive-surface.ts'
@@ -13,6 +13,8 @@ on:
       - 'client/css/**'
       - 'client/tests/bridge-activities-foundation.test.ts'
       - 'client/tests/social-room-client.test.ts'
+      - 'client/tests/social-room-render-policy.test.ts'
+      - 'e2e/scripts/social-room-webgl-smoke.mjs'
       - 'docs/BRIDGE_ACTIVITIES_3D_FOUNDATION.md'
       - '.github/workflows/bridge-activities-3d-foundation.yml'
   workflow_dispatch:
@@ -23,7 +25,7 @@ permissions:
 jobs:
   client-3d-foundation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,11 +43,11 @@ jobs:
       - name: Focused feature Vitest, zero skips
         run: |
           cd client
-          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts tests/social-room-client.test.ts --reporter=json --outputFile=activities-3d-proof.json
+          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts tests/social-room-client.test.ts tests/social-room-render-policy.test.ts --reporter=json --outputFile=activities-3d-proof.json
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('activities-3d-proof.json', 'utf8'));
-          if (!Number.isInteger(r.numTotalTests) || r.numTotalTests < 13 ||
+          if (!Number.isInteger(r.numTotalTests) || r.numTotalTests < 22 ||
               r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
               r.numPassedTests !== r.numTotalTests) {
             console.error('BRIDGE_ACTIVITIES_3D_TEST_PROOF_INVALID');
@@ -55,6 +57,11 @@ jobs:
           NODE
       - name: Actual production client build and bundle budget
         run: npm run build:ci
+      - name: Run actual Chromium WebGL 2 + WebGL 1 shader/pixel smoke
+        run: |
+          cd e2e
+          npm ci --no-audit --no-fund
+          node scripts/social-room-webgl-smoke.mjs
       - name: Preserve first-attempt evidence
         if: always()
         uses: actions/upload-artifact@v4
