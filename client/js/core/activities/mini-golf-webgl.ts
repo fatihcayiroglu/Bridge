@@ -130,19 +130,26 @@ function release(gl:Gl,gpu:Resources){
   gl.deleteBuffer(gpu.staticBuffer);gl.deleteBuffer(gpu.movingBuffer);
   gl.deleteProgram(gpu.program);gl.deleteShader(gpu.vertex);gl.deleteShader(gpu.fragment);
 }
+/** All GolfState fields are scalar, but readonly is not enforced at runtime. */
+function outwardGolfState(state:GolfState):GolfState { return {...state}; }
+
 export function startMiniGolfPractice(
   canvas: HTMLCanvasElement, onState: (state: GolfState) => void,
   onGraphicsLost?: () => void,
 ): MiniGolfHandle | null {
+  if(!canvas.isConnected)return null;
   const context=selectSocialWebGLContext(canvas);
   if(!context)return null;
   const {gl,api}=context;
   const staticData=course();
   let gpu:Resources|null=allocate(gl,api,staticData);
-  let state=newGolfRound(),disposed=false,lost=false,raf=0,lastTime=0,acc=0,lastDraw=0;
+  let state=newGolfRound(),disposed=false,lost=false,detached=false,
+    raf=0,lastTime=0,acc=0,lastDraw=0;
   let authoritativeBall: { x: number; z: number } | null = null;
   const camera=view();
-  onState(state);
+  // Once removed from the DOM, an old instance must never silently re-arm.
+  function connected(){if(!canvas.isConnected)detached=true;return !detached;}
+  onState(outwardGolfState(state));
   function draw(now:number){
     if(!gpu)return;
     const rect=canvas.getBoundingClientRect();
@@ -171,7 +178,7 @@ export function startMiniGolfPractice(
   }
   function frame(now:number){
     raf=0;
-    if(disposed||lost||!canvas.isConnected||document.hidden)return;
+    if(disposed||lost||!connected()||document.hidden)return;
     const elapsed=lastTime?Math.min(.067,Math.max(0,(now-lastTime)/1000)):0;
     lastTime=now;
     acc+=elapsed;
@@ -183,12 +190,12 @@ export function startMiniGolfPractice(
       acc-=GOLF_FIXED_DT;steps++;
     }
     if(steps===8)acc=0;
-    if(changed)onState(state);
+    if(changed)onState(outwardGolfState(state));
     if(!lastDraw||now-lastDraw>=1000/30)draw(now);
     raf=requestAnimationFrame(frame);
   }
   function resume(){
-    if(!disposed&&!lost&&gpu&&!document.hidden&&!raf){lastTime=0;acc=0;raf=requestAnimationFrame(frame);}
+    if(!disposed&&!lost&&gpu&&connected()&&!document.hidden&&!raf){lastTime=0;acc=0;raf=requestAnimationFrame(frame);}
   }
   function visibility(){
     if(document.hidden){if(raf)cancelAnimationFrame(raf);raf=0;lastTime=0;acc=0;}
@@ -198,34 +205,35 @@ export function startMiniGolfPractice(
     event.preventDefault();lost=true;
     if(raf)cancelAnimationFrame(raf);raf=0;gpu=null;
     onGraphicsLost?.();
-    onState(state);
+    onState(outwardGolfState(state));
   }
   function contextRestored(){
-    if(disposed)return;
+    if(disposed||!connected())return;
     try{gpu=allocate(gl,api,staticData);lost=false;lastDraw=0;resume();}
-    catch{gpu=null;lost=true;onState(state);}
+    catch{gpu=null;lost=true;onState(outwardGolfState(state));}
   }
   canvas.addEventListener('webglcontextlost',contextLost);
   canvas.addEventListener('webglcontextrestored',contextRestored);
   document.addEventListener('visibilitychange',visibility);
   resume();
   return {
-    get state(){return state;},
-    get isGraphicsAvailable(){return !disposed&&!lost&&gpu!==null;},
+    get state(){return outwardGolfState(state);},
+    get isGraphicsAvailable(){return !disposed&&!lost&&gpu!==null&&connected();},
     shoot(degrees,power){
-      if(disposed||lost||!gpu||authoritativeBall)return false;
+      if(disposed||lost||!gpu||authoritativeBall||!connected())return false;
       const next=strikeGolf(state,degrees,power);
       if(next===state)return false;
-      state=next;onState(state);return true;
+      state=next;onState(outwardGolfState(state));return true;
     },
-    reset(){if(disposed)return;state=newGolfRound();acc=0;onState(state);},
+    reset(){if(disposed||!connected())return;state=newGolfRound();acc=0;onState(outwardGolfState(state));},
     setAuthoritativeBall(x,z) {
-      if(disposed||lost||!gpu||!Number.isFinite(x)||!Number.isFinite(z)||
+      if(disposed||lost||!gpu||!connected()||!Number.isFinite(x)||!Number.isFinite(z)||
           Math.abs(x)>2.25||Math.abs(z)>4.6)return false;
       authoritativeBall={x,z};
       return true;
     },
-    leaveOnline(){authoritativeBall=null;state=newGolfRound();acc=0;onState(state);},
+    leaveOnline(){if(disposed||!connected())return;
+      authoritativeBall=null;state=newGolfRound();acc=0;onState(outwardGolfState(state));},
     dispose(){
       if(disposed)return;disposed=true;
       if(raf)cancelAnimationFrame(raf);

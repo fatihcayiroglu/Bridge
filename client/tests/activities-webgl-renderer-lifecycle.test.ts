@@ -267,6 +267,49 @@ describe('real renderer lifecycle against a deterministic WebGL command recorder
     expect(gl.deleteProgram).toHaveBeenCalled();
     expect(pending.size).toBe(0);
   });
+  it('Mini Golf rejects observer and getter mutation of authoritative local physics', () => {
+    const {canvas}=surface();
+    const game=startMiniGolfPractice(canvas, snapshot=>{
+      (snapshot as {strokes:number}).strokes=99;
+      (snapshot as {x:number}).x=900;
+    });
+    expect(game).not.toBeNull();
+    expect(game?.state.strokes).toBe(0);
+    expect(game?.state.x).toBe(0);
+    const view=game!.state;
+    (view as {strokes:number}).strokes=98;
+    (view as {z:number}).z=900;
+    expect(game?.state.strokes).toBe(0);
+    expect(game?.state.z).toBe(3.6);
+    expect(game?.shoot(0,60)).toBe(true);
+    frames(4);
+    expect(game?.state.strokes).toBe(1);
+    expect(game?.state.x).toBe(0);
+    game?.reset();
+    expect(game?.state.strokes).toBe(0);
+    game?.dispose();
+    expect(pending.size).toBe(0);
+  });
+  it('Mini Golf stops stale local and online actions after DOM canvas removal', () => {
+    expect(startMiniGolfPractice(document.createElement('canvas'),vi.fn())).toBeNull();
+    const {canvas}=surface();
+    const onState=vi.fn();
+    const game=startMiniGolfPractice(canvas,onState);
+    expect(game?.setAuthoritativeBall(0,-3.8)).toBe(true);
+    canvas.remove();
+    expect(game?.isGraphicsAvailable).toBe(false);
+    expect(game?.setAuthoritativeBall(0,0)).toBe(false);
+    expect(game?.shoot(0,60)).toBe(false);
+    game?.leaveOnline();
+    game?.reset();
+    expect(onState).toHaveBeenCalledTimes(1);
+    frames(3);
+    expect(pending.size).toBe(0);
+    document.body.append(canvas);
+    expect(game?.isGraphicsAvailable).toBe(false);
+    expect(game?.setAuthoritativeBall(0,1)).toBe(false);
+    game?.dispose();
+  });
   it('Mini Golf context loss revokes graphics and restores local-only rendering', () => {
     const { canvas, gl } = surface();
     const lost = vi.fn();
