@@ -7,6 +7,7 @@ const mockResolvePermissions = jest.fn();
 const mockHasPermission = jest.fn();
 const mockCacheData = new Map<string, unknown>();
 let mockRedisAvailable = true;
+let mockRedisReadFailure = false;
 const mockWithKeyLock = jest.fn(async (_key: string, action: () => Promise<unknown>) => action());
 jest.mock('../db/repositories', () => ({
   Members: { findOne: (...a: unknown[]) => mockMembersFindOne(...a) },
@@ -19,7 +20,10 @@ jest.mock('../lib/permissions', () => ({
 jest.mock('../lib/redisAdapter', () => ({
   isRedisAvailable: () => mockRedisAvailable,
   cache: {
-    getAuthoritative: async (key: string) => mockCacheData.get(key) ?? null,
+    getAuthoritative: async (key: string) => {
+      if (mockRedisReadFailure) throw new Error('Redis read unavailable');
+      return mockCacheData.get(key) ?? null;
+    },
     setAuthoritative: async (key: string, value: unknown) => { mockCacheData.set(key, structuredClone(value)); },
     delAuthoritative: async (key: string) => { mockCacheData.delete(key); },
     withKeyLock: (...args: unknown[]) => mockWithKeyLock(...(args as [string, () => Promise<unknown>])),
@@ -79,6 +83,7 @@ const server = () => 'social-server-' + Date.now() + '-' + ++nextSocket;
 beforeEach(() => {
   mockCacheData.clear();
   mockRedisAvailable = true;
+  mockRedisReadFailure = false;
   mockWithKeyLock.mockClear();
   mockMembersFindOne.mockReset().mockResolvedValue({ userId: 'member', banned: false });
   mockResolvePermissions.mockReset().mockResolvedValue(1 | 65536);
@@ -191,9 +196,9 @@ describe('3D Social Space authority and presence', () => {
     expect(io.events).toHaveLength(0);
   });
 
-  it('refuses to add any participant when the Redis authority is down', async () => {
+  it('refuses all participants when configured Redis throws on authoritative read', async () => {
     const sid = server(), io = makeIo(), s = wire('u1', sid, io);
-    mockRedisAvailable = false;
+    mockRedisReadFailure = true;
     await s.trigger('social:join', { serverId: sid });
     expect(last(s, 'social:joined')).toBeUndefined();
     expect(last(s, 'error:message')).toMatchObject({ event: 'social:join' });
