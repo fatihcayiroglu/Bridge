@@ -29,6 +29,7 @@ const { socialRoomStore } = require('../dist/socket/handlers/social-room-store')
 const { evictUserFromServerRooms } = require('../dist/lib/liveMembership');
 const testId = 'social_browser_' + randomBytes(6).toString('hex');
 const serverId = testId + '_server';
+const otherServerId = testId + '_other';
 const alice = testId + '_alice';
 const bob = testId + '_bob';
 const users = [alice, bob];
@@ -94,7 +95,9 @@ async function cleanup() {
     }
   } catch (e) { failed = true; console.error('SOCIAL_BROWSER_REDIS_CLEANUP_FAILED', e); }
   if (seeded) for (const [query, args] of [
+    ['DELETE FROM members WHERE "serverId"=$1', [otherServerId]],
     ['DELETE FROM members WHERE "serverId"=$1', [serverId]],
+    ['DELETE FROM servers WHERE _id=$1', [otherServerId]],
     ['DELETE FROM servers WHERE _id=$1', [serverId]],
     ['DELETE FROM users WHERE _id = ANY($1::text[])', [users]],
   ]) {
@@ -120,6 +123,13 @@ async function main() {
     'INSERT INTO members ("userId", "serverId", roles, "joinedAt", banned) VALUES ($1,$2,$3::jsonb,$4,FALSE)',
     [id, serverId, '[]', now],
   );
+  // Alice also belongs to an unrelated second server on the SAME real JWT
+  // socket. Its legitimate social:joined/social:peers/errors must never
+  // disrupt the first server's already-online SocialClient.
+  await q('INSERT INTO servers (_id, name, "ownerId", "createdAt") VALUES ($1,$2,$3,$4)',
+    [otherServerId, 'Other 3D room', alice, now]);
+  await q('INSERT INTO members ("userId", "serverId", roles, "joinedAt", banned) VALUES ($1,$2,$3::jsonb,$4,FALSE)',
+    [alice, otherServerId, '[]', now]);
   io = createSocketServer(httpServer, ['http://127.0.0.1']);
   assert.equal(await applyAdapter(io), true);
   assert.equal(isRedisAvailable(), true);
@@ -131,7 +141,7 @@ async function main() {
   const token = id => jwt.sign({ id, username: id, v: 0 }, process.env.JWT_SECRET,
     { algorithm: 'HS256', expiresIn: '2m' });
   process.send({ type: 'ready', port: httpServer.address().port,
-    serverId, aliceToken: token(alice), bobToken: token(bob) });
+    serverId, otherServerId, aliceToken: token(alice), bobToken: token(bob) });
 }
 
 process.on('message', async msg => {
