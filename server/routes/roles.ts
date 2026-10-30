@@ -9,6 +9,7 @@ import { PERMS, hasPermission, resolvePermissions, resolveRolePermissionResoluti
 import { limits } from '../middleware/rateLimit';
 import { invalidatePerms } from '../lib/permCache';
 import { evictUserFromServerRooms, evictSocketsWithoutChannelAccessBestEffort } from '../lib/liveMembership';
+import { reconcileSocialRoomAccess } from '../socket/handlers/social-room-eviction';
 import { parsePermissionMask } from '../lib/permissionMaskInvariant';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
@@ -389,7 +390,10 @@ router.patch('/:sid/roles/:rid', authMiddleware, limits.roles(), async (req: Req
 
   // Sunum bayragi izin cozumunu etkilemez. Yalniz permission biti gercekten
   // degistiyse kanonik izin onbellegi gecersizlestirilir.
-  if (permissions !== undefined) invalidatePerms(sid);
+  if (permissions !== undefined) {
+    invalidatePerms(sid);
+    await reconcileSocialRoomAccess(req.app.get('io'), sid);
+  }
   await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, null);
   res.json(updated);
 });
@@ -427,8 +431,9 @@ router.delete('/:sid/roles/:rid', authMiddleware, limits.roles(), async (req: Re
   // Removes the role together with its channel permission rows and its id in
   // every member's role list (one transaction), so nothing it granted survives.
   if (!await Roles.delete(rid, sid)) return void res.status(404).json({ error: 'Role not found in this server' });
-  invalidatePerms(String(req.params.sid ?? ''));
-  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), String(req.params.sid ?? ''), null);
+  invalidatePerms(sid);
+  await reconcileSocialRoomAccess(req.app.get('io'), sid);
+  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, null);
   res.json({ deleted: true });
 });
 
@@ -549,6 +554,7 @@ router.post('/:sid/members/:uid/roles', authMiddleware, limits.roles(), async (r
   const roles = await Members.addRole(String(req.params.uid ?? ''), sid, roleId);
   if (!roles) return void res.status(404).json({ error: 'Member not found' });
   invalidatePerms(sid, String(req.params.uid ?? ''));
+  await reconcileSocialRoomAccess(req.app.get('io'), sid, String(req.params.uid ?? ''));
   await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, null);
   res.json({ roles });
 });
@@ -596,8 +602,9 @@ router.delete('/:sid/members/:uid/roles/:rid', authMiddleware, limits.roles(), a
 
   const roles = await Members.removeRole(String(req.params.uid ?? ''), String(req.params.sid ?? ''), rid);
   if (!roles) return void res.status(404).json({ error: 'Member not found' });
-  invalidatePerms(String(req.params.sid ?? ''), String(req.params.uid ?? ''));
-  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), String(req.params.sid ?? ''), null);
+  invalidatePerms(sid, String(req.params.uid ?? ''));
+  await reconcileSocialRoomAccess(req.app.get('io'), sid, String(req.params.uid ?? ''));
+  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, null);
   res.json({ roles });
 });
 
