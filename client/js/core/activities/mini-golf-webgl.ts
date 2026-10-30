@@ -1,4 +1,4 @@
-import { GOLF_HOLE, GOLF_LIMITS, GOLF_FIXED_DT, newGolfRound, stepGolf, strikeGolf, type GolfState } from './mini-golf-physics.ts';
+import { GOLF_HOLE, GOLF_FIXED_DT, newGolfRound, stepGolf, strikeGolf, type GolfState } from './mini-golf-physics.ts';
 import { selectSocialWebGLContext, socialRoomShaderSources, socialRoomRenderSize } from './social-room-render-policy.ts';
 
 /**
