@@ -16,7 +16,7 @@ function completed(callBall=1,pocket=0):PoolState {
 describe('solo-only opt-in called-pocket challenge (not tournament 8-ball)',()=>{
   it('creates a bounded declaration only before a stroke and for a visible target',()=>{
     const initial=newPoolPractice();
-    expect(declarePracticePocketCall(initial,1,0)).toEqual({shot:1,ballId:1,pocketIndex:0});
+    expect(declarePracticePocketCall(initial,1,0)).toEqual({shot:1,ballId:1,pocketIndex:0,pocketedBefore:0,scratchesBefore:0});
     for(const id of [0,-1,16,1.5,NaN,Infinity])
       expect(declarePracticePocketCall(initial,id,0)).toBeNull();
     for(const pocket of [-1,6,1.5,NaN,Infinity])
@@ -29,17 +29,17 @@ describe('solo-only opt-in called-pocket challenge (not tournament 8-ball)',()=>
   it('real fixed-step physics accepts the EXACT chosen pocket, not any pocket',()=>{
     const finished=completed(1,0);
     expect(finished.pocketEvents).toContainEqual({ballId:1,pocketIndex:0});
-    expect(settlePracticePocketCall(finished,{shot:3,ballId:1,pocketIndex:0})).toBe('made');
-    expect(settlePracticePocketCall(finished,{shot:3,ballId:1,pocketIndex:5})).toBe('missed');
-    expect(settlePracticePocketCall(finished,{shot:3,ballId:9,pocketIndex:0})).toBe('missed');
+    expect(settlePracticePocketCall(finished,{shot:3,ballId:1,pocketIndex:0,pocketedBefore:0,scratchesBefore:0})).toBe('made');
+    expect(settlePracticePocketCall(finished,{shot:3,ballId:1,pocketIndex:5,pocketedBefore:0,scratchesBefore:0})).toBe('missed');
+    expect(settlePracticePocketCall(finished,{shot:3,ballId:9,pocketIndex:0,pocketedBefore:0,scratchesBefore:0})).toBe('missed');
   });
   it('rejects moving/stale shot, forged pocket inventory and duplicate events',()=>{
     const complete=completed();
-    const call={shot:3,ballId:1,pocketIndex:0};
+    const call={shot:3,ballId:1,pocketIndex:0,pocketedBefore:0,scratchesBefore:0};
     expect(settlePracticePocketCall({...complete,status:'moving'},call)).toBeNull();
     expect(settlePracticePocketCall({...complete,shots:4},call)).toBeNull();
     expect(settlePracticePocketCall({...complete,pocketed:15},call)).toBeNull();
-    expect(settlePracticePocketCall({...complete,pocketEvents:[]},call)).toBe('missed');
+    expect(settlePracticePocketCall({...complete,pocketEvents:[]},call)).toBeNull();
     expect(settlePracticePocketCall({...complete,pocketEvents:[
       ...complete.pocketEvents,...complete.pocketEvents]},call)).toBeNull();
     expect(settlePracticePocketCall({...complete,pocketEvents:[
