@@ -33,6 +33,8 @@ export interface GolfMatch {
   phase: GolfPhase;
   turn: number;
   players: GolfPlayer[];
+  /** Server-owned unanimous votes for the next round. Empty except when finished. */
+  rematchReady: string[];
 }
 const idOk = (s: unknown): s is string => typeof s === 'string' &&
   s.length > 0 && s.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(s);
@@ -40,6 +42,9 @@ const idOk = (s: unknown): s is string => typeof s === 'string' &&
 function validate(serverId: string, raw: unknown): GolfMatch {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('GOLF_CORRUPT');
   const game = raw as Partial<GolfMatch>;
+  // Existing sessions from before rematch support were not versioned. Keep
+  // their roster intact; never infer votes or consent from missing data.
+  const ready = game.rematchReady === undefined ? [] : game.rematchReady;
   if (game.serverId !== serverId || !Number.isSafeInteger(game.revision) ||
       (game.revision ?? -1) < 0 || !['waiting', 'playing', 'finished'].includes(game.phase ?? '') ||
       !Array.isArray(game.players) || game.players.length > GOLF_MAX_PLAYERS ||
@@ -56,17 +61,21 @@ function validate(serverId: string, raw: unknown): GolfMatch {
       (game.phase === 'playing' && game.players.length < GOLF_MIN_PLAYERS) ||
       (game.phase === 'finished' && game.players.length < GOLF_MIN_PLAYERS) ||
       new Set(game.players.map(p => p.userId)).size !== game.players.length ||
-      new Set(game.players.map(p => p.socketId)).size !== game.players.length) {
+      new Set(game.players.map(p => p.socketId)).size !== game.players.length ||
+      !Array.isArray(ready) || ready.length > GOLF_MAX_PLAYERS ||
+      ready.some(id => !idOk(id) || !game.players!.some(p => p.userId === id)) ||
+      new Set(ready).size !== ready.length ||
+      (game.phase !== 'finished' && ready.length > 0)) {
     throw Error('GOLF_CORRUPT');
   }
   return {
     serverId, revision: game.revision!, phase: game.phase!, turn: game.turn!,
-    players: game.players.map(p => ({ ...p })),
+    players: game.players.map(p => ({ ...p })), rematchReady: [...ready],
   };
 }
 export function emptyGolfMatch(serverId: string): GolfMatch {
   if (!idOk(serverId)) throw Error('GOLF_BAD_ID');
-  return { serverId, revision: 0, phase: 'waiting', turn: 0, players: [] };
+  return { serverId, revision: 0, phase: 'waiting', turn: 0, players: [], rematchReady: [] };
 }
 export const golfMatchStore = {
   async withLock<T>(serverId: string, action: () => Promise<T>): Promise<T> {
@@ -145,10 +154,12 @@ export function removeGolfPlayer(game: GolfMatch, socketId: string): boolean {
   if (removedIndex === -1) return false;
   const wasPlaying = game.phase === 'playing';
   const wasCurrent = wasPlaying && removedIndex === game.turn;
+  const departedUserId = game.players[removedIndex]!.userId;
   game.players.splice(removedIndex, 1);
+  game.rematchReady = game.rematchReady.filter(id => id !== departedUserId);
   game.revision++;
   if (game.players.length < GOLF_MIN_PLAYERS) {
-    game.phase = 'waiting'; game.turn = 0;
+    game.phase = 'waiting'; game.turn = 0; game.rematchReady = [];
     for (const player of game.players) {
       player.x = 0; player.z = 3.6; player.strokes = 0; player.won = false;
     }
@@ -174,6 +185,31 @@ export function removeGolfPlayer(game: GolfMatch, socketId: string): boolean {
   }
   return true;
 }
+/**
+ * Explicit all-party consent after finish. One vote is one authenticated
+ * current participant. The final vote atomically resets every scored ball and
+ * starts a new ordered round with exactly the same live, consenting members.
+ */
+export function voteGolfRematch(game: GolfMatch, userId: string, socketId: string): boolean {
+  if (game.phase !== 'finished' ||
+      game.players.length < GOLF_MIN_PLAYERS ||
+      game.players.length > GOLF_MAX_PLAYERS ||
+      game.players.some(p => p.reconnectUntil !== undefined) ||
+      !game.players.some(p => p.userId === userId && p.socketId === socketId) ||
+      game.rematchReady.includes(userId)) return false;
+  game.rematchReady.push(userId);
+  game.revision++;
+  if (game.rematchReady.length === game.players.length) {
+    game.phase = 'playing';
+    game.turn = 0;
+    game.rematchReady = [];
+    for (const player of game.players) {
+      player.x = 0; player.z = 3.6; player.strokes = 0; player.won = false;
+    }
+  }
+  return true;
+}
+
 /** Reserve a seat for a short period after a real disconnect, never on leave. */
 export function suspendGolfSeat(game: GolfMatch, socketId: string, now: number): boolean {
   if (!Number.isSafeInteger(now) || now < 0) throw Error('GOLF_BAD_CLOCK');
@@ -219,6 +255,7 @@ export function publicGolfMatch(game: GolfMatch) {
     serverId: game.serverId, revision: game.revision, phase: game.phase,
     turnUserId: game.phase === 'playing' ? game.players[game.turn]?.userId ?? null : null,
     minPlayers: GOLF_MIN_PLAYERS, maxPlayers: GOLF_MAX_PLAYERS,
+    rematchReady: [...game.rematchReady],
     players: game.players.map(({ userId, x, z, strokes, won, reconnectUntil }) => ({
       userId, x, z, strokes, won, reconnecting: reconnectUntil !== undefined,
     })),

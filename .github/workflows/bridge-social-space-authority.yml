@@ -31,6 +31,7 @@ on:
       - codex/activities-mini-golf-authoritative-two-player-contract-20261030
       - codex/activities-mini-golf-explicit-online-ui-20261030
       - codex/bridge-npm-audit-safe-upgrades-20261030
+      - codex/activities-mini-golf-reconnect-grace-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'

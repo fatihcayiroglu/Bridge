@@ -18,6 +18,7 @@ export interface OnlineGolfMatch {
   readonly players: readonly OnlineGolfPlayer[];
   readonly minPlayers: 2;
   readonly maxPlayers: 8;
+  readonly rematchReady: readonly string[];
 }
 export type OnlineGolfStatus =
   'connecting' | 'waiting' | 'playing' | 'finished' |
@@ -28,6 +29,7 @@ export interface OnlineGolfSession {
   readonly busy: boolean;
   shoot(degrees: number, power: number): boolean;
   start(): boolean;
+  rematch(): boolean;
   refresh(): void;
   dispose(): void;
 }
@@ -41,7 +43,10 @@ function readMatch(raw: unknown, serverId: string): OnlineGolfMatch | null {
       !['waiting', 'playing', 'finished'].includes(String(o.phase)) ||
       (o.turnUserId !== null && !idOk(o.turnUserId)) ||
       o.minPlayers !== 2 || o.maxPlayers !== 8 ||
-      !Array.isArray(o.players) || o.players.length < 1 || o.players.length > 8) return null;
+      !Array.isArray(o.players) || o.players.length < 1 || o.players.length > 8 ||
+      !Array.isArray(o.rematchReady) || o.rematchReady.length > 8 ||
+      o.rematchReady.some((u:unknown)=>!idOk(u)) ||
+      new Set(o.rematchReady).size !== o.rematchReady.length) return null;
   const players: OnlineGolfPlayer[] = [];
   for (const rawPlayer of o.players as unknown[]) {
     if (!rawPlayer || typeof rawPlayer !== 'object' || Array.isArray(rawPlayer)) return null;
@@ -61,12 +66,14 @@ function readMatch(raw: unknown, serverId: string): OnlineGolfMatch | null {
       (o.phase === 'playing' && (players.length < 2 ||
         !players.some(p => p.userId === o.turnUserId))) ||
       (o.phase !== 'playing' && o.turnUserId !== null) ||
-      (o.phase === 'finished' && players.length < 2)) return null;
+      (o.phase === 'finished' && players.length < 2) ||
+      (o.phase !== 'finished' && o.rematchReady.length > 0) ||
+      o.rematchReady.some((u:string) => !players.some(p => p.userId === u))) return null;
   return {
     serverId, revision: o.revision as number,
     phase: o.phase as OnlineGolfMatch['phase'],
     you: o.you, turnUserId: o.turnUserId as string | null, players,
-    minPlayers: 2, maxPlayers: 8,
+    minPlayers: 2, maxPlayers: 8, rematchReady: [...o.rematchReady] as string[],
   };
 }
 
@@ -83,7 +90,7 @@ export function joinOnlineMiniGolf(
   if (!idOk(serverId) || serverId.length > 64 || !socket.connected) {
     onStatus('unavailable');
     return { active: false, match: null, busy: false,
-      shoot: () => false, start: () => false, refresh: () => {}, dispose: () => {} };
+      shoot: () => false, start: () => false, rematch: () => false, refresh: () => {}, dispose: () => {} };
   }
   let disposed = false, active = false, busy = false;
   let match: OnlineGolfMatch | null = null;
@@ -156,6 +163,17 @@ export function joinOnlineMiniGolf(
       busy = true;
       onStatus('connecting');
       socket.emit('mini-golf:start', { serverId });
+      timeout = setTimeout(() => teardown('unavailable', true), 12000);
+      return true;
+    },
+    rematch() {
+      if (disposed || busy || !active || !socket.connected || !match ||
+          match.phase !== 'finished' ||
+          match.players.some(p => p.reconnecting) ||
+          match.rematchReady.includes(match.you)) return false;
+      busy = true;
+      onStatus('connecting');
+      socket.emit('mini-golf:rematch', { serverId });
       timeout = setTimeout(() => teardown('unavailable', true), 12000);
       return true;
     },

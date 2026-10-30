@@ -175,3 +175,7 @@
 .bridge-mini-golf-start[hidden] { display: none; }
 .bridge-mini-golf-start:not([hidden]) { display: block; width: 100%; margin: 8px 0; }
 .bridge-mini-golf-scoreboard { max-height: min(36dvh, 260px); overflow-y: auto; }
+
+/* A finished match exposes rematch voting only with explicit all-player consent. */
+.bridge-mini-golf-rematch[hidden] { display: none; }
+.bridge-mini-golf-rematch:not([hidden]) { display: block; width: 100%; margin: 8px 0; }

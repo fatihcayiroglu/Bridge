@@ -348,6 +348,111 @@ describe('2–8 player Mini Golf authority',()=>{
     expect((await golfMatchStore.load(server)).players).toHaveLength(2);
   });
 
+  it('requires unanimous explicit rematch votes for two players, then resets all scores',async()=>{
+    const server=sid(),a=socket('a',server),b=socket('b',server);
+    await a.trigger('mini-golf:join',{serverId:server});
+    await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
+    await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    await b.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect((await golfMatchStore.load(server)).phase).toBe('finished');
+    await a.trigger('mini-golf:rematch',{serverId:server,userId:'b',strokes:99});
+    let game=await golfMatchStore.load(server);
+    expect(game.phase).toBe('finished');
+    expect(game.players.map(p=>p.strokes)).toEqual([1,1]);
+    expect(game.rematchReady).toEqual(['a']);
+    await a.trigger('mini-golf:rematch',{serverId:server});
+    expect(a.last('mini-golf:error')).toMatchObject({code:'GOLF_REMATCH_UNAVAILABLE'});
+    await b.trigger('mini-golf:rematch',{serverId:server});
+    game=await golfMatchStore.load(server);
+    expect(game.phase).toBe('playing');
+    expect(game.turn).toBe(0);
+    expect(game.rematchReady).toEqual([]);
+    expect(game.players.map(p=>({strokes:p.strokes,won:p.won,z:p.z}))).toEqual([
+      {strokes:0,won:false,z:3.6},{strokes:0,won:false,z:3.6},
+    ]);
+    await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect((await golfMatchStore.load(server)).players[0]?.won).toBe(true);
+  });
+
+  it('accepts exactly eight votes and keeps 8-player rankings until final consent',async()=>{
+    const server=sid(),ps=Array.from({length:8},(_,i)=>socket('rematch'+i,server));
+    for(const p of ps)await p.trigger('mini-golf:join',{serverId:server});
+    await ps[0]!.trigger('mini-golf:start',{serverId:server});
+    for(const p of ps)await p.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    for(let i=0;i<7;i++){
+      await ps[i]!.trigger('mini-golf:rematch',{serverId:server});
+      const state=await golfMatchStore.load(server);
+      expect(state.phase).toBe('finished');
+      expect(state.rematchReady).toHaveLength(i+1);
+      expect(state.players.every(p=>p.won&&p.strokes===1)).toBe(true);
+    }
+    const publicState=ps[6]!.last('mini-golf:state') as {rematchReady:string[];players:unknown[]};
+    expect(publicState.rematchReady).toHaveLength(7);
+    expect(JSON.stringify(publicState)).not.toContain(ps[0]!.id);
+    await ps[7]!.trigger('mini-golf:rematch',{serverId:server});
+    const started=await golfMatchStore.load(server);
+    expect(started).toMatchObject({phase:'playing',turn:0,rematchReady:[]});
+    expect(started.players).toHaveLength(8);
+    expect(started.players.every(p=>p.strokes===0&&!p.won)).toBe(true);
+  });
+
+  it('refuses rematch before finish, after revocation, or while an opponent reconnects',async()=>{
+    const server=sid(),a=socket('a',server),b=socket('b',server);
+    await a.trigger('mini-golf:join',{serverId:server});
+    await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:rematch',{serverId:server});
+    expect(a.last('mini-golf:error')).toMatchObject({code:'GOLF_REMATCH_UNAVAILABLE'});
+    await a.trigger('mini-golf:start',{serverId:server});
+    await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    await b.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    await b.trigger('disconnect');
+    await a.trigger('mini-golf:rematch',{serverId:server});
+    expect((await golfMatchStore.load(server)).rematchReady).toEqual([]);
+    const replacement=socket('b',server);
+    await replacement.trigger('mini-golf:join',{serverId:server});
+    members.mockImplementation(async (id:string)=>id==='a'?null:{banned:false});
+    await a.trigger('mini-golf:rematch',{serverId:server});
+    expect((await golfMatchStore.load(server)).rematchReady).toEqual([]);
+  });
+
+  it('retains votes for remaining players when a completed-match participant leaves',async()=>{
+    const server=sid(),ps=Array.from({length:3},(_,i)=>socket('v'+i,server));
+    for(const p of ps)await p.trigger('mini-golf:join',{serverId:server});
+    await ps[0]!.trigger('mini-golf:start',{serverId:server});
+    for(const p of ps)await p.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    await ps[0]!.trigger('mini-golf:rematch',{serverId:server});
+    await ps[1]!.trigger('mini-golf:rematch',{serverId:server});
+    await ps[1]!.trigger('mini-golf:leave',{serverId:server});
+    const after=await golfMatchStore.load(server);
+    expect(after.phase).toBe('finished');
+    expect(after.rematchReady).toEqual(['v0']);
+    await ps[2]!.trigger('mini-golf:rematch',{serverId:server});
+    expect((await golfMatchStore.load(server))).toMatchObject({phase:'playing',rematchReady:[]});
+  });
+
+  it('expires a disconnected seat at the exact 20-second boundary; never resurrects votes',async()=>{
+    const clock=jest.spyOn(Date,'now').mockReturnValue(1_000_000);
+    try{
+      const server=sid(),ps=Array.from({length:3},(_,i)=>socket('e'+i,server));
+      for(const p of ps)await p.trigger('mini-golf:join',{serverId:server});
+      await ps[0]!.trigger('mini-golf:start',{serverId:server});
+      for(const p of ps)await p.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+      await ps[0]!.trigger('mini-golf:rematch',{serverId:server});
+      await ps[2]!.trigger('disconnect');
+      clock.mockReturnValue(1_019_999);
+      await ps[1]!.trigger('mini-golf:sync',{serverId:server});
+      expect((await golfMatchStore.load(server)).players).toHaveLength(3);
+      clock.mockReturnValue(1_020_000);
+      await ps[1]!.trigger('mini-golf:sync',{serverId:server});
+      const state=await golfMatchStore.load(server);
+      expect(state.players).toHaveLength(2);
+      expect(state.rematchReady).toEqual(['e0']);
+      await ps[1]!.trigger('mini-golf:rematch',{serverId:server});
+      expect((await golfMatchStore.load(server))).toMatchObject({phase:'playing',rematchReady:[]});
+    }finally{clock.mockRestore();}
+  });
+
   it('isolates server-specific match records and rejects another tenant',async()=>{
     const first=sid(),second=sid(),a=socket('a',first);
     await a.trigger('mini-golf:join',{serverId:first});

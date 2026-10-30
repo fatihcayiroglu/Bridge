@@ -894,6 +894,46 @@ try {
       /Strokes: 1|Vuruş: 1/.test(li.textContent||'')).length===8,
     null,{timeout:16000});
   assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isDisabled(),true);
+  // All eight independent, authenticated PostgreSQL members must consent
+  // to the rematch; 1–7 votes MUST NOT silently erase the first-round scores.
+  const rematchControl=fullPage.locator('.bridge-mini-golf-rematch');
+  assert.equal(await rematchControl.isVisible(),true);
+  await rematchControl.click();
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-rematch')?.textContent?.includes('1/8'),
+    null,{timeout:12000});
+  assert.equal(await rematchControl.isDisabled(),true,
+    'one consent must not be submitted multiple times');
+  for(let i=0;i<6;i++){
+    await rosterPage.evaluate(i=>window.__miniGolfRoster.rematch(i),i);
+    await rosterPage.waitForFunction(i=>
+      window.__miniGolfRoster.players[i].states.at(-1)?.rematchReady.length === i+2 &&
+      window.__miniGolfRoster.players[i].states.at(-1)?.phase === 'finished',
+      i,{timeout:12000});
+  }
+  assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isDisabled(),true,
+    'seven rematch approvals cannot reset the shared game');
+  await rosterPage.evaluate(()=>window.__miniGolfRoster.rematch(6));
+  await rosterPage.waitForFunction(() =>{
+    const frame=window.__miniGolfRoster.players[6].states.at(-1);
+    return frame?.phase==='playing' && frame.players.length===8 &&
+      frame.players.every(p=>p.strokes===0 && !p.won) && frame.rematchReady.length===0;
+  },null,{timeout:12000});
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Your turn|Sıra sende/) &&
+    document.querySelector('.bridge-mini-golf-rematch')?.hidden===true &&
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===8 &&
+    [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
+      .every(li => /Strokes: 0|Vuruş: 0/.test(li.textContent||'')),
+    null,{timeout:16000});
+  assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isEnabled(),true);
+  await fullPage.locator('.bridge-mini-golf-shoot').click();
+  await fullPage.waitForFunction(() =>
+    [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
+      .some(li=>/Strokes: 1|Vuruş: 1/.test(li.textContent||'')),
+    null,{timeout:12000});
+  console.log('BRIDGE_MINI_GOLF_REAL_AUTH_EIGHT_PLAYER_CONSENSUAL_REMATCH:8/8:0_skipped');
+
   await fullPage.locator('.bridge-mini-golf-online-button').click();
   await fullPage.waitForFunction(() =>
     document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===0,

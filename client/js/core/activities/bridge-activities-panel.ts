@@ -35,6 +35,7 @@ const translations = {
     golfYou: '(sen)', golfPlayer: 'Oyuncu', golfGoal: 'Deliğe girdi',
     golfStart: 'Maçı başlat (2–8 kişi)', golfLobby: 'Bekleme odası',
     golfWaitStart: 'Maçın başlaması bekleniyor…',
+    golfRematch: 'Rövanşa hazır', golfRematchReady: 'Rövanş onayları', golfRematchMarked: 'Rövanşa onay verdin',
     golfReconnecting: 'Bağlantı yeniden kuruluyor', golfPaused: 'Oyuncu yeniden bağlanıyor · vuruşlar geçici olarak durduruldu.',
     socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
     roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
@@ -69,6 +70,7 @@ const translations = {
     golfYou: '(you)', golfPlayer: 'Player', golfGoal: 'Holed',
     golfStart: 'Start match (2–8 players)', golfLobby: 'Lobby',
     golfWaitStart: 'Waiting for host to start…',
+    golfRematch: 'Ready for rematch', golfRematchReady: 'Rematch confirmations', golfRematchMarked: 'You accepted the rematch',
     golfReconnecting: 'Reconnecting', golfPaused: 'A player is reconnecting · shots temporarily paused.',
     socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
     roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
@@ -185,6 +187,10 @@ function showMiniGolf(container: HTMLElement): void {
     onlineGolf?.start();
   });
   startButton.hidden = true;
+  const rematchButton = makeButton(s.golfRematch, 'bridge-room-direction bridge-mini-golf-rematch', () => {
+    onlineGolf?.rematch();
+  });
+  rematchButton.hidden = true;
   const onlineButton = makeButton(s.golfJoin, 'bridge-room-direction bridge-mini-golf-online-button', toggleOnline);
   let joiningOnline = false;
   function updateMatch(match: OnlineGolfMatch): void {
@@ -202,6 +208,13 @@ function showMiniGolf(container: HTMLElement): void {
       onlineGolf?.dispose(); return;
     }
     const paused = match.players.some(p => p.reconnecting);
+    const finished = match.phase === 'finished';
+    const alreadyReady = match.rematchReady.includes(match.you);
+    rematchButton.hidden = !finished;
+    rematchButton.disabled = !finished || paused || alreadyReady;
+    rematchButton.textContent = (alreadyReady ? s.golfRematchMarked : s.golfRematch) +
+      ' · ' + s.golfRematchReady + ': ' +
+      match.rematchReady.length + '/' + match.players.length;
     const canStart = !paused && match.phase === 'waiting' && match.players.length >= match.minPlayers &&
       match.players.length <= match.maxPlayers && match.players[0]?.userId === match.you;
     startButton.hidden = !canStart;
@@ -225,6 +238,7 @@ function showMiniGolf(container: HTMLElement): void {
       power.disabled = true;
       reset.disabled = true;
       startButton.disabled = true;
+      rematchButton.disabled = true;
       return;
     }
     if (status === 'waiting' || status === 'playing' || status === 'finished') {
@@ -237,6 +251,7 @@ function showMiniGolf(container: HTMLElement): void {
     miniGolf?.leaveOnline();
     scoreboard.replaceChildren();
     startButton.hidden = true;
+    rematchButton.hidden = true;
     onlineButton.textContent = s.golfJoin;
     onlineStatus.textContent = {
       unavailable: s.golfUnavailable, invalid: s.golfInvalid,
@@ -296,7 +311,7 @@ function showMiniGolf(container: HTMLElement): void {
   }
   controls.append(aimLabel, powerLabel, shoot, reset);
   container.append(back, heading, help, canvas, status, controls,
-    onlineHelp, onlineStatus, onlineButton, startButton, scoreboard);
+    onlineHelp, onlineStatus, onlineButton, startButton, rematchButton, scoreboard);
   try {
     miniGolf = startMiniGolfPractice(canvas, update, () => {
       onlineGolf?.dispose();
