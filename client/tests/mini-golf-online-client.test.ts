@@ -167,7 +167,9 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     expect(session.rematch()).toBe(false);
     const finished={...playing,revision:3,phase:'finished',turnUserId:null,
       players:[{...playing.players[0],strokes:1,won:true},
-        {...playing.players[1],strokes:1,won:true}]};
+        {...playing.players[1],strokes:1,won:true}],
+      results:[{userId:'alice',rank:1,strokes:1,holed:true},
+        {userId:'bob',rank:1,strokes:1,holed:true}]};
     t.incoming('mini-golf:state',finished);
     expect(session.rematch()).toBe(true);
     expect(session.rematch()).toBe(false);
@@ -184,7 +186,9 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     const t=transport(), statuses=vi.fn();
     const finished={...playing,revision:3,phase:'finished',turnUserId:null,
       players:[{...playing.players[0],strokes:1,won:true},
-        {...playing.players[1],strokes:1,won:true}]};
+        {...playing.players[1],strokes:1,won:true}],
+      results:[{userId:'alice',rank:1,strokes:1,holed:true},
+        {userId:'bob',rank:1,strokes:1,holed:true}]};
     const one=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
     t.incoming('mini-golf:state',{...finished,rematchReady:['alice','alice']});
     expect(one.active).toBe(false);
