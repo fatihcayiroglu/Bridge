@@ -112,6 +112,9 @@
 }
 .bridge-room-direction:active { background: #1b7080; }
 .bridge-room-error { color: #ffcfb8; }
+.bridge-room-quality-label { display: inline-flex; margin: 8px 10px 10px 0; color: #dceaf5; }
+.bridge-room-quality { min-height: 44px; min-width: 120px; padding: 8px 12px; border-radius: 9px; border: 1px solid #538296; background: #204459; color: #f8fdff; font: inherit; }
+.bridge-room-quality:focus-visible { outline: 2px solid #70f0e0; outline-offset: 2px; }
 @media (max-width: 580px) {
   .bridge-activities-header { padding: 14px 14px 10px; }
   .bridge-activities-tabs { padding: 0 14px 12px; }
