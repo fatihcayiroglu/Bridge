@@ -97,6 +97,31 @@ describe('real renderer lifecycle against a deterministic WebGL command recorder
     expect(gl.deleteShader).toHaveBeenCalledTimes(2);
     handle?.dispose();
   });
+  it('Pool only applies valid local cue placement to the actual GPU scene, never moving or disconnected',()=>{
+    const {canvas,gl}=surface('webgl1');
+    const updated=vi.fn();
+    const handle=startPoolPractice(canvas,updated);
+    expect(handle).not.toBeNull();
+    const initial=handle!.state;
+    const candidate={...initial,balls:initial.balls.map(b=>
+      b.id===0?{...b,x:.55,z:2.5}:b)};
+    expect(handle?.placeLocalTable(candidate)).toBe(true);
+    expect(handle?.state.balls[0]).toMatchObject({x:.55,z:2.5});
+    expect(updated).toHaveBeenCalledTimes(2);
+    frames(3);
+    expect(gl.bufferData).toHaveBeenCalled();
+    expect(handle?.placeLocalTable({...candidate,shots:12})).toBe(false);
+    expect(handle?.shoot(0,50)).toBe(true);
+    expect(handle?.placeLocalTable(candidate)).toBe(false);
+    canvas.dispatchEvent(new Event('webglcontextlost',{cancelable:true}));
+    expect(handle?.placeLocalTable(candidate)).toBe(false);
+    canvas.dispatchEvent(new Event('webglcontextrestored'));
+    handle?.reset();
+    expect(handle?.state.shots).toBe(0);
+    handle?.dispose();
+    expect(handle?.placeLocalTable(candidate)).toBe(false);
+    expect(pending.size).toBe(0);
+  });
   it('Pool uploads 16 full spheres with real white caps for stripes 9–15, colored solids and a dark eight', () => {
     const { canvas, gl } = surface('webgl1');
     const game = startPoolPractice(canvas, vi.fn());
