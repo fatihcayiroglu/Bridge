@@ -15,7 +15,7 @@ import { BridgeRegistry } from './bridge-registry.ts';
 
 export type ExclusiveSurfaceId =
   | 'inbox' | 'saved' | 'search' | 'server-search' | 'pins' | 'command'
-  | 'dm' | 'friends' | 'gdm' | 'discover' | 'marketplace' | 'polls';
+  | 'dm' | 'friends' | 'gdm' | 'discover' | 'marketplace' | 'polls' | 'activities';
 
 const CLOSE_OWNER: Record<ExclusiveSurfaceId, string> = {
   inbox: 'closeInbox',
@@ -30,6 +30,7 @@ const CLOSE_OWNER: Record<ExclusiveSurfaceId, string> = {
   discover: 'hideDiscoverPanel',
   marketplace: 'closeBotMarketplace',
   polls: 'closePolls',
+  activities: 'closeBridgeActivities',
 };
 
 export function closeExclusivePeers(owner: ExclusiveSurfaceId): void {
