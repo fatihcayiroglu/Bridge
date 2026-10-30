@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { newPoolPractice, type PoolState } from '../js/core/activities/pool-practice-physics.ts';
-import { newLocalEightBallRules, resolveLocalEightBallShot } from
+import { chooseLocalBreakFoul, newLocalEightBallRules, resolveLocalEightBallShot } from
   '../js/core/activities/pool-eight-ball-rules.ts';
 import { placeLocalCueBall, POOL_HEAD_STRING_Z } from
   '../js/core/activities/pool-ball-in-hand.ts';
@@ -45,12 +45,33 @@ describe('local ball-in-hand permission and physical placement',()=>{
       pocketed:1,balls:before.balls.map(b=>b.id===1?{...b,pocketed:true}:b),
       firstObjectHit:1,railAfterContact:true};
     const rules=resolveLocalEightBallShot(newLocalEightBallRules(),before,after)!;
-    expect(rules.phase).toBe('open');
+    expect(rules.phase).toBe('break-foul-choice');
     expect(rules.currentPlayer).toBe(1);
-    expect(rules.ballInHand).toBe('head-string');
-    expect(placeLocalCueBall(rules,after,1,0,POOL_HEAD_STRING_Z-.001)).toBeNull();
-    const placed=placeLocalCueBall(rules,after,1,0,POOL_HEAD_STRING_Z);
+    expect(rules.ballInHand).toBeNull();
+    expect(placeLocalCueBall(rules,after,1,0,POOL_HEAD_STRING_Z)).toBeNull();
+    expect(chooseLocalBreakFoul(rules,after,'accept-position')).toBeNull();
+    const selected=chooseLocalBreakFoul(rules,after,'take-head-string');
+    expect(selected?.phase).toBe('open');
+    expect(selected?.ballInHand).toBe('head-string');
+    expect(placeLocalCueBall(selected!,after,1,0,POOL_HEAD_STRING_Z-.001)).toBeNull();
+    const placed=placeLocalCueBall(selected!,after,1,0,POOL_HEAD_STRING_Z);
     expect(placed?.table.balls.find(b=>b.id===0)?.z).toBe(POOL_HEAD_STRING_Z);
+  });
+  it('offers actual opponent choice after other legal-break fouls without automatically placing',()=>{
+    const before=base();
+    const after:PoolState={...before,shots:1,firstObjectHit:null,
+      pocketed:1,balls:before.balls.map(b=>b.id===5?{...b,pocketed:true}:b),
+      railAfterContact:false};
+    const rules=resolveLocalEightBallShot(newLocalEightBallRules(),before,after)!;
+    expect(rules.phase).toBe('break-foul-choice');
+    expect(rules.ballInHand).toBeNull();
+    expect(chooseLocalBreakFoul(rules,after,'invalid' as never)).toBeNull();
+    const accepted=chooseLocalBreakFoul(rules,after,'accept-position');
+    expect(accepted?.phase).toBe('open');
+    expect(accepted?.ballInHand).toBeNull();
+    const placed=chooseLocalBreakFoul(rules,after,'take-head-string');
+    expect(placed?.ballInHand).toBe('head-string');
+    expect(chooseLocalBreakFoul(placed!,after,'accept-position')).toBeNull();
   });
   it('rejects overlap with ANY remaining object, zero-radius and nonfinite values',()=>{
     const {rules,table}=fullRulesFoul(null);
