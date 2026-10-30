@@ -4,6 +4,8 @@
  * socket.io-client connection to the production Socket.IO middleware fixture.
  */
 import { io } from 'socket.io-client';
+import { BridgeRegistry } from '../../client/js/core/bridge-registry.ts';
+import { showBridgeActivities } from '../../client/js/core/activities/bridge-activities-panel.ts';
 import { startLocalSocialRoom } from '../../client/js/core/activities/social-room-webgl.ts';
 import { joinSocialRoomPreview, type SocialClient } from '../../client/js/core/activities/social-room-client.ts';
 import type { Social3DSnapshot } from '../../client/js/core/activities/social-room-wire.ts';
@@ -92,4 +94,46 @@ export function mountSocialBrowser(
     room.dispose();
   };
   (window as typeof window & { __bridge3DSmoke?: typeof state }).__bridge3DSmoke = state;
+}
+
+/**
+ * Mount the exact shipped Activities panel and its registry integration in an
+ * authenticated DOM fixture. The Socket.IO transport, Bridge JWT, WebGL and
+ * PostgreSQL/Redis backend are REAL. The wider Bridge app shell/CSS are NOT
+ * loaded here, so this is panel integration evidence, not full-shell E2E.
+ */
+export function mountRealActivitiesPanel(
+  port: number,
+  token: string,
+  serverId: string,
+): void {
+  document.documentElement.lang = 'en';
+  const app = document.createElement('main');
+  app.id = 'app';
+  document.body.replaceChildren(app);
+  const socket = io('http://127.0.0.1:' + port, {
+    auth: { token }, transports: ['websocket'],
+    reconnection: false, forceNew: true, timeout: 7000,
+  });
+  const state = {
+    ready: false,
+    socket,
+    errors: [] as string[],
+    dispose: () => {
+      document.dispatchEvent(new Event('bridge:auth-logout'));
+      socket.disconnect();
+      BridgeRegistry.unregister('socket');
+      BridgeRegistry.unregister('getCurrentServer');
+    },
+  };
+  BridgeRegistry.register('getCurrentServer', () => ({ _id: serverId }));
+  // Production SocketManager uses a registry value for the canonical socket;
+  // this explicit cast is confined to the test fixture, not app code.
+  BridgeRegistry.register('socket', socket as never);
+  socket.on('connect_error', error => state.errors.push(String(error?.message || error)));
+  socket.on('userAuthenticated', () => {
+    state.ready = true;
+    showBridgeActivities('social');
+  });
+  (window as typeof window & { __bridge3DPanel?: typeof state }).__bridge3DPanel = state;
 }
