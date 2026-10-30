@@ -2,22 +2,22 @@
 #bridge-activities-entry {
   flex-shrink: 0;
   font-size: 1.35rem;
-  color: #baf8eb;
-  background: #173a47;
-  border: 1px solid #286678;
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border: 1px solid var(--brand-border);
 }
 #bridge-activities-entry:hover,
-#bridge-activities-entry:focus-visible { background: #205c68; outline-offset: 2px; }
+#bridge-activities-entry:focus-visible { background: var(--surface-hover); outline-offset: 2px; }
 .bridge-activities-overlay {
   position: fixed;
   inset: 0;
-  z-index: 20000;
+  z-index: var(--z-stage-modal);
   display: flex;
   justify-content: center;
   align-items: center;
   padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
            max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
-  background: rgba(6, 13, 23, 0.88);
+  background: color-mix(in srgb, var(--bg-0) 88%, transparent);
   box-sizing: border-box;
 }
 .bridge-activities-dialog {
@@ -25,9 +25,9 @@
   width: min(100%, 1000px);
   max-height: min(94dvh, 900px);
   overflow: auto;
-  background: #121d2e;
-  color: #e8f3fc;
-  border: 1px solid #39506a;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 18px;
   box-shadow: 0 18px 80px rgba(0, 0, 0, 0.55);
 }
@@ -38,15 +38,15 @@
   align-items: start;
   padding: 20px 24px 12px;
 }
-.bridge-activities-header h2 { margin: 0; font-size: 1.35rem; color: #f0fafc; }
-.bridge-activities-header p { margin: 6px 0 0; color: #acc7d4; font-size: 0.9rem; }
+.bridge-activities-header h2 { margin: 0; font-size: 1.35rem; color: var(--text-primary); }
+.bridge-activities-header p { margin: 6px 0 0; color: var(--text-2); font-size: 0.9rem; }
 .bridge-activities-close {
   width: 42px;
   height: 42px;
   flex-shrink: 0;
   border-radius: 12px;
-  border: 1px solid #4a5d72;
-  background: #223248;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
   color: inherit;
   font-size: 1.7rem;
   cursor: pointer;
@@ -55,66 +55,66 @@
 .bridge-activities-tab {
   border-radius: 10px;
   padding: 11px 16px;
-  border: 1px solid #3a566a;
-  background: #1f3042;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
   color: inherit;
   font-size: 0.95rem;
   cursor: pointer;
 }
 .bridge-activities-tab[aria-selected="true"] {
-  background: #14627a;
-  border-color: #6ce3e2;
-  color: white;
+  background: var(--brand);
+  border-color: var(--brand-border);
+  color: var(--text-on-solid);
 }
 .bridge-activities-tab:focus-visible,
 .bridge-activities-close:focus-visible,
-.bridge-room-direction:focus-visible { outline: 2px solid #70f0e0; outline-offset: 2px; }
+.bridge-room-direction:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .bridge-activities-body { padding: 0 24px 24px; }
-.bridge-activities-help { margin: 4px 0 14px; color: #b1c8d6; line-height: 1.5; }
+.bridge-activities-help { margin: 4px 0 14px; color: var(--text-2); line-height: 1.5; }
 .bridge-activities-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); gap: 12px; }
 .bridge-activities-card {
-  border: 1px solid #345064;
-  background: #1d2e42;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
   border-radius: 12px;
   padding: 16px;
 }
-.bridge-activities-card h3 { margin: 0 0 9px; font-size: 1rem; color: #f1f8ff; }
-.bridge-activities-card p { margin: 0 0 12px; color: #b4c4d5; font-size: 0.85rem; }
+.bridge-activities-card h3 { margin: 0 0 9px; font-size: 1rem; color: var(--text-primary); }
+.bridge-activities-card p { margin: 0 0 12px; color: var(--text-2); font-size: 0.85rem; }
 .bridge-activities-planned {
   display: inline-block;
-  color: #d4eac0;
-  background: #355039;
+  color: var(--success-text);
+  background: var(--green-bg);
   border-radius: 6px;
   padding: 3px 8px;
   font-size: 0.77rem;
 }
-.bridge-room-status { font-size: 0.84rem; font-weight: 600; color: #85e3de; }
+.bridge-room-status { font-size: 0.84rem; font-weight: 600; color: var(--green); }
 .bridge-activities-canvas {
   box-sizing: border-box;
   display: block;
   width: 100%;
   height: clamp(240px, 48dvh, 510px);
   border-radius: 12px;
-  background: #0b1627;
-  border: 1px solid #3a556d;
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
   outline-offset: 3px;
 }
 .bridge-room-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 12px 0; }
 .bridge-room-direction {
-  border: 1px solid #538296;
-  background: #204459;
-  color: #f8fdff;
+  border: 1px solid var(--border-focus);
+  background: var(--surface-raised);
+  color: var(--text-primary);
   border-radius: 10px;
   min-height: 44px;
   padding: 10px 16px;
   cursor: pointer;
   touch-action: none;
 }
-.bridge-room-direction:active { background: #1b7080; }
-.bridge-room-error { color: #ffcfb8; }
-.bridge-room-quality-label { display: inline-flex; margin: 8px 10px 10px 0; color: #dceaf5; }
-.bridge-room-quality { min-height: 44px; min-width: 120px; padding: 8px 12px; border-radius: 9px; border: 1px solid #538296; background: #204459; color: #f8fdff; font: inherit; }
-.bridge-room-quality:focus-visible { outline: 2px solid #70f0e0; outline-offset: 2px; }
+.bridge-room-direction:active { background: var(--surface-pressed); }
+.bridge-room-error { color: var(--danger-text); }
+.bridge-room-quality-label { display: inline-flex; margin: 8px 10px 10px 0; color: var(--text-2); }
+.bridge-room-quality { min-height: 44px; min-width: 120px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--border-focus); background: var(--surface-raised); color: var(--text-primary); font: inherit; }
+.bridge-room-quality:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 @media (max-width: 580px) {
   .bridge-activities-header { padding: 14px 14px 10px; }
   .bridge-activities-tabs { padding: 0 14px 12px; }
@@ -128,12 +128,12 @@
   display: inline-block;
   padding: 3px 8px;
   border-radius: 6px;
-  background: #145565;
-  color: #d0fcff;
+  background: var(--brand-bg);
+  color: var(--text-primary);
   font-size: 0.77rem;
 }
 .bridge-mini-golf-launch { display: block; margin-top: 12px; width: 100%; }
-.bridge-mini-golf-heading { color: #f1f8ff; font-size: 1.1rem; }
+.bridge-mini-golf-heading { color: var(--text-primary); font-size: 1.1rem; }
 .bridge-mini-golf-canvas { height: clamp(260px, 48dvh, 500px); }
 .bridge-mini-golf-controls {
   display: flex;
@@ -147,10 +147,10 @@
   flex: 1 1 150px;
   flex-direction: column;
   gap: 7px;
-  color: #dceaf5;
+  color: var(--text-2);
   font-size: .9rem;
 }
-.bridge-mini-golf-label input { width: 100%; accent-color: #70f0e0; min-height: 44px; }
+.bridge-mini-golf-label input { width: 100%; accent-color: var(--focus-ring); min-height: 44px; }
 .bridge-mini-golf-controls button { flex: 1 1 100px; }
 .bridge-mini-golf-controls button:disabled { opacity: .5; cursor: not-allowed; }
 .bridge-mini-golf-status { min-height: 1.5em; }
@@ -162,8 +162,8 @@
   margin: 10px 0;
   padding: 10px 18px 10px 32px;
   border-radius: 10px;
-  background: #183348;
-  color: #e7fcff;
+  background: var(--surface-raised);
+  color: var(--text-primary);
   line-height: 1.8;
 }
 .bridge-mini-golf-scoreboard:empty { display: none; }
@@ -182,22 +182,22 @@
 
 /* Results are derived from an authenticated completed-round snapshot, never
    from local shot animation. Shared ties retain their actual competition rank. */
-.bridge-mini-golf-results-heading { margin: 14px 0 6px; color: #e8f3fc; font-size: 1rem; }
+.bridge-mini-golf-results-heading { margin: 14px 0 6px; color: var(--text-primary); font-size: 1rem; }
 .bridge-mini-golf-results-heading[hidden] { display: none; }
 .bridge-mini-golf-results {
   list-style: none;
   padding: 10px 14px;
   margin: 0 0 12px;
-  border: 1px solid #345d6a;
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
-  background: #152c40;
-  color: #f0f8ff;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
   max-height: min(36dvh, 280px);
   overflow-y: auto;
 }
 .bridge-mini-golf-results:empty { display: none; }
 .bridge-mini-golf-results li { padding: 5px 0; line-height: 1.45; }
-.bridge-mini-golf-results li + li { border-top: 1px solid #365163; }
+.bridge-mini-golf-results li + li { border-top: 1px solid var(--border); }
 
 /* Emulated touch and mobile WebViews: no 2-column overflow, safe 44px tap
    targets and selectable sliders. Gameplay remains opt-in and WebGL-gated. */
