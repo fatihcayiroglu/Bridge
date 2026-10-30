@@ -1021,6 +1021,11 @@ try {
   await mobilePage.locator('[data-game-id="mini-golf"]').tap();
   const mobileCanvas=mobilePage.locator('canvas.bridge-mini-golf-canvas');
   await mobileCanvas.waitFor({state:'visible',timeout:12000});
+  const joinCopy=await mobilePage.locator('.bridge-mini-golf-online-button').textContent();
+  assert.match(joinCopy||'', /2–8/,
+    'the real mobile button must advertise the supported 2–8 player experimental lobby');
+  assert.doesNotMatch(joinCopy||'', /two.player|iki oyunculu/i,
+    'the shipped UI must not promise a two-seat-only game');
   const touchLayout=await mobilePage.evaluate(()=>{
     const dialog=document.querySelector('.bridge-activities-dialog');
     const canvas=document.querySelector('canvas.bridge-mini-golf-canvas');
@@ -1074,6 +1079,9 @@ try {
     document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===2 &&
     document.querySelector('.bridge-mini-golf-start:not([hidden])'),
     null,{timeout:12000});
+  const liveHeading=await mobilePage.locator('.bridge-mini-golf-heading').textContent();
+  assert.match(liveHeading||'', /2–8/,
+    'online mode must no longer be titled solely as local solo practice');
   const touchStartHeight=await mobilePage.locator('.bridge-mini-golf-start')
     .evaluate(button=>button.getBoundingClientRect().height);
   assert.ok(touchStartHeight>=44,'the mobile host start target must be touch friendly');
