@@ -24,6 +24,8 @@ function readRoles(raw: unknown): string[] {
 
 const mockDb = createMockDb();
 jest.mock('../db/loader', () => mockDb);
+const mockSocialRoleReconcile = jest.fn().mockResolvedValue(undefined);
+jest.mock('../lib/socialRoleAccess', () => ({ reconcileSocialRoleChange: (...args: unknown[]) => mockSocialRoleReconcile(...args) }));
 
 import { hooks } from '../plugins/loader';
 import { registerPluginActionHandlers } from '../plugins/actions';
@@ -60,6 +62,7 @@ describe('registerPluginActionHandlers', () => {
   beforeEach(async () => {
     mockDb._reset();
     io._emitted.length = 0;
+    mockSocialRoleReconcile.mockClear();
     user    = makeUser();
     server  = makeServer(user._id);
     channel = makeChannel(server._id);
@@ -148,6 +151,7 @@ describe('registerPluginActionHandlers', () => {
       data: expect.objectContaining({ serverId: server._id, userId: user._id, roleId: 'role-welcome' }),
     }));
     expect(io._emitted.some(e => e.ev === 'role:granted' && !e._target)).toBe(false);
+    expect(mockSocialRoleReconcile).toHaveBeenCalledWith(io, server._id, user._id);
   });
 
   it('plugin:sendMessage — channel/server locator uyuşmazlığında mesaj oluşturmaz', async () => {
@@ -192,6 +196,7 @@ describe('registerPluginActionHandlers', () => {
     const member = await mockDb.members.findOne({ userId: user._id, serverId: server._id });
     const roles = readRoles(member!.roles);
     expect(roles).not.toContain('foreign-role');
+    expect(mockSocialRoleReconcile).not.toHaveBeenCalled();
   });
 
 
