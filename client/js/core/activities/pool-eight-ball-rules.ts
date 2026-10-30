@@ -11,7 +11,7 @@ export type EightBallPlayer = 0 | 1;
 export type EightBallFoul =
   | 'scratch' | 'no-first-contact' | 'illegal-first-contact' | 'no-rail-after-contact' | 'illegal-break';
 export type EightBallPhase =
-  | 'break' | 'open' | 'assigned' | 'choose-group' | 'illegal-break-choice' | 'eight-respot-required' | 'finished';
+  | 'break' | 'open' | 'assigned' | 'choose-group' | 'illegal-break-choice' | 'break-foul-choice' | 'eight-respot-required' | 'finished';
 
 export interface EightBallShotResult {
   readonly actor: EightBallPlayer;
@@ -64,7 +64,7 @@ export function resolveLocalEightBallShot(
   rules: LocalEightBallRules, before: PoolState, after: PoolState,
 ): LocalEightBallRules | null {
   if(rules.phase==='finished'||rules.phase==='choose-group'||
-      rules.phase==='illegal-break-choice'||
+      rules.phase==='illegal-break-choice'||rules.phase==='break-foul-choice'||
       rules.phase==='eight-respot-required'||rules.winner!==null ||
       rules.ballInHand!==null ||
       before.shots!==rules.shotsResolved || after.shots!==before.shots+1 ||
@@ -123,11 +123,10 @@ export function resolveLocalEightBallShot(
     actor,pocketed,firstObjectHit:hit,foul,retainedTurn,eightPocketed,
   };
   const common={shotsResolved:after.shots,last:result};
-  // The old solo-practice cue auto-respot is not legal ball-in-hand.
-  // An independent, validated placement must be explicitly completed before
-  // the next local rules shot. Break scratches are restricted behind the head line.
-  const ballInHand: 'anywhere'|'head-string'|null = foul
-    ? (isBreak?'head-string':'anywhere') : null;
+  // Never accept the solo-practice auto-respot as a real placement.
+  // Standard fouls award anywhere placement; break fouls require an
+  // explicit opponent decision before head-string placement can be granted.
+  const ballInHand: 'anywhere'|'head-string'|null = foul&&!isBreak?'anywhere':null;
   if(eightPocketed) {
     if(isBreak) {
       // Eight on break is not an automatic win/loss. Physics must re-spot it
@@ -149,6 +148,10 @@ export function resolveLocalEightBallShot(
         last:{...result,foul:foul??'illegal-break',retainedTurn:false},
         phase:'illegal-break-choice',currentPlayer:other(actor),ballInHand:null};
     }
+    // WPA 4.3(h): even on a legal break, an ordinary foul grants the
+    // incoming player a CHOICE, not automatic head-string ball-in-hand.
+    if(foul)return {...rules,...common,phase:'break-foul-choice',
+      ballInHand:null,currentPlayer:other(actor)};
     // Table stays open after break even if a solid/stripe was sunk.
     return {...rules,...common,phase:'open',ballInHand,
       currentPlayer:retainedTurn?actor:other(actor)};
@@ -218,4 +221,27 @@ export function chooseLocalIllegalBreak(
   const breaker=choice==='rerack-incoming-break'?rules.currentPlayer:last.actor;
   return {rules:{...newLocalEightBallRules(),currentPlayer:breaker},
     table:newPoolPractice()};
+}
+
+/**
+ * WPA 8-Ball 4.3(h) local-only break foul options. A scratch is auto-respotted
+ * by SOLO practice physics, so the untouched-table option is not provable:
+ * fail closed rather than silently using a fictional legally placed cue.
+ * The explicit head-string choice creates a one-shot placement permission.
+ */
+export function chooseLocalBreakFoul(
+  rules: LocalEightBallRules, table: PoolState,
+  choice: 'take-head-string' | 'accept-position',
+): LocalEightBallRules | null {
+  if(rules.phase!=='break-foul-choice'||rules.ballInHand!==null||
+      rules.winner!==null||!rules.last||rules.last.foul===null||
+      rules.last.actor===rules.currentPlayer||
+      table.status!=='ready'||table.shots!==rules.shotsResolved||
+      !mapBalls(table)||
+      (choice!=='take-head-string'&&choice!=='accept-position'))return null;
+  if(choice==='take-head-string') {
+    return {...rules,phase:'open',ballInHand:'head-string'};
+  }
+  if(rules.last.foul==='scratch'||table.scratches>0)return null;
+  return {...rules,phase:'open',ballInHand:null};
 }
