@@ -511,6 +511,76 @@ try {
   assert.deepEqual(await shellPage.evaluate(() =>
     window.__bridge3DShippedShell.errors), [], 'real transport must authenticate');
 
+  // FULL production app path: real Express createApp+setupRoutes serves
+  // /index.html, nonce CSP, built ESM chunks, real /api/login, real socket
+  // authentication and real AppState/ServerSwitcher/Activities opener.
+  // Only fixture identities and disposable PostgreSQL/Redis are synthetic.
+  const fullContext = await browser.newContext({ viewport: { width: 1200, height: 780 } });
+  const fullPage = await fullContext.newPage();
+  pages.push({ page: fullPage, context: fullContext });
+  const fullErrors = [];
+  fullPage.on('pageerror', e => fullErrors.push(String(e.message)));
+  const fullOrigin = 'http://127.0.0.1:' + fixture.port;
+  const documentResponse = await fullPage.goto(fullOrigin + '/index.html',
+    { waitUntil: 'domcontentloaded' });
+  assert.equal(documentResponse?.status(), 200, 'actual Bridge Express SPA route must load');
+  const productionCsp = documentResponse.headers()['content-security-policy'];
+  assert.match(productionCsp, /nonce-/, 'real Bridge CSP must contain a random nonce');
+  assert.doesNotMatch(productionCsp, /script-src[^;]*unsafe-inline/,
+    'real SPA must not loosen inline script CSP');
+  await fullPage.locator('#l-username').waitFor({ state: 'visible', timeout: 20000 });
+  assert.equal(await fullPage.locator('#app').isVisible(), false,
+    'actual Activities rail must not be shown before signing in');
+  await fullPage.locator('#l-username').fill(fixture.aliceUsername);
+  await fullPage.locator('#l-password').fill(fixture.proofPassword);
+  const loginResponse = fullPage.waitForResponse(response =>
+    response.url().includes('/api/login') && response.request().method() === 'POST',
+    { timeout: 15000 });
+  await fullPage.locator('#login-form [data-auth-action="login"]').click();
+  const login = await loginResponse;
+  assert.equal(login.status(), 200,
+    'real login API must verify a real bcrypt password in PostgreSQL');
+  await fullPage.locator('#app').waitFor({ state: 'visible', timeout: 20000 });
+  await fullPage.locator('#bridge-activities-entry').waitFor(
+    { state: 'visible', timeout: 20000 });
+  const actualServerIcon = fullPage.locator('.server-icon[data-id="' + fixture.serverId + '"]');
+  await actualServerIcon.waitFor({ state: 'visible', timeout: 20000 });
+  await actualServerIcon.click();
+  await fullPage.locator('#bridge-activities-entry').click();
+  await fullPage.getByRole('dialog', { name: 'Bridge Activities' }).waitFor();
+  assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+  await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();
+  // Language is user-configurable; the join control is the single direct
+  // social-body button (directional buttons live in a separate controls div).
+  const joinFromRealApp = fullPage.locator(
+    '.bridge-activities-body > button.bridge-room-direction');
+  assert.equal(await joinFromRealApp.isEnabled(), true,
+    'real AppState selected server must allow explicit opt-in');
+  assert.equal(await alice.evaluate(() =>
+    window.__bridge3DSmoke.lastFrame.peers.length), 1,
+    'real authenticated shell must not autojoin before user click');
+  await joinFromRealApp.click();
+  await fullPage.waitForFunction(() =>
+    [...document.querySelectorAll('p.bridge-room-status[role="status"]')]
+      .some(node => node.textContent?.includes('Ortak odada') ||
+        node.textContent?.includes('In shared room')),
+    null, { timeout: 12000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 2,
+    null, { timeout: 12000 });
+  await fullPage.keyboard.press('Escape');
+  await fullPage.waitForFunction(() =>
+    !document.querySelector('.bridge-activities-overlay') &&
+    document.getElementById('app')?.inert === false,
+    null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+  assert.equal(await fullPage.locator('#app').isVisible(), true,
+    'closing the room must not log the real user out');
+  assert.deepEqual(fullErrors, [],
+    'real SPA bootstrap/login/3D journey must not raise uncaught page errors');
+  console.log('SOCIAL_3D_REAL_EXPRESS_LOGIN_FULL_APP_SHELL:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MULTISERVER_EVENT_ISOLATION:1/1:0_skipped');
   console.log('SOCIAL_3D_SHIPPED_HTML_CSS_CSP_RAIL_JOIN_ESCAPE:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_ACTIVITIES_PANEL_JOIN_SWITCH_LOGOUT:1/1:0_skipped');

@@ -12,6 +12,7 @@ const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 if (!process.send || !process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     !process.env.REDIS_URL || process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER !== '1' ||
@@ -23,11 +24,13 @@ if (!process.send || !process.env.DATABASE_URL?.includes('/bridge_social_3d_test
 
 const db = require('../dist/db/loader').default;
 const { createSocketServer } = require('../dist/app/setupSocket');
+const { createApp } = require('../dist/app/createApp');
+const { setupRoutes } = require('../dist/app/setupRoutes');
 const { setupSocket } = require('../dist/socket/index');
 const { applyAdapter, disconnect, isRedisAvailable } = require('../dist/lib/redisAdapter');
 const { socialRoomStore } = require('../dist/socket/handlers/social-room-store');
 const { evictUserFromServerRooms } = require('../dist/lib/liveMembership');
-const testId = 'social_browser_' + randomBytes(6).toString('hex');
+const testId = 's3d_' + randomBytes(6).toString('hex');
 const serverId = testId + '_server';
 const otherServerId = testId + '_other';
 const alice = testId + '_alice';
@@ -36,6 +39,11 @@ const users = [alice, bob];
 const q = (sql, args = []) => db._pool.query(sql, args);
 let seeded = false;
 let io;
+const proofPassword = 'BridgeSocialRealLoginProof987!';
+// Exercise the production Express routing stack in addition to the existing
+// isolated Socket.IO/HTML fixtures. /index.html is the actual authored app.
+const { app: productionApp, allowedOrigins } = createApp();
+setupRoutes(productionApp);
 // Only the real authored Activities entry element is extracted from the
 // shipped HTML, not a test recreation. No app-wide JS or fake REST APIs run.
 const realIndex = fs.readFileSync(path.resolve(__dirname, '../../client/index.html'), 'utf8');
@@ -78,7 +86,10 @@ const httpServer = createServer((request, response) => {
     response.end('<!doctype html><html><head><title>Bridge 3D real browser test</title></head><body></body></html>');
     return;
   }
-  response.writeHead(404); response.end();
+  // All other paths are resolved by real Bridge Express API routes, static
+  // production bundles, nonce-CSP and the actual SPA entrypoint. No mocked
+  // /api/login, server list or socket bootstrap.
+  productionApp(request, response);
 });
 
 async function cleanup() {
@@ -113,9 +124,10 @@ async function main() {
   await db._initSchema();
   seeded = true;
   const now = Date.now();
+  const hashedProofPassword = await bcrypt.hash(proofPassword, 10);
   for (const id of users) await q(
     'INSERT INTO users (_id, username, "displayName", password, "tokenVersion", "createdAt") VALUES ($1,$2,$3,$4,0,$5)',
-    [id, id, 'Browser Social Test', 'test-only-synthetic-password', now],
+    [id, id, 'Browser Social Test', hashedProofPassword, now],
   );
   await q('INSERT INTO servers (_id, name, "ownerId", "createdAt") VALUES ($1,$2,$3,$4)',
     [serverId, '3D browser integration', alice, now]);
@@ -130,7 +142,8 @@ async function main() {
     [otherServerId, 'Other 3D room', alice, now]);
   await q('INSERT INTO members ("userId", "serverId", roles, "joinedAt", banned) VALUES ($1,$2,$3::jsonb,$4,FALSE)',
     [alice, otherServerId, '[]', now]);
-  io = createSocketServer(httpServer, ['http://127.0.0.1']);
+  io = createSocketServer(httpServer, allowedOrigins);
+  productionApp.set('io', io);
   assert.equal(await applyAdapter(io), true);
   assert.equal(isRedisAvailable(), true);
   setupSocket(io);
@@ -138,10 +151,13 @@ async function main() {
     httpServer.once('error', reject);
     httpServer.listen(0, '127.0.0.1', resolve);
   });
+  const port = httpServer.address().port;
+  allowedOrigins.push('http://127.0.0.1:' + port);
   const token = id => jwt.sign({ id, username: id, v: 0 }, process.env.JWT_SECRET,
     { algorithm: 'HS256', expiresIn: '2m' });
-  process.send({ type: 'ready', port: httpServer.address().port,
-    serverId, otherServerId, aliceToken: token(alice), bobToken: token(bob) });
+  process.send({ type: 'ready', port,
+    serverId, otherServerId, aliceUsername: alice, proofPassword,
+    aliceToken: token(alice), bobToken: token(bob) });
 }
 
 process.on('message', async msg => {

@@ -25,6 +25,7 @@ on:
       - codex/activities-3d-dual-webgl-context-dpr-20261030
       - codex/activities-3d-real-panel-browser-proof-20261030
       - codex/activities-3d-shipped-html-css-csp-20261030
+      - codex/activities-3d-multiserver-event-isolation-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
