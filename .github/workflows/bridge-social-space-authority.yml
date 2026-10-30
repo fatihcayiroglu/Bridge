@@ -33,6 +33,7 @@ on:
       - codex/bridge-npm-audit-safe-upgrades-20261030
       - codex/activities-mini-golf-reconnect-grace-20261030
       - codex/activities-mini-golf-consensual-rematch-20261030
+      - codex/activities-mini-golf-ranked-results-mobile-touch-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
