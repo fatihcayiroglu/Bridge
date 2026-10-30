@@ -739,9 +739,48 @@ try {
     'cue is locked during physical rolling');
   await fullPage.locator('.bridge-pool-reset').click();
   assert.match(await fullPage.locator('.bridge-pool-status').textContent(),/Shots: 0|Vuruş: 0/);
+
+  // REAL Chrome keyboard, not a DOM event mock: Pool sliders must be inside
+  // the same focus order as buttons. Tabs must wrap inside the modal and
+  // must never allow focus to escape to the inert authenticated app.
+  const poolPower = fullPage.locator('input.bridge-pool-power');
+  await poolPower.focus();
+  assert.equal(await poolPower.evaluate(el => el === document.activeElement), true);
+  await fullPage.keyboard.press('Tab');
+  assert.equal(await fullPage.locator('.bridge-pool-shoot').evaluate(el =>
+    el === document.activeElement), true,
+    'real Tab from Pool power slider must reach Shoot in DOM order');
+  await fullPage.locator('.bridge-pool-reset').focus();
+  await fullPage.keyboard.press('Tab');
+  assert.equal(await fullPage.locator('.bridge-activities-close').evaluate(el =>
+    el === document.activeElement), true,
+    'real Tab at final modal button must wrap to Close');
+  await fullPage.keyboard.press('Shift+Tab');
+  assert.equal(await fullPage.locator('.bridge-pool-reset').evaluate(el =>
+    el === document.activeElement), true,
+    'real Shift+Tab from Close must wrap to final Pool button');
+  assert.equal(await fullPage.locator('#app').evaluate(el => el.inert), true,
+    'keyboard focus checks must not lift inert app boundary');
+
   await fullPage.locator('.bridge-pool-back').click();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(),10);
   console.log('BRIDGE_3D_POOL_REAL_AUTH_APP_SOLO_SHOOT_RESET:1/1:0_skipped');
+
+  // Social graphics quality is a native select in the *same* real dialog.
+  // After leaving Pool, a user must be able to Tab from the selector to
+  // online opt-in, and the unselected games tab cannot be a focus stop.
+  await fullPage.getByRole('tab', { name: '3D Social Space' }).click();
+  await fullPage.locator('select.bridge-room-quality').focus();
+  await fullPage.keyboard.press('Tab');
+  const socialJoin = fullPage.locator('.bridge-activities-body > button.bridge-room-direction');
+  assert.equal(await socialJoin.evaluate(el => el === document.activeElement), true,
+    'real Tab from graphics quality must reach explicit online join');
+  assert.equal(await fullPage.locator('[data-tab="games"]').evaluate(el =>
+    el.tabIndex), -1, 'inactive Games tab must not be an accidental focus stop');
+  await fullPage.getByRole('tab', { name: '3D Mini Games' }).click();
+  assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+  console.log('BRIDGE_3D_REAL_APP_KEYBOARD_MODAL_FOCUS:1/1:0_skipped');
+
   // FULL SHIPPED UI: real Express login Alice plus a third real PostgreSQL
   // member on an independent, production-JWT Socket.IO connection. The UI
   // starts offline and must explicitly join; state/turn/score are server-owned.

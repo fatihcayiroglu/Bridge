@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop, test-integrity/integrated-audit, codex/activities-mini-golf-ranked-results-mobile-touch-20261030, codex/activities-mini-golf-mobile-online-two-player-20261030, codex/activities-mini-golf-2to8-copy-20261030, codex/activities-pool-solo-practice-20261030, codex/activities-client-coverage-gate-20261030]
+    branches: [main, develop, test-integrity/integrated-audit, codex/activities-mini-golf-ranked-results-mobile-touch-20261030, codex/activities-mini-golf-mobile-online-two-player-20261030, codex/activities-mini-golf-2to8-copy-20261030, codex/activities-pool-solo-practice-20261030, codex/activities-client-coverage-gate-20261030, codex/activities-focus-trap-accessibility-20261030]
   workflow_dispatch:
   # Agir tarayici/medya paketleri her PR'da degil, gecelik kosar.
   schedule:
