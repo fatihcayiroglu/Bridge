@@ -6,6 +6,7 @@
 import { io } from 'socket.io-client';
 import { BridgeRegistry } from '../../client/js/core/bridge-registry.ts';
 import { showBridgeActivities } from '../../client/js/core/activities/bridge-activities-panel.ts';
+import { bindActivitiesEntry } from '../../client/js/core/activities/bridge-activities-entry.ts';
 import { startLocalSocialRoom } from '../../client/js/core/activities/social-room-webgl.ts';
 import { joinSocialRoomPreview, type SocialClient } from '../../client/js/core/activities/social-room-client.ts';
 import type { Social3DSnapshot } from '../../client/js/core/activities/social-room-wire.ts';
@@ -136,4 +137,39 @@ export function mountRealActivitiesPanel(
     showBridgeActivities('social');
   });
   (window as typeof window & { __bridge3DPanel?: typeof state }).__bridge3DPanel = state;
+}
+
+/**
+ * Real shipped HTML opener and CSS integration. The fixture page is provided
+ * by the real backend harness under a strict production-shaped CSP. This is
+ * intentionally NOT full Bridge application boot/auth-shell E2E.
+ */
+export function mountShippedActivitiesOpener(
+  port: number, token: string, serverId: string,
+): void {
+  const app = document.getElementById('app');
+  const button = document.getElementById('bridge-activities-entry');
+  if (!(app instanceof HTMLElement) || !(button instanceof HTMLButtonElement)) {
+    throw Error('Real shipped Activities HTML opener missing');
+  }
+  const socket = io('http://127.0.0.1:' + port, {
+    auth: { token }, transports: ['websocket'],
+    reconnection: false, forceNew: true, timeout: 7000,
+  });
+  const state = {
+    ready: false, socket, errors: [] as string[],
+    dispose() {
+      document.dispatchEvent(new Event('bridge:auth-logout'));
+      socket.disconnect();
+      BridgeRegistry.unregister('socket');
+      BridgeRegistry.unregister('getCurrentServer');
+    },
+  };
+  BridgeRegistry.register('getCurrentServer', () => ({ _id: serverId }));
+  BridgeRegistry.register('socket', socket as never);
+  app.style.display = 'flex'; // auth-gated display in the test-only shell fixture
+  bindActivitiesEntry(); // the exact production click handler, never a fake opener
+  socket.on('connect_error', error => state.errors.push(String(error?.message || error)));
+  socket.on('userAuthenticated', () => { state.ready = true; });
+  (window as typeof window & { __bridge3DShippedShell?: typeof state }).__bridge3DShippedShell = state;
 }
