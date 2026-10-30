@@ -998,6 +998,10 @@ try {
   }
   assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
     'actual server selection must be active before opening mobile Activities');
+  // The server rail is an off-screen drawer on genuine narrow devices.
+  // Navigate via the shipped bottom tab, not DOM click() on a hidden button.
+  await mobilePage.locator('#mnav-servers').tap();
+  await mobilePage.locator('.server-list').waitFor({state:'visible'});
   await mobilePage.locator('#bridge-activities-entry').tap();
   await mobilePage.getByRole('dialog',{name:'Bridge Activities'}).waitFor();
   await mobilePage.locator('[data-game-id="mini-golf"]').tap();
