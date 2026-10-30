@@ -401,6 +401,20 @@ try {
     return state?.status === 'online' && state.lastFrame?.peers.length === 2;
   }, null, { timeout: 10000 })));
 
+  // Keep a real two-user Mini Golf match ACTIVE while Bob loses database
+  // membership. Existing socket stays connected, but reads must fail closed.
+  for (const page of [alice, bob]) {
+    const before = await page.evaluate(() => window.__miniGolfProof.states.length);
+    await page.evaluate(serverId =>
+      window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId}),fixture.serverId);
+    await page.waitForFunction(count => window.__miniGolfProof.states.length > count,
+      before, { timeout: 10000 });
+  }
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() =>
+    window.__miniGolfProof.states.at(-1)?.phase === 'playing',null,{timeout:10000});
+
   // Real PostgreSQL ban -> actual Bridge membership eviction -> real
   // Socket.IO membership:revoked. No synthetic socket event is injected.
   const revoked = new Promise((resolve, reject) => {
@@ -435,6 +449,27 @@ try {
   await alice.waitForFunction(() =>
     window.__bridge3DSmoke.lastFrame?.peers.length === 1,
     null, { timeout: 10000 });
+
+  const bobGolfStates = await bob.evaluate(() => window.__miniGolfProof.states.length);
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await bob.waitForFunction(() =>
+    window.__miniGolfProof.errors.some(e => e.code === 'GOLF_UNAVAILABLE'
+      && e.serverId === window.__bridge3DSmoke.lastFrame.serverId),
+    null, {timeout:10000});
+  assert.equal(await bob.evaluate(() => window.__miniGolfProof.states.length),bobGolfStates,
+    'revoked browser must not receive the other player\'s current Mini Golf match');
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() =>
+    window.__miniGolfProof.states.at(-1)?.phase === 'waiting' &&
+    window.__miniGolfProof.states.at(-1)?.players.length === 1,
+    null,{timeout:10000});
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:leave', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() => window.__miniGolfProof.left.length === 2,
+    null,{timeout:10000});
+  console.log('BRIDGE_MINI_GOLF_REAL_PG_REVOKED_SYNC_FAIL_CLOSED:1/1:0_skipped');
 
   // The revoked socket may remain connected for other Bridge features, but
   // it must NOT silently enter the social audience again.
