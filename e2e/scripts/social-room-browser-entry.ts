@@ -217,9 +217,15 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
       auth: { token }, transports: ['websocket'],
       reconnection: false, forceNew: true, timeout: 7000,
     });
-    const player = { socket, ready: false, states: [] as unknown[], errors: [] as unknown[] };
+    const player = { socket, ready: false, admitted: false, states: [] as unknown[], errors: [] as unknown[] };
     socket.on('userAuthenticated', () => { player.ready = true; });
-    socket.on('mini-golf:state', state => player.states.push(state));
+    socket.on('mini-golf:state', state => {
+      player.states.push(state);
+      // The overflow ninth JWT is connected but was NEVER admitted to the
+      // actual match. Only admitted players may receive a leave ACK.
+      const snapshot = state as { you?: string; players?: Array<{userId:string}> };
+      if (snapshot.players?.some(p => p.userId === snapshot.you)) player.admitted = true;
+    });
     socket.on('mini-golf:error', error => player.errors.push(error));
     return player;
   }
@@ -244,6 +250,11 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
       // contaminates the next authenticated game in the same Redis fixture.
       // Sequential acknowledgements also avoid seven concurrent Redis locks.
       for (const p of players) {
+        if (!p.admitted) {
+          // This is the explicitly rejected ninth capacity probe, not a seat.
+          p.socket.disconnect();
+          continue;
+        }
         if (!p.socket.connected) throw Error('Mini Golf roster cleanup socket disconnected before explicit leave');
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(() => reject(Error('Mini Golf roster leave not acknowledged')), 8000);
