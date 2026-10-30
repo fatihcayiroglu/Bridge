@@ -625,15 +625,29 @@ try {
   await opener.click();
   await shellPage.getByRole('dialog', { name: 'Bridge Activities' }).waitFor();
   assert.equal(await shellPage.locator('.bridge-activities-card').count(), 10);
-  const visual = await shellPage.locator('.bridge-activities-overlay').evaluate(el => ({
-    position: getComputedStyle(el).position,
-    display: getComputedStyle(el).display,
-    zIndex: Number(getComputedStyle(el).zIndex),
-    dialogRadius: getComputedStyle(el.querySelector('.bridge-activities-dialog')).borderRadius,
-  }));
+  const visual = await shellPage.locator('.bridge-activities-overlay').evaluate(el => {
+    const layer = Number(getComputedStyle(el).zIndex);
+    const token = Number(getComputedStyle(document.documentElement)
+      .getPropertyValue('--z-stage-modal').trim());
+    const shellOpener = document.getElementById('bridge-activities-entry');
+    const b = shellOpener.getBoundingClientRect();
+    const atopShell = document.elementFromPoint(b.left + b.width/2, b.top + b.height/2);
+    const atopCorner = document.elementFromPoint(8, 8);
+    return {
+      position: getComputedStyle(el).position,
+      display: getComputedStyle(el).display,
+      zIndex: layer, expectedZ: token,
+      coversShell: Boolean(atopShell && (atopShell === el || el.contains(atopShell))),
+      coversCorner: Boolean(atopCorner && (atopCorner === el || el.contains(atopCorner))),
+      dialogRadius: getComputedStyle(el.querySelector('.bridge-activities-dialog')).borderRadius,
+    };
+  });
   assert.equal(visual.position, 'fixed', 'production overlay CSS must apply');
   assert.equal(visual.display, 'flex');
-  assert.ok(visual.zIndex >= 10000, 'overlay must cover shell content');
+  assert.ok(Number.isFinite(visual.expectedZ),'overlay must use a defined design-system layer');
+  assert.equal(visual.zIndex, visual.expectedZ,'overlay must use the canonical stage-modal token');
+  assert.ok(visual.coversShell && visual.coversCorner,
+    'real overlay must intercept pixels above shell opener and page corner');
   assert.notEqual(visual.dialogRadius, '0px', 'panel border radius must not be unstyled');
   assert.equal(await shellPage.locator('#app').evaluate(el => el.inert), true);
 
