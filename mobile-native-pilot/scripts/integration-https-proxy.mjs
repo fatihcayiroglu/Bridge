@@ -3,8 +3,12 @@ import https from 'node:https';
 import http from 'node:http';
 import net from 'node:net';
 import { readFileSync } from 'node:fs';
+import { observeRequest, tlsEvent, TRANSPORT_PREFIX } from './integration-proxy-evidence.mjs';
+
+const transport = row => console.log(TRANSPORT_PREFIX + JSON.stringify(row));
 
 const server = https.createServer({ key: readFileSync(process.env.IT_TLS_KEY), cert: readFileSync(process.env.IT_TLS_CERT) }, (req, res) => {
+  const progress = observeRequest(req, res, transport);
   const route = req.url?.split('?')[0];
   const kind = ({ '/api/native-auth/token': 'native-code', '/api/native-auth/refresh': 'native-refresh',
     '/api/refresh/logout': 'revoke', '/api/servers': 'servers' })[route];
@@ -18,13 +22,16 @@ const server = https.createServer({ key: readFileSync(process.env.IT_TLS_KEY), c
   }
   const upstream = http.request({ host: '127.0.0.1', port: 3001, method: req.method, path: req.url,
     headers: { ...req.headers, 'x-forwarded-proto': 'https' } }, reply => {
+    progress.response(reply.statusCode);
     if (kind) console.log('NATIVE_AUTH_HTTP ' + JSON.stringify({ kind, status: reply.statusCode,
       cookiePresent: !!req.headers.cookie, bearerPresent: /^Bearer /.test(req.headers.authorization ?? '') }));
     res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
   });
-  upstream.on('error', () => { res.writeHead(502); res.end(); });
+  upstream.on('error', () => { progress.upstreamError(); res.writeHead(502); res.end(); });
   req.pipe(upstream);
 });
+server.on('secureConnection', () => transport(tlsEvent()));
+server.on('tlsClientError', error => transport(tlsEvent(error)));
 server.on('upgrade', (req, socket, head) => {
   const upstream = net.connect(3001, '127.0.0.1', () => {
     const headers = Object.entries({ ...req.headers, 'x-forwarded-proto': 'https' })

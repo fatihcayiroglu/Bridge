@@ -8,6 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { webdriverRequest } from '../../e2e/ios/webdriver-http.mjs';
+import { transportProgress } from './integration-proxy-evidence.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('../../server/node_modules/pg');
@@ -19,7 +20,7 @@ assert.ok(origin === 'https://127.0.0.1:8443' && password?.length >= 32, 'ISOLAT
 fs.mkdirSync(out, { recursive: true });
 const facts = { category: 'AUTOMATED / IOS SIMULATOR / DEBUG', status: 'FAIL', stage: 'prerequisites',
   cases: [], browserApi: 'ASWebAuthenticationSession via expo-web-browser', physicalDevice: false };
-let session, database, activeCase;
+let session, database;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const wd = (method, route, body, timeout) => webdriverRequest('http://127.0.0.1:4723', method, route, body, timeout);
 const command = (method, route, body) => { facts.lastRoute = routeShape(method, route); return wd(method, `/session/${session}${route}`, body); };
@@ -58,9 +59,8 @@ async function clickSignInSubmit(passwordElement) {
   }, 'sign-in-submit');
   await command('POST', `/element/${key(chosen)}/click`, {});
 }
-async function screenshot(label) {
-  const bytes = await command('GET', '/screenshot');
-  fs.writeFileSync(path.join(out, `${label}.png`), Buffer.from(bytes, 'base64'));
+function proxyText() {
+  try { return fs.readFileSync(process.env.BRIDGE_IT_PROXY_EVIDENCE, 'utf8'); } catch { return null; }
 }
 function wire(kind) {
   const prefix = 'NATIVE_AUTH_HTTP ';
@@ -155,7 +155,6 @@ async function signIn(user, expectedPid) {
   assertPasswordLanded(afterPassword, password.length);
   await clickSignInSubmit(secrets[0]);
   await until(async () => (await byName('Continue in the app')).length > 0, 'explicit-consent');
-  await screenshot(`consent-${activeCase}`);
   const before = await families(user);
   const codes = wire('native-code').length;
   await clickName('Continue in the app');
@@ -170,7 +169,6 @@ async function signIn(user, expectedPid) {
   assert.ok(after.length === 1, 'ONE_NEW_NATIVE_REFRESH_FAMILY_REQUIRED');
   const live = (await tokens(user, after[0])).filter(row => !row.used);
   assert.ok(live.length === 1, 'ONE_NATIVE_REFRESH_CREDENTIAL_REQUIRED');
-  await screenshot(`native-${activeCase}`);
   return { family: after[0], token: live[0].token, pid: returned.pid };
 }
 async function restart(user, issued) {
@@ -189,9 +187,18 @@ async function restart(user, issued) {
   return { family: issued.family, token: successor[0].token, pid: current.pid };
 }
 async function runCase(id, action) {
-  activeCase = id; facts.stage = id;
+  facts.stage = id;
   const item = { id, status: 'FAIL' }; facts.cases.push(item);
-  await action(); item.status = 'PASS';
+  const start = proxyText();
+  const startedAt = performance.now();
+  try { await action(); item.status = 'PASS'; }
+  finally {
+    item.elapsedMs = Math.round(performance.now() - startedAt);
+    const end = proxyText();
+    item.transport = start !== null && end !== null && end.startsWith(start)
+      ? transportProgress(end.slice(start.length)) : null;
+    console.log('IOS_CASE_TRANSPORT ' + JSON.stringify(item));
+  }
 }
 try {
   database = new Client({ connectionString: process.env.DATABASE_URL }); await database.connect();
@@ -258,7 +265,7 @@ try {
   facts.failure = /^[A-Z_]+(?::[a-z-]+)?$/.test(error?.message ?? '') ? error.message : 'DRIVER_OR_SERVICE_FAILED';
   if (error?.message?.startsWith('WebDriver ')) facts.driverFailure = error.message;
   // Driver/server messages can contain credentials or callback URLs. Preserve
-  // the closed stage, AX counts and screenshots, never raw source/arguments.
+  // the closed stage and AX counts, never screenshots or raw source/arguments.
   if (session) {
     try { const active = await native('activeAppInfo'); facts.failureApplication = { bundleId: active.bundleId, pid: active.pid }; } catch {}
     try { const s = await command('GET', '/source'); facts.failureUi = { webViews: (s.match(/XCUIElementTypeWebView\b/g) || []).length,
@@ -268,7 +275,7 @@ try {
       facts.failureUi.login = loginEvidence(s, activeUsername);
       facts.failureUi.survey = uiSurvey(s);
       console.log(`IOS_LOGIN_EVIDENCE ${JSON.stringify({ stage: facts.stage ?? null, failure: facts.failure, login: facts.failureUi.login, survey: facts.failureUi.survey, driverFailure: facts.driverFailure ?? null, failedAt: facts.failedAt ?? null, typing: { method: facts.passwordTypingMethod ?? null, keysRoute: facts.keysRouteFailure ?? null }, secretGeometry: facts.secretGeometry ?? null, focusBeforePassword: facts.focusBeforePassword ?? null })}`);
-      await screenshot('first-failure'); } catch {}
+      } catch {}
   }
   process.exitCode = 1;
 } finally {
