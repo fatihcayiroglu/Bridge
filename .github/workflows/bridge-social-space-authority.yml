@@ -36,6 +36,7 @@ on:
       - codex/activities-mini-golf-ranked-results-mobile-touch-20261030
       - codex/activities-mini-golf-mobile-online-two-player-20261030
       - codex/activities-mini-golf-2to8-copy-20261030
+      - codex/activities-pool-solo-practice-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
@@ -72,7 +73,9 @@ on:
       - 'client/tests/bridge-activities-copy.test.ts'
       - 'client/js/core/activities/pool-practice-physics.ts'
       - 'client/js/core/activities/pool-practice-webgl.ts'
-      - 'client/tests/pool-practice-physics.test.ts'
+      - 'client/tests/pool-practice-physics.test.ts tests/activities-webgl-renderer-lifecycle.test.ts tests/bridge-activities-foundation.test.ts'
+      - 'client/tests/activities-webgl-renderer-lifecycle.test.ts'
+      - 'client/tests/bridge-activities-foundation.test.ts'
       - 'client/js/core/activities/bridge-activities-entry.ts'
       - 'client/index.html'
       - 'client/css/style.css'
