@@ -863,7 +863,7 @@ try {
     null,{timeout:12000});
   await fullPage.locator('.bridge-mini-golf-shoot').click();
   await fullPage.waitForFunction(() =>
-    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Opponent|Rakibinin/),
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Another player's turn|Başka oyuncunun sırası/),
     null,{timeout:12000});
 
   // Actual late-game transport loss: fourth member loses the socket while the
@@ -896,7 +896,7 @@ try {
     window.__miniGolfRoster.players[2].states.at(-1)?.players[3]?.reconnecting === false,
     null,{timeout:12000});
   await fullPage.waitForFunction(() =>
-    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Opponent|Rakibinin/),
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Another player's turn|Başka oyuncunun sırası/),
     null,{timeout:14000});
   console.log('BRIDGE_MINI_GOLF_REAL_PG_REDIS_EIGHT_PLAYER_REJOIN:1/1:0_skipped');
 
@@ -1101,7 +1101,7 @@ try {
     [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
       .some(li=>/Strokes: 1|Vuruş: 1/.test(li.textContent||'')) &&
     document.querySelector('.bridge-mini-golf-online-status')?.textContent
-      ?.match(/Opponent|Rakibinin/),
+      ?.match(/Another player's turn|Başka oyuncunun sırası/),
     null,{timeout:12000});
   assert.equal(await mobilePage.locator('.bridge-mini-golf-shoot').isDisabled(),true,
     'mobile must block shooting when it is the other member’s turn');
