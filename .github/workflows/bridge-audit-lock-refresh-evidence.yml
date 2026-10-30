@@ -1,4 +1,4 @@
-name: Bridge audit lock refresh evidence (temporary, read-only)
+name: Bridge dependency lock and audit integrity (supplemental)
 
 # This job NEVER changes the repository: only computes the deterministic
 # lockfile update in the disposable runner and prints the changed JSON entries.
@@ -9,7 +9,9 @@ on:
       - codex/activities-mini-golf-eight-player-lobby-20261030
     paths:
       - 'package.json'
+      - 'package-lock.json'
       - 'server/package.json'
+      - 'server/package-lock.json'
       - '.github/workflows/bridge-audit-lock-refresh-evidence.yml'
 permissions:
   contents: read
@@ -50,7 +52,26 @@ jobs:
             console.log('LOCK_REFRESH_SUMMARY='+JSON.stringify({path,changed:Object.keys(entries).length,removed:removed.length}));
           }
           NODE
-      - name: Audit root/workspace manifest against refreshed in-memory lock
+      - name: Ensure npm lock regeneration produces NO changes
+        run: git diff --exit-code -- package-lock.json server/package-lock.json
+      - name: Verify npm ci reproducible root install without executing lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify npm ci reproducible server install without executing lifecycle scripts
+        run: cd server && npm ci --ignore-scripts --no-audit --no-fund
+      - name: Audit root and all workspaces without bypass or exclusion
         run: npm audit --audit-level=high
-      - name: Audit server manifest against refreshed in-memory lock
+      - name: Audit server dependencies without bypass or exclusion
         run: cd server && npm audit --audit-level=high
+      - name: Audit Electron lock without bypass or exclusion
+        run: cd electron && npm audit --audit-level=high
+      - name: Audit E2E lock without bypass or exclusion
+        run: cd e2e && npm audit --audit-level=high
+      - name: Strict server and client TypeScript gates
+        run: |
+          npm run typecheck:server
+          npm run typecheck:client
+          cd server && npm run typecheck:test-strict
+      - name: Production server and client build with pinned dependencies
+        run: |
+          npm run build
+          cd server && npm run build
