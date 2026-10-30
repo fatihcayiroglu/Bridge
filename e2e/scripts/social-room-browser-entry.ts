@@ -187,6 +187,7 @@ export function mountGolfOpponent(port: number, token: string, serverId: string)
     shoot(degrees: number, power: number) {
       socket.emit('mini-golf:shoot', { serverId, degrees, power });
     },
+    rematch() { socket.emit('mini-golf:rematch', { serverId }); },
     async dispose() {
       // Deterministic cleanup of the previous two-player match before the
       // eight-seat test reuses its server. No blind sleep/retry.
@@ -216,9 +217,15 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
       auth: { token }, transports: ['websocket'],
       reconnection: false, forceNew: true, timeout: 7000,
     });
-    const player = { socket, ready: false, states: [] as unknown[], errors: [] as unknown[] };
+    const player = { socket, ready: false, admitted: false, states: [] as unknown[], errors: [] as unknown[] };
     socket.on('userAuthenticated', () => { player.ready = true; });
-    socket.on('mini-golf:state', state => player.states.push(state));
+    socket.on('mini-golf:state', state => {
+      player.states.push(state);
+      // The overflow ninth JWT is connected but was NEVER admitted to the
+      // actual match. Only admitted players may receive a leave ACK.
+      const snapshot = state as { you?: string; players?: Array<{userId:string}> };
+      if (snapshot.players?.some(p => p.userId === snapshot.you)) player.admitted = true;
+    });
     socket.on('mini-golf:error', error => player.errors.push(error));
     return player;
   }
@@ -237,9 +244,30 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
     drop(i: number) { players[i]!.socket.disconnect(); },
     /** New authenticated transport; NO implicit game rejoin. */
     reconnect(i: number) { players[i] = connect(tokens[i]!); },
-    dispose() {
+    async dispose() {
+      // Real server leave acknowledgement is necessary: a bare emit()
+      // followed by disconnect() races with the 20s reconnect reservation and
+      // contaminates the next authenticated game in the same Redis fixture.
+      // Sequential acknowledgements also avoid seven concurrent Redis locks.
       for (const p of players) {
-        p.socket.emit('mini-golf:leave', { serverId });
+        if (!p.admitted) {
+          // This is the explicitly rejected ninth capacity probe, not a seat.
+          p.socket.disconnect();
+          continue;
+        }
+        if (!p.socket.connected) throw Error('Mini Golf roster cleanup socket disconnected before explicit leave');
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(Error('Mini Golf roster leave not acknowledged')), 8000);
+          p.socket.once('mini-golf:left', reply => {
+            clearTimeout(timer);
+            if (!reply || reply.serverId !== serverId) {
+              reject(Error('Mini Golf roster leave acknowledgement scoped to wrong server'));
+              return;
+            }
+            resolve();
+          });
+          p.socket.emit('mini-golf:leave', { serverId });
+        });
         p.socket.disconnect();
       }
     },

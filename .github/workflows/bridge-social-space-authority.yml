@@ -33,6 +33,7 @@ on:
       - codex/bridge-npm-audit-safe-upgrades-20261030
       - codex/activities-mini-golf-reconnect-grace-20261030
       - codex/activities-mini-golf-consensual-rematch-20261030
+      - codex/activities-mini-golf-ranked-results-mobile-touch-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
@@ -137,6 +138,8 @@ jobs:
           NODE
       - name: Mini Golf local physics and online protocol contract tests
         run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts
+      - name: Design system token and modal stacking ratchets (no exemptions)
+        run: cd client && npx vitest run --config vitest.config.mts tests/design-system-tokens.test.ts tests/z-index-scale.test.ts
       - name: Server build
         run: cd server && npm run build
       - name: Production client HTML and stylesheet build

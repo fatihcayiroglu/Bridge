@@ -625,15 +625,29 @@ try {
   await opener.click();
   await shellPage.getByRole('dialog', { name: 'Bridge Activities' }).waitFor();
   assert.equal(await shellPage.locator('.bridge-activities-card').count(), 10);
-  const visual = await shellPage.locator('.bridge-activities-overlay').evaluate(el => ({
-    position: getComputedStyle(el).position,
-    display: getComputedStyle(el).display,
-    zIndex: Number(getComputedStyle(el).zIndex),
-    dialogRadius: getComputedStyle(el.querySelector('.bridge-activities-dialog')).borderRadius,
-  }));
+  const visual = await shellPage.locator('.bridge-activities-overlay').evaluate(el => {
+    const layer = Number(getComputedStyle(el).zIndex);
+    const token = Number(getComputedStyle(document.documentElement)
+      .getPropertyValue('--z-stage-modal').trim());
+    const shellOpener = document.getElementById('bridge-activities-entry');
+    const b = shellOpener.getBoundingClientRect();
+    const atopShell = document.elementFromPoint(b.left + b.width/2, b.top + b.height/2);
+    const atopCorner = document.elementFromPoint(8, 8);
+    return {
+      position: getComputedStyle(el).position,
+      display: getComputedStyle(el).display,
+      zIndex: layer, expectedZ: token,
+      coversShell: Boolean(atopShell && (atopShell === el || el.contains(atopShell))),
+      coversCorner: Boolean(atopCorner && (atopCorner === el || el.contains(atopCorner))),
+      dialogRadius: getComputedStyle(el.querySelector('.bridge-activities-dialog')).borderRadius,
+    };
+  });
   assert.equal(visual.position, 'fixed', 'production overlay CSS must apply');
   assert.equal(visual.display, 'flex');
-  assert.ok(visual.zIndex >= 10000, 'overlay must cover shell content');
+  assert.ok(Number.isFinite(visual.expectedZ),'overlay must use a defined design-system layer');
+  assert.equal(visual.zIndex, visual.expectedZ,'overlay must use the canonical stage-modal token');
+  assert.ok(visual.coversShell && visual.coversCorner,
+    'real overlay must intercept pixels above shell opener and page corner');
   assert.notEqual(visual.dialogRadius, '0px', 'panel border radius must not be unstyled');
   assert.equal(await shellPage.locator('#app').evaluate(el => el.inert), true);
 
@@ -991,17 +1005,17 @@ try {
   await mobilePage.locator('#app').waitFor({state:'visible',timeout:20000});
   const mobileServerIcon=mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]');
   await mobileServerIcon.waitFor({state:'visible',timeout:20000});
-  // A selected server may sit under the collapsed rail off-screen on mobile.
-  // Do not fake a click on an already-selected icon; require real active state.
-  if (await mobileServerIcon.getAttribute('aria-current') !== 'true') {
-    await mobileServerIcon.tap();
-  }
-  assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
-    'actual server selection must be active before opening mobile Activities');
-  // The server rail is an off-screen drawer on genuine narrow devices.
-  // Navigate via the shipped bottom tab, not DOM click() on a hidden button.
+  // On a phone, the "active" icon may be hydrated before the actual selected
+  // server is registered. Exercise the SAME tap as a human to establish the
+  // current server, then open the real Servers drawer for Activities.
   await mobilePage.locator('#mnav-servers').tap();
   await mobilePage.locator('.server-list').waitFor({state:'visible'});
+  await mobileServerIcon.tap();
+  assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
+    'a real mobile server tap must establish the active server');
+  if (!await mobilePage.locator('.server-list').evaluate(el=>el.classList.contains('open'))) {
+    await mobilePage.locator('#mnav-servers').tap();
+  }
   await mobilePage.locator('#bridge-activities-entry').tap();
   await mobilePage.getByRole('dialog',{name:'Bridge Activities'}).waitFor();
   await mobilePage.locator('[data-game-id="mini-golf"]').tap();
@@ -1031,7 +1045,107 @@ try {
   await mobilePage.waitForFunction(()=>
     /Strokes: 1|Vuruş: 1/.test(document.querySelector('.bridge-mini-golf-status')?.textContent||''),
     null,{timeout:12000});
-  assert.deepEqual(mobileErrors,[],'mobile touch journey must not cause runtime errors');
+
+  // Real 390px touch-device ONLINE journey: mobile Alice uses the shipped
+  // Activities UI; Charlie connects through an INDEPENDENT actual PostgreSQL
+  // member + production JWT + Socket.IO. All moves/score/replay are server-owned.
+  const mobileOpponentContext=await browser.newContext({
+    viewport:{width:600,height:480},
+  });
+  const mobileOpponentPage=await mobileOpponentContext.newPage();
+  pages.push({page:mobileOpponentPage,context:mobileOpponentContext});
+  await mobileOpponentPage.goto(fullOrigin+'/');
+  await mobileOpponentPage.addScriptTag({content:built.outputFiles[0].text});
+  await mobileOpponentPage.evaluate(({port,token,serverId})=>
+    window.BridgeSocialRealBrowser.mountGolfOpponent(port,token,serverId),
+    {port:fixture.port,token:fixture.charlieToken,serverId:fixture.serverId});
+  await mobileOpponentPage.waitForFunction(()=>window.__miniGolfOpponent?.ready,
+    null,{timeout:12000});
+  await mobilePage.locator('.bridge-mini-golf-online-button').tap();
+  await mobilePage.waitForFunction(()=>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===1,
+    null,{timeout:12000});
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.join());
+  await mobileOpponentPage.waitForFunction(()=>
+    window.__miniGolfOpponent.states.at(-1)?.players.length===2 &&
+    window.__miniGolfOpponent.states.at(-1)?.phase==='waiting',
+    null,{timeout:12000});
+  await mobilePage.waitForFunction(()=>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===2 &&
+    document.querySelector('.bridge-mini-golf-start:not([hidden])'),
+    null,{timeout:12000});
+  const touchStartHeight=await mobilePage.locator('.bridge-mini-golf-start')
+    .evaluate(button=>button.getBoundingClientRect().height);
+  assert.ok(touchStartHeight>=44,'the mobile host start target must be touch friendly');
+  await mobilePage.locator('.bridge-mini-golf-start').tap();
+  await mobilePage.waitForFunction(()=>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent
+      ?.match(/Your turn|Sıra sende/),
+    null,{timeout:12000});
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.sync());
+  await mobileOpponentPage.waitForFunction(()=>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='playing',
+    null,{timeout:12000});
+  assert.equal(await mobilePage.locator('.bridge-mini-golf-reset').isDisabled(),true,
+    'mobile online reset must never override the authoritative match');
+  await mobilePage.locator('.bridge-mini-golf-shoot').tap();
+  await mobilePage.waitForFunction(()=>
+    [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
+      .some(li=>/Strokes: 1|Vuruş: 1/.test(li.textContent||'')) &&
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent
+      ?.match(/Opponent|Rakibinin/),
+    null,{timeout:12000});
+  assert.equal(await mobilePage.locator('.bridge-mini-golf-shoot').isDisabled(),true,
+    'mobile must block shooting when it is the other member’s turn');
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.sync());
+  await mobileOpponentPage.waitForFunction(()=>
+    window.__miniGolfOpponent.states.at(-1)?.turnUserId &&
+    window.__miniGolfOpponent.states.at(-1)?.players[0]?.won===true,
+    null,{timeout:12000});
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.shoot(0,60));
+  await mobileOpponentPage.waitForFunction(()=>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='finished' &&
+    window.__miniGolfOpponent.states.at(-1)?.results.length===2,
+    null,{timeout:12000});
+  await mobilePage.waitForFunction(()=>
+    document.querySelectorAll('.bridge-mini-golf-results li').length===2 &&
+    [...document.querySelectorAll('.bridge-mini-golf-results li')]
+      .every(li=>/Place 1|Sıra 1/.test(li.textContent||'')),
+    null,{timeout:16000});
+  assert.equal(await mobilePage.locator('.bridge-mini-golf-shoot').isDisabled(),true);
+  const touchRematchHeight=await mobilePage.locator('.bridge-mini-golf-rematch')
+    .evaluate(button=>button.getBoundingClientRect().height);
+  assert.ok(touchRematchHeight>=44,'mobile rematch consent must be touch friendly');
+  await mobilePage.locator('.bridge-mini-golf-rematch').tap();
+  await mobilePage.waitForFunction(()=>
+    document.querySelector('.bridge-mini-golf-rematch')?.textContent?.includes('1/2'),
+    null,{timeout:12000});
+  assert.equal(await mobilePage.locator('.bridge-mini-golf-rematch').isDisabled(),true,
+    'mobile cannot cast multiple votes');
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.rematch());
+  await mobileOpponentPage.waitForFunction(()=>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='playing' &&
+    window.__miniGolfOpponent.states.at(-1)?.players.every(p=>p.strokes===0) &&
+    window.__miniGolfOpponent.states.at(-1)?.results.length===0,
+    null,{timeout:12000});
+  await mobilePage.waitForFunction(()=>
+    document.querySelectorAll('.bridge-mini-golf-results li').length===0 &&
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent
+      ?.match(/Your turn|Sıra sende/),
+    null,{timeout:16000});
+  await mobilePage.locator('.bridge-mini-golf-online-button').tap();
+  await mobilePage.waitForFunction(()=>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===0,
+    null,{timeout:12000});
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.sync());
+  await mobileOpponentPage.waitForFunction(()=>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='waiting' &&
+    window.__miniGolfOpponent.states.at(-1)?.players.length===1,
+    null,{timeout:12000});
+  await mobileOpponentPage.evaluate(()=>window.__miniGolfOpponent.dispose());
+  assert.deepEqual(mobileErrors,[],'mobile online journey must not cause runtime errors');
+  console.log('BRIDGE_MINI_GOLF_MOBILE_CHROMIUM_ONLINE_TWO_PLAYER:2/2:0_skipped');
+
   await mobilePage.locator('.bridge-mini-golf-back').tap();
   assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
   await mobilePage.locator('.bridge-activities-close').tap();
