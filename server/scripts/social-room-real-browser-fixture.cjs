@@ -24,6 +24,7 @@ const { createSocketServer } = require('../dist/app/setupSocket');
 const { setupSocket } = require('../dist/socket/index');
 const { applyAdapter, disconnect, isRedisAvailable } = require('../dist/lib/redisAdapter');
 const { socialRoomStore } = require('../dist/socket/handlers/social-room-store');
+const { evictUserFromServerRooms } = require('../dist/lib/liveMembership');
 const testId = 'social_browser_' + randomBytes(6).toString('hex');
 const serverId = testId + '_server';
 const alice = testId + '_alice';
@@ -96,6 +97,31 @@ async function main() {
 }
 
 process.on('message', async msg => {
+  if (msg?.type === 'revokeBob') {
+    try {
+      // Mutate REAL PostgreSQL membership and run the same production
+      // cross-room revocation as a server kick/ban (not a client-side fake).
+      const changed = await q(
+        'UPDATE members SET banned=TRUE WHERE "serverId"=$1 AND "userId"=$2 RETURNING "userId"',
+        [serverId, bob],
+      );
+      assert.equal(changed.rowCount, 1, 'real membership row must be revoked');
+      const leaves = await evictUserFromServerRooms(io, bob, serverId);
+      const roster = await socialRoomStore.load(serverId);
+      const sockets = await io.in('user:' + bob).fetchSockets();
+      process.send({
+        type: 'bobRevoked', leaves,
+        rosterUserIds: roster.peers.map(p => p.userId),
+        bobSockets: sockets.length,
+        bobInSocialAudience: sockets.some(s => s.rooms.has('social-3d:' + serverId)),
+        bobInServerAudience: sockets.some(s => s.rooms.has('server:' + serverId)),
+      });
+    } catch (error) {
+      console.error('SOCIAL_BROWSER_MEMBERSHIP_REVOKE_FAILED', error?.stack || error);
+      process.send({ type: 'bobRevokeFailed' });
+    }
+    return;
+  }
   if (msg?.type !== 'shutdown') return;
   const ok = await cleanup();
   process.send({ type: 'stopped', ok });

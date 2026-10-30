@@ -47,6 +47,7 @@ export function joinSocialRoomPreview(
     socket.off('social:peers', onPeers);
     socket.off('social:error', onError);
     socket.off('social:left', onLeft);
+    socket.off('membership:revoked', onMembershipRevoked);
     socket.off('disconnect', onDisconnect);
     // Even an outstanding join is canceled on client teardown. The server is
     // separately required to handle an in-flight join/leave race.
@@ -91,12 +92,22 @@ export function joinSocialRoomPreview(
       stop('disconnected', false);
     }
   }
+  function onMembershipRevoked(raw?: unknown): void {
+    // A kick/ban revokes server membership, not just the Socket.IO social
+    // audience. Never keep showing the old online avatar until the next step.
+    // Ignore revocations from other servers sharing this authenticated socket.
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) &&
+        'serverId' in raw && raw.serverId === serverId) {
+      stop('disconnected', false); // server already removed authoritative presence
+    }
+  }
   function onDisconnect(): void { stop('disconnected', false); }
 
   socket.on('social:joined', onJoined);
   socket.on('social:peers', onPeers);
   socket.on('social:error', onError);
   socket.on('social:left', onLeft);
+  socket.on('membership:revoked', onMembershipRevoked);
   socket.on('disconnect', onDisconnect);
   deadline = setTimeout(() => stop('unavailable', true), 7000);
   onStatus('connecting');
