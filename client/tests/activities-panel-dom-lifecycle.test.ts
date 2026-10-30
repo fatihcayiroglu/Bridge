@@ -237,6 +237,7 @@ describe('Activities modal keyboard focus containment', () => {
       outside.focus();
       document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
       expect(document.activeElement).toBe(close);
+      setServer({connected:true,id:'socket1',on:vi.fn(),off:vi.fn(),emit:vi.fn()});
       click('[data-tab="social"]');
       const quality=document.querySelector<HTMLSelectElement>('.bridge-room-quality')!;
       expect(quality.tabIndex).toBe(0);
