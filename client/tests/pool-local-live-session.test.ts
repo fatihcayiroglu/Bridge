@@ -91,9 +91,9 @@ describe('8-ball live WebGL turn bridge (offline prototype; no server scoring)',
   });
 
   it('fails closed on a forged settled frame and will never grant a turn or pocket score',()=>{
-    let emit:((s:PoolState)=>void)|null=null;
+    const hooks:{emit?:((s:PoolState)=>void)}={};
     const factory=(_canvas:HTMLCanvasElement,onState:(s:PoolState)=>void):PoolPracticeHandle=>{
-      const initial=newPoolPractice();emit=onState;onState(initial);
+      const initial=newPoolPractice();hooks.emit=onState;onState(initial);
       return {
         get state(){return initial;},isGraphicsAvailable:true,
         shoot(){onState({...initial,shots:1,status:'ready',pocketed:15});return true;},
@@ -106,17 +106,17 @@ describe('8-ball live WebGL turn bridge (offline prototype; no server scoring)',
     expect(session.match.table.shots).toBe(0);
     expect(session.match.rules.shotsResolved).toBe(0);
     expect(session.shoot(0,0,80,{kind:'break'})).toBe(false);
-    emit?.(newPoolPractice());
+    hooks.emit?.(newPoolPractice());
     expect(session.match.table.shots).toBe(0);
     session.dispose();
   });
 
   it('invalidates the shot when WebGL is lost and does not revive on later callbacks',()=>{
     let lose:(()=>void)|undefined;
-    let emit:((s:PoolState)=>void)|null=null;
+    const hooks:{emit?:((s:PoolState)=>void)}={};
     const factory=(_canvas:HTMLCanvasElement,onState:(s:PoolState)=>void,onLost?:()=>void):PoolPracticeHandle=>{
       let current=newPoolPractice();
-      emit=onState;lose=onLost;onState(current);
+      hooks.emit=onState;lose=onLost;onState(current);
       return {
         get state(){return current;},isGraphicsAvailable:true,
         shoot(a,p){current=strikePool(current,a,p);onState(current);return true;},
@@ -129,7 +129,7 @@ describe('8-ball live WebGL turn bridge (offline prototype; no server scoring)',
     lose?.();
     expect(session.status).toBe('blocked');
     expect(session.graphicsAvailable).toBe(false);
-    emit?.({...newPoolPractice(),shots:1});
+    hooks.emit?.({...newPoolPractice(),shots:1});
     expect(session.match.table.shots).toBe(0);
     expect(session.shoot(0,0,60,{kind:'break'})).toBe(false);
     session.dispose();
