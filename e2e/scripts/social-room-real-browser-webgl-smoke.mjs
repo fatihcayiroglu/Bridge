@@ -407,7 +407,31 @@ try {
   // The 10 selected mini games remain correctly marked planned, not playable.
   await panelPage.getByRole('tab', { name: '3D Mini Games' }).click();
   assert.equal(await panelPage.locator('.bridge-activities-card').count(), 10);
-  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 10);
+  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 9);
+  assert.equal(await panelPage.locator('.bridge-activities-solo').count(), 1,
+    'solo-only Mini Golf must not be mistaken for multiplayer ready');
+  await panelPage.getByRole('button', { name: 'Play 3D Mini Golf practice' }).click();
+  const golfCanvas = panelPage.locator('canvas.bridge-mini-golf-canvas');
+  await golfCanvas.waitFor();
+  await panelPage.waitForFunction(() => {
+    const c = document.querySelector('canvas.bridge-mini-golf-canvas');
+    if (!c || !c.width || !c.height) return false;
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    return Boolean(gl && gl.getParameter(gl.CURRENT_PROGRAM));
+  }, null, { timeout: 10000 });
+  assert.match(await panelPage.locator('.bridge-mini-golf-status').textContent(), /Strokes: 0/);
+  await panelPage.getByRole('button', { name: 'Shoot' }).click();
+  assert.match(await panelPage.locator('.bridge-mini-golf-status').textContent(), /Strokes: 1/);
+  await panelPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-status')?.textContent?.includes('Nice shot!'),
+    null, { timeout: 12000 });
+  assert.equal(await panelPage.getByRole('button', { name: 'Shoot' }).isDisabled(), true,
+    'a sunk ball must not be shot repeatedly');
+  await panelPage.getByRole('button', { name: 'Restart' }).click();
+  assert.match(await panelPage.locator('.bridge-mini-golf-status').textContent(), /Strokes: 0/);
+  await panelPage.getByRole('button', { name: 'Back to games' }).click();
+  assert.equal(await panelPage.locator('.bridge-activities-card').count(), 10);
+  console.log('BRIDGE_3D_MINI_GOLF_REAL_WEBGL_SHOT_WIN_RESET:1/1:0_skipped');
   await alice.waitForFunction(() =>
     window.__bridge3DSmoke.lastFrame?.peers.length === 1,
     null, { timeout: 10000 });
@@ -549,6 +573,17 @@ try {
   await fullPage.locator('#bridge-activities-entry').click();
   await fullPage.getByRole('dialog', { name: 'Bridge Activities' }).waitFor();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+  await fullPage.locator('[data-game-id="mini-golf"]').click();
+  await fullPage.locator('canvas.bridge-mini-golf-canvas').waitFor();
+  assert.match(await fullPage.locator('.bridge-mini-golf-status').textContent(), /Strokes: 0|Vuruş: 0/);
+  await fullPage.getByRole('button', { name: /^(Shoot|Vur)$/ }).click();
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-status')?.textContent?.includes('Nice shot!') ||
+    document.querySelector('.bridge-mini-golf-status')?.textContent?.includes('Tebrikler!'),
+    null, { timeout: 12000 });
+  await fullPage.locator('.bridge-mini-golf-back').click();
+  assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+  console.log('BRIDGE_3D_MINI_GOLF_REAL_AUTH_APP_JOURNEY:1/1:0_skipped');
   await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();
   // Language is user-configurable; the join control is the single direct
   // social-body button (directional buttons live in a separate controls div).
