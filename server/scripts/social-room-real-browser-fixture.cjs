@@ -9,6 +9,8 @@
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
 const { randomBytes } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const jwt = require('jsonwebtoken');
 
 if (!process.send || !process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
@@ -33,7 +35,43 @@ const users = [alice, bob];
 const q = (sql, args = []) => db._pool.query(sql, args);
 let seeded = false;
 let io;
+// Only the real authored Activities entry element is extracted from the
+// shipped HTML, not a test recreation. No app-wide JS or fake REST APIs run.
+const realIndex = fs.readFileSync(path.resolve(__dirname, '../../client/index.html'), 'utf8');
+const opener = realIndex.match(/<button\b[^>]*\bid="bridge-activities-entry"[\s\S]*?<\/button>/);
+assert.ok(opener && opener.length === 1, 'real shipped Activities opener must exist');
+const cssPath = path.resolve(__dirname, '../../client/dist/css/style.css');
+assert.ok(fs.existsSync(cssPath), 'real production CSS build is required');
+// The test-only document is intentionally not the entire authenticated app.
+// It contains the original markup, actual built stylesheet and strict CSP.
+const shippedShell = '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+  '<link rel="stylesheet" href="/__bridge-shipped-style.css"></head><body>' +
+  '<main id="app" class="app" style="display:flex">' + opener[0] + '</main>' +
+  '</body></html>';
+const strictCsp = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self'",
+  "style-src-elem 'self'", "style-src-attr 'unsafe-inline'",
+  "connect-src 'self' ws:", "img-src 'self' data:", "object-src 'none'",
+  "base-uri 'none'", "frame-ancestors 'none'",
+].join('; ');
 const httpServer = createServer((request, response) => {
+  if (request.url === '/__bridge-shipped-shell') {
+    response.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+      'Content-Security-Policy': strictCsp, 'X-Content-Type-Options': 'nosniff',
+    });
+    response.end(shippedShell);
+    return;
+  }
+  if (request.url === '/__bridge-shipped-style.css') {
+    response.writeHead(200, {
+      'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    response.end(fs.readFileSync(cssPath));
+    return;
+  }
   if (request.url === '/') {
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end('<!doctype html><html><head><title>Bridge 3D real browser test</title></head><body></body></html>');

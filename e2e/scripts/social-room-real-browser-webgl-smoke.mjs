@@ -378,6 +378,82 @@ try {
   assert.deepEqual(await panelPage.evaluate(() =>
     window.__bridge3DPanel.errors), [], 'real panel auth must have no transport errors');
 
+  // The shipped index.html's actual Activities rail button and production
+  // built CSS must render under a strict self/nonce-shaped policy. Only the
+  // surrounding app/auth lifecycle is a fixture, not a full Bridge boot.
+  const shellContext = await browser.newContext({ viewport: { width: 980, height: 730 } });
+  const shellPage = await shellContext.newPage();
+  pages.push({ page: shellPage, context: shellContext });
+  const origin = 'http://127.0.0.1:' + fixture.port;
+  await shellPage.route('**/__bridge-social-test-entry.js', route =>
+    route.fulfill({
+      status: 200, contentType: 'application/javascript',
+      body: built.outputFiles[0].text,
+    }));
+  const shellResponse = await shellPage.goto(origin + '/__bridge-shipped-shell');
+  assert.equal(shellResponse?.status(), 200);
+  const csp = shellResponse.headers()['content-security-policy'];
+  assert.match(csp, /script-src 'self'/, 'scripts must remain same-origin');
+  assert.match(csp, /style-src-elem 'self'/, 'styles must remain same-origin');
+  assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/, 'no inline-script CSP bypass');
+  const styleResponse = await shellPage.request.get(origin + '/__bridge-shipped-style.css');
+  assert.equal(styleResponse.status(), 200, 'real built production CSS must be served');
+  assert.match(await styleResponse.text(), /bridge-activities-overlay/,
+    'the real bundled stylesheet must contain Activities styles');
+  await shellPage.addScriptTag({ url: origin + '/__bridge-social-test-entry.js' });
+  await shellPage.evaluate(({ port, token, serverId }) =>
+    window.BridgeSocialRealBrowser.mountShippedActivitiesOpener(port, token, serverId),
+    { port: fixture.port, token: fixture.aliceToken, serverId: fixture.serverId });
+  await shellPage.waitForFunction(() => window.__bridge3DShippedShell?.ready,
+    null, { timeout: 12000 });
+  const opener = shellPage.locator('#bridge-activities-entry');
+  assert.equal(await opener.count(), 1, 'original HTML opener must be present');
+  const openerBounds = await opener.boundingBox();
+  assert.ok(openerBounds && openerBounds.width > 0 && openerBounds.height > 0,
+    'the real styled shell opener must have a clickable box');
+  assert.equal(await shellPage.locator('.bridge-activities-overlay').count(), 0,
+    'real rail should not auto-open on authenticated socket connection');
+  await opener.click();
+  await shellPage.getByRole('dialog', { name: 'Bridge Activities' }).waitFor();
+  assert.equal(await shellPage.locator('.bridge-activities-card').count(), 10);
+  const visual = await shellPage.locator('.bridge-activities-overlay').evaluate(el => ({
+    position: getComputedStyle(el).position,
+    display: getComputedStyle(el).display,
+    zIndex: Number(getComputedStyle(el).zIndex),
+    dialogRadius: getComputedStyle(el.querySelector('.bridge-activities-dialog')).borderRadius,
+  }));
+  assert.equal(visual.position, 'fixed', 'production overlay CSS must apply');
+  assert.equal(visual.display, 'flex');
+  assert.ok(visual.zIndex >= 10000, 'overlay must cover shell content');
+  assert.notEqual(visual.dialogRadius, '0px', 'panel border radius must not be unstyled');
+  assert.equal(await shellPage.locator('#app').evaluate(el => el.inert), true);
+
+  // Actual production click handler opens Games; real tabs enter Social.
+  await shellPage.getByRole('tab', { name: '3D Social Space' }).click();
+  assert.equal(await alice.evaluate(() => window.__bridge3DSmoke.lastFrame.peers.length), 1,
+    'opening the shipped rail must not autojoin');
+  await shellPage.getByRole('button', { name: 'Try shared room (experimental)' }).click();
+  await shellPage.waitForFunction(() =>
+    document.querySelector('p.bridge-room-status[role="status"]')?.textContent?.includes('In shared room'),
+    null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 2,
+    null, { timeout: 10000 });
+  await shellPage.keyboard.press('Escape');
+  await shellPage.waitForFunction(() =>
+    !document.querySelector('.bridge-activities-overlay') &&
+    document.getElementById('app')?.inert === false,
+    null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+  assert.equal(await shellPage.evaluate(() =>
+    document.activeElement?.id), 'bridge-activities-entry',
+  'the production opener must regain keyboard focus after Escape');
+  assert.deepEqual(await shellPage.evaluate(() =>
+    window.__bridge3DShippedShell.errors), [], 'real transport must authenticate');
+
+  console.log('SOCIAL_3D_SHIPPED_HTML_CSS_CSP_RAIL_JOIN_ESCAPE:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_ACTIVITIES_PANEL_JOIN_SWITCH_LOGOUT:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_SERVER_ERROR_LEAVE:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MEMBERSHIP_REVOKED:1/1:0_skipped');
