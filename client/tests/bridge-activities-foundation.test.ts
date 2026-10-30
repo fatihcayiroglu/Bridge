@@ -5,11 +5,13 @@ import { BRIDGE_3D_GAME_CATALOG, BRIDGE_SOCIAL_SPACE } from '../js/core/activiti
 import { moveRoomAvatar, socialRoomAvatarGeometry, staticSocialRoomGeometry, SOCIAL_ROOM_BOUNDS } from '../js/core/activities/social-room-geometry.ts';
 
 describe('Bridge Activities 3D product foundation (not game acceptance)', () => {
-  it('keeps nine games planned and explicitly labels Mini Golf local solo practice', () => {
+  it('keeps eight games planned and two separately local 3D practice prototypes', () => {
     expect(BRIDGE_3D_GAME_CATALOG).toHaveLength(10);
     expect(new Set(BRIDGE_3D_GAME_CATALOG.map(game => game.id)).size).toBe(10);
-    expect(BRIDGE_3D_GAME_CATALOG.filter(game => game.state === 'planned')).toHaveLength(9);
-    expect(BRIDGE_3D_GAME_CATALOG.filter(game => game.state === 'solo-practice')).toHaveLength(1);
+    expect(BRIDGE_3D_GAME_CATALOG.filter(game => game.state === 'planned')).toHaveLength(8);
+    expect(BRIDGE_3D_GAME_CATALOG.filter(game => game.state === 'solo-practice')).toHaveLength(2);
+    const pool = BRIDGE_3D_GAME_CATALOG.find(game => game.id === 'eight-ball-pool');
+    expect(pool).toMatchObject({ id: 'eight-ball-pool', state: 'solo-practice', minPlayers: 2, maxPlayers: 2 });
     const golf = BRIDGE_3D_GAME_CATALOG.find(game => game.id === 'mini-golf');
     expect(golf).toMatchObject({
       id: 'mini-golf', state: 'solo-practice', minPlayers: 2, maxPlayers: 8,
