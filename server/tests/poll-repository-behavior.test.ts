@@ -105,9 +105,12 @@ describe('PollRepository durable mutation contracts', () => {
     const poll = basePoll({ allowVoteChange: false, options: [
       { id: '0', text: 'A', votes: ['u1'] }, { id: '1', text: 'B', votes: [] },
     ]});
-    const client = withPool((sql) => sql.includes('SELECT * FROM polls') ? { rows: [poll] } : { rows: [] });
+    const client = withPool((sql) => sql.includes('SELECT * FROM polls') ? { rows: [poll] } :
+      sql.includes('SELECT EXISTS') ? { rows: [{ parentLive: true }] } : { rows: [] });
     const replay = await productionCall(() => Polls.mutateVoteAtomic('p1', 'u1', ['0'], 'toggle'));
     expect(replay).toMatchObject({ status: 'ok' });
+    const parentQuery = client.query.mock.calls.find(([sql]) => String(sql).includes('SELECT EXISTS'));
+    expect(parentQuery?.[0]).toContain('channel_expiry_tombstones');
     expect(client.query).toHaveBeenCalledWith('COMMIT');
     expect(client.query.mock.calls.some((c) => String(c[0]).includes('UPDATE polls'))).toBe(false);
 
@@ -184,10 +187,13 @@ describe('PollRepository durable mutation contracts', () => {
     const poll = basePoll();
     const client = withPool((sql, params) => {
       if (sql.includes('SELECT * FROM polls')) return { rows: [poll] };
+      if (sql.includes('SELECT EXISTS')) return { rows: [{ parentLive: true }] };
       if (sql.startsWith('UPDATE polls')) return { rows: [{ ...poll, question: 'New', options: JSON.parse(String(params?.[2])) }] };
       return { rows: [] };
     });
     await expect(productionCall(() => Polls.updateEditableAtomic('p1', {}, false))).resolves.toMatchObject({ status: 'ok' });
+    expect(client.query.mock.calls.find(([sql]) => String(sql).includes('SELECT EXISTS'))?.[0])
+      .toContain('clock_timestamp()');
     await expect(productionCall(() => Polls.updateEditableAtomic('p1', { serverId: 'other' }, false))).rejects.toThrow(/Unsupported poll edit field/);
     const out: any = await productionCall(() => Polls.updateEditableAtomic('p1', {
       question: 'New', options: [{ id: '0', text: 'X', votes: [] }], allowVoteChange: false,

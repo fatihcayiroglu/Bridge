@@ -10,6 +10,9 @@ import { hasPermission, PERMS, resolvePermissions } from '../lib/permissions';
 import { parsePersistedNonNegativeInteger } from '../lib/persistedInteger';
 import { isMemberTimedOut } from '../lib/memberTimeout';
 import { checkMessageContent } from '../lib/messageContentPolicy';
+import db from '../db/loader';
+import { channelWriteAvailability } from '../lib/channelWriteGuard';
+import { isChannelWriteDenied } from '../lib/channelWriteBarrier';
 
 let _io: SocketServer | null = null;
 let _scheduledInterval: ReturnType<typeof setInterval> | null = null;
@@ -67,10 +70,14 @@ async function verifyDispatchAuthority(scheduled: {
   // A timed-out member cannot post, so neither can their schedule.
   if (isMemberTimedOut(member.timeoutUntil)) return { ok: false, reason: 'member_timed_out' };
 
-  const channel = await Channels.findById(scheduled.channelId) as { serverId?: string } | null;
+  const channel = await Channels.findById(scheduled.channelId);
   if (!channel || String(channel.serverId ?? '') !== scheduled.serverId) {
     return { ok: false, reason: 'channel_scope_invalid' };
   }
+
+  const availability = await channelWriteAvailability(db, channel);
+  if (availability === 'gone') return { ok: false, reason: 'channel_unavailable' };
+  if (availability !== 'live') throw new Error('channel_authority_unavailable');
 
   const perms = await resolvePermissions(scheduled.userId, scheduled.serverId, scheduled.channelId);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES)) {
@@ -83,6 +90,18 @@ async function verifyDispatchAuthority(scheduled: {
     memberRoles: (member as { roles?: unknown }).roles,
     displayName: (member as { nickname?: string }).nickname || user.displayName || user.username,
   };
+}
+
+/** Repeat only the expiry authority check after asynchronous work. Recovered
+ * messages must not be republished merely because they were persisted earlier. */
+async function refuseUnavailableChannel(scheduled: { _id: string; channelId: string; serverId: string }): Promise<boolean> {
+  const channel = await Channels.findById(scheduled.channelId);
+  const availability = !channel || channel.serverId !== scheduled.serverId
+    ? 'gone' : await channelWriteAvailability(db, channel);
+  if (availability === 'live') return false;
+  if (availability !== 'gone') throw new Error('channel_authority_unavailable');
+  await ScheduledMessages.markFailed(scheduled._id, WORKER_ID, 'channel_unavailable', Date.now());
+  return true;
 }
 
 async function dispatchDue(): Promise<void> {
@@ -133,6 +152,7 @@ async function dispatchDue(): Promise<void> {
             continue;
           }
 
+          if (await refuseUnavailableChannel(scheduled)) continue;
           msg = await Messages.create({
             _id:         uuidv4(),
             channelId:   scheduled.channelId,
@@ -150,6 +170,7 @@ async function dispatchDue(): Promise<void> {
           });
         }
 
+        if (await refuseUnavailableChannel(scheduled)) continue;
         const finalized = await ScheduledMessages.finalizeSent(scheduled._id, WORKER_ID, now);
         if (!finalized) {
           throw new Error('scheduled_claim_lost_before_finalize');
@@ -159,6 +180,26 @@ async function dispatchDue(): Promise<void> {
         // within the cache TTL did not see the message they had scheduled.
         await publishPersistedMessage(_io, msg);
       } catch (msgErr) {
+        // BX001 is the authoritative PostgreSQL refusal for an unavailable
+        // channel. Its expiry/tombstone cannot be repaired by waiting: do not
+        // burn the remaining retry budget or re-claim this scheduled post.
+        if (isChannelWriteDenied(msgErr)) {
+          try {
+            await ScheduledMessages.markFailed(scheduled._id, WORKER_ID, 'channel_unavailable', Date.now());
+          } catch (markErr) {
+            // A failed terminal-state write must not poison the rest of this
+            // batch. The lease can only be recovered when persistence returns.
+            logger.error(
+              { event: 'scheduled_msg_mark_failed_persist_fail', id: scheduled._id, err: (markErr as Error).message },
+              'Failed to persist terminal channel refusal for scheduled message',
+            );
+          }
+          logger.warn(
+            { event: 'scheduled_msg_channel_unavailable', id: scheduled._id },
+            'Scheduled message rejected by authoritative channel write barrier',
+          );
+          continue;
+        }
         const err = msgErr as Error;
         const attempts = normalizedAttempts(scheduled.dispatchAttempts);
         const reason = err.message || 'dispatch_failed';

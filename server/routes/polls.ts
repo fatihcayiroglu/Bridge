@@ -11,6 +11,7 @@ import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 import { checkEditedContent, checkMessageContent, contentRefusalHttp } from '../lib/messageContentPolicy';
 import logger from '../lib/logger';
+import { channelContentAvailability } from '../lib/channelContentAvailability';
 import type { HandlerServer } from '../socket/handler-contracts';
 
 // POST /api/channels/:cid/polls
@@ -126,11 +127,21 @@ function ioOf(req: express.Request): HandlerServer | null {
   return (req.app.get('io') as HandlerServer | undefined) ?? null;
 }
 
+async function requireLivePollChannel(channelId: string, serverId: string, res: express.Response): Promise<boolean> {
+  const availability = await channelContentAvailability(channelId, serverId);
+  if (availability === 'live') return true;
+  res.status(availability === 'missing' ? 404 : 503).json({
+    error: availability === 'missing' ? 'Channel not found' : 'Channel availability could not be verified',
+  });
+  return false;
+}
+
 function mutationError(res: express.Response, status: string): express.Response {
   switch (status) {
     case 'not_found': return res.status(404).json({ error: 'Poll not found' });
     case 'closed': return res.status(400).json({ error: 'Poll is closed' });
     case 'expired': return res.status(400).json({ error: 'Poll expired' });
+    case 'parent_unavailable': return res.status(404).json({ error: 'Channel not found' });
     case 'single_choice': return res.status(400).json({ error: 'Single choice only' });
     case 'invalid_option': return res.status(400).json({ error: 'Invalid optionId' });
     case 'vote_change_forbidden': return res.status(403).json({ error: 'Vote change not allowed for this poll' });
@@ -160,6 +171,7 @@ router.post('/:cid/polls', authMiddleware, limits.polls(), async (req, res) => {
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES)) {
     return res.status(403).json({ error: 'Missing channel permission' });
   }
+  if (!await requireLivePollChannel(channelId, channel.serverId, res)) return;
 
   if (typeof multiSelect !== 'boolean' || typeof allowVoteChange !== 'boolean') {
     return res.status(400).json({ error: 'multiSelect and allowVoteChange must be booleans' });
@@ -192,6 +204,7 @@ router.post('/:cid/polls', authMiddleware, limits.polls(), async (req, res) => {
     const { status, body } = contentRefusalHttp(refusal);
     return res.status(status).json(body);
   }
+  if (!await requireLivePollChannel(channelId, channel.serverId, res)) return;
   const poll = await Polls.insert({
     channelId,
     serverId: channel.serverId,
@@ -203,6 +216,7 @@ router.post('/:cid/polls', authMiddleware, limits.polls(), async (req, res) => {
     expiresAt,
     closed: false,
   });
+  if (!await requireLivePollChannel(channelId, channel.serverId, res)) return;
   emitPollInvalidation(req, channelId, 'poll:created', poll._id);
   res.json(pollForViewer(poll, _u.id));
 });
@@ -237,7 +251,9 @@ router.get('/:cid/polls', authMiddleware, async (req, res) => {
   if (!member) return res.status(403).json({ error: 'Not a member' });
   const perms = await channelPerms(_u.id, channel.serverId, channelId);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS)) return res.status(403).json({ error: 'Channel is not visible' });
+  if (!await requireLivePollChannel(channelId, channel.serverId, res)) return;
   const polls = await Polls.findByChannel(channelId);
+  if (!await requireLivePollChannel(channelId, channel.serverId, res)) return;
   res.json(polls.map((poll) => pollForViewer(poll, _u.id)));
 });
 
@@ -280,9 +296,11 @@ router.post('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => {
   if (!await canSeePoll(_u.id, poll)) return res.status(403).json({ error: 'Forbidden' });
 
   const requested = optionIds as string[];
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   const atomic = await Polls.mutateVoteAtomic(pollId, _u.id, requested, 'toggle');
   if (atomic) {
     if (atomic.status !== 'ok') return mutationError(res, atomic.status);
+    if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
     emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
     return res.json(pollForViewer(atomic.poll, _u.id));
   }
@@ -303,6 +321,7 @@ router.post('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => {
     if (desired.length !== existing.length || desired.some((v, i) => v !== existing[i])) {
       return res.status(403).json({ error: 'Vote change not allowed for this poll' });
     }
+    if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
     return res.json(pollForViewer(poll, _u.id));
   }
   if (poll.multiSelect) {
@@ -321,6 +340,7 @@ router.post('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => {
   // The poll may be deleted concurrently between the write and the refresh read.
   // Honour the nullable repository contract instead of fabricating a stale payload.
   if (!updated) return res.status(404).json({ error: 'Poll not found' });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
   res.json(pollForViewer(updated, _u.id));
 });
@@ -350,7 +370,9 @@ router.post('/:pid/close', authMiddleware, limits.polls(), async (req, res) => {
   if (poll.createdBy !== _u.id && !hasPermission(perms, PERMS.MANAGE_MESSAGES)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   await Polls.update(poll._id, { closed: true });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
   res.json({ ok: true });
 });
@@ -363,6 +385,7 @@ router.get('/:pid', authMiddleware, async (req, res) => {
   const poll = await Polls.findById(String(req.params.pid ?? ''));
   if (!poll) return res.status(404).json({ error: 'Poll not found' });
   if (!await canSeePoll(_u.id, poll)) return res.status(403).json({ error: 'Forbidden' });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   res.json(pollForViewer(poll, _u.id));
 });
 
@@ -400,6 +423,7 @@ router.patch('/:pid', authMiddleware, limits.polls(), async (req, res) => {
   if (!poll) return res.status(404).json({ error: 'Poll not found' });
   if (!await canSeePoll(_u.id, poll)) return res.status(403).json({ error: 'Forbidden' });
   if (poll.createdBy !== _u.id) return res.status(403).json({ error: 'Not your poll' });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   if (poll.closed) return res.status(400).json({ error: 'Closed poll cannot be edited' });
   if (poll.expiresAt !== null && poll.expiresAt !== undefined) {
     let expiresAt: number | null;
@@ -468,9 +492,11 @@ router.patch('/:pid', authMiddleware, limits.polls(), async (req, res) => {
     }
   }
 
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   const atomic = await Polls.updateEditableAtomic(poll._id, updates, options !== undefined);
   if (atomic) {
     if (atomic.status !== 'ok') return mutationError(res, atomic.status);
+    if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
     emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
     return res.json(pollForViewer(atomic.poll, _u.id));
   }
@@ -484,6 +510,7 @@ router.patch('/:pid', authMiddleware, limits.polls(), async (req, res) => {
   // The poll may be deleted concurrently between the write and the refresh read.
   // Honour the nullable repository contract instead of fabricating a stale payload.
   if (!updated) return res.status(404).json({ error: 'Poll not found' });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
   res.json(pollForViewer(updated, _u.id));
 });
@@ -513,6 +540,7 @@ router.delete('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => 
   const atomic = await Polls.mutateVoteAtomic(pollId, _u.id, [], 'remove');
   if (atomic) {
     if (atomic.status !== 'ok') return mutationError(res, atomic.status);
+    if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
     emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
     return res.json(pollForViewer(atomic.poll, _u.id));
   }
@@ -530,6 +558,7 @@ router.delete('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => 
   // The poll may be deleted concurrently between the write and the refresh read.
   // Honour the nullable repository contract instead of fabricating a stale payload.
   if (!updated) return res.status(404).json({ error: 'Poll not found' });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
   res.json(pollForViewer(updated, _u.id));
 });

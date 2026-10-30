@@ -38,6 +38,8 @@ import { _dispatchDueForTest, startScheduledJob, stopScheduledJob } from '../job
 import { sendChannelMessage } from '../socket/handlers/messages-send';
 import { invalidatePerms } from '../lib/permCache';
 import { ABUSE_POLICY } from '../lib/abusePolicy';
+import * as contentPolicy from '../lib/messageContentPolicy';
+import * as writeGuard from '../lib/channelWriteGuard';
 
 type Emitted = { ev: string; data: Record<string, unknown>; to?: string };
 const emitted: Emitted[] = [];
@@ -52,6 +54,7 @@ const people: Array<ReturnType<typeof makeUser>> = [];
 
 beforeAll(() => startScheduledJob(io as never));
 afterAll(() => stopScheduledJob());
+afterEach(() => jest.restoreAllMocks());
 
 beforeEach(async () => {
   mockDb._reset();
@@ -163,5 +166,62 @@ describe('the content checks apply when a scheduled message is posted', () => {
     expect(await postedFromSchedule()).toHaveLength(1);
     expect(broadcasts()).toHaveLength(1);
     expect(row).toMatchObject({ sent: true });
+  });
+});
+
+describe('authoritative channel expiry at scheduling and dispatch', () => {
+  const expire = () => mockDb.channels.update({ _id: channel._id },
+    { $set: { expiresAt: Date.now() - 1, expiryVersion: 1 } });
+
+  it('refuses new schedules for an already expired channel without dropping user data', async () => {
+    await expire();
+    expect((await schedule('not queued')).status).toBe(404);
+    expect(await mockDb.scheduledMsgs.find({ userId: member._id })).toEqual([]);
+    expect(await mockDb.channels.findOne({ _id: channel._id })).not.toBeNull();
+  });
+
+  it('a delayed worker refuses a channel that expired after scheduling', async () => {
+    const row = await scheduleAndDispatch('expired before dispatch', expire);
+    expect(row).toMatchObject({ sent: false, failureReason: 'channel_unavailable' });
+    expect(await postedFromSchedule()).toEqual([]);
+    expect(broadcasts()).toEqual([]);
+  });
+
+  it('rechecks expiry after asynchronous content verification, before insertion', async () => {
+    const verify = contentPolicy.checkMessageContent;
+    jest.spyOn(contentPolicy, 'checkMessageContent').mockImplementationOnce(async (...args) => {
+      await expire();
+      return verify(...args);
+    });
+    const row = await scheduleAndDispatch('expires during verification');
+    expect(row).toMatchObject({ sent: false, failureReason: 'channel_unavailable' });
+    expect(await postedFromSchedule()).toEqual([]);
+    expect(broadcasts()).toEqual([]);
+  });
+
+  it('does not republish a previously persisted message into an expired channel', async () => {
+    const row = await scheduleAndDispatch('crash recovery', async () => {
+      const scheduled = await mockDb.scheduledMsgs.findOne({ userId: member._id });
+      await mockDb.messages.insert({ _id: 'already-persisted', channelId: channel._id,
+        serverId: server._id, userId: member._id, scheduledId: scheduled!._id, content: 'crash recovery' });
+      await expire();
+    });
+    expect(row).toMatchObject({ sent: false, failureReason: 'channel_unavailable' });
+    expect(await postedFromSchedule()).toHaveLength(1); // retained, not duplicated or bulk-deleted
+    expect(broadcasts()).toEqual([]);
+  });
+
+  it('unverifiable authority refuses scheduling and leaves a due schedule retryable', async () => {
+    const res = await schedule('store outage');
+    expect(res.status).toBe(200);
+    jest.spyOn(writeGuard, 'channelWriteAvailability').mockResolvedValue('unverifiable');
+    expect((await schedule('must not enter queue')).status).toBe(503);
+    await mockDb.scheduledMsgs.update({ _id: String(res.body._id) }, { $set: { sendAt: Date.now() - 1 } });
+    await _dispatchDueForTest();
+    const pending = await mockDb.scheduledMsgs.findOne({ _id: String(res.body._id) });
+    expect(pending).toMatchObject({ sent: false, lastError: 'channel_authority_unavailable' });
+    expect(pending!.failedAt ?? null).toBeNull();
+    expect(await postedFromSchedule()).toEqual([]);
+    expect(broadcasts()).toEqual([]);
   });
 });
