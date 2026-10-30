@@ -92,6 +92,7 @@ describe('local ball-in-hand permission and physical placement',()=>{
   it('rejects phantom ball-in-hand permission and inconsistent pocket totals',()=>{
     const {rules,table}=fullRulesFoul(null);
     expect(placeLocalCueBall({...rules,last:null},table,1,0,0)).toBeNull();
+    expect(placeLocalCueBall({...rules,ballInHand:'unrestricted' as never},table,1,0,0)).toBeNull();
     expect(placeLocalCueBall({...rules,last:{...rules.last!,foul:null}},table,1,0,0)).toBeNull();
     expect(placeLocalCueBall({...rules,last:{...rules.last!,actor:1}},table,1,0,0)).toBeNull();
     expect(placeLocalCueBall(rules,{...table,pocketed:3},1,0,0)).toBeNull();
