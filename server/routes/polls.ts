@@ -141,6 +141,7 @@ function mutationError(res: express.Response, status: string): express.Response 
     case 'not_found': return res.status(404).json({ error: 'Poll not found' });
     case 'closed': return res.status(400).json({ error: 'Poll is closed' });
     case 'expired': return res.status(400).json({ error: 'Poll expired' });
+    case 'parent_unavailable': return res.status(404).json({ error: 'Channel not found' });
     case 'single_choice': return res.status(400).json({ error: 'Single choice only' });
     case 'invalid_option': return res.status(400).json({ error: 'Invalid optionId' });
     case 'vote_change_forbidden': return res.status(403).json({ error: 'Vote change not allowed for this poll' });
