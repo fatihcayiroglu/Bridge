@@ -159,7 +159,8 @@ async function main() {
     { algorithm: 'HS256', expiresIn: '2m' });
   process.send({ type: 'ready', port,
     serverId, otherServerId, aliceUsername: alice, proofPassword,
-    aliceToken: token(alice), bobToken: token(bob), charlieToken: token(charlie) });
+    aliceToken: token(alice), bobToken: token(bob), charlieToken: token(charlie),
+    golfExtraTokens: golfExtraUsers.map(token) });
 }
 
 process.on('message', async msg => {
