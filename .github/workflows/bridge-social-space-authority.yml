@@ -27,7 +27,10 @@ on:
       - codex/activities-3d-shipped-html-css-csp-20261030
       - codex/activities-3d-multiserver-event-isolation-20261030
       - codex/activities-3d-real-login-full-shell-e2e-20261030
+      - codex/activities-3d-mini-golf-solo-practice-20261030
     paths:
+      - 'server/socket/handlers/mini-golf*.ts'
+      - 'server/tests/mini-golf-authority.test.ts'
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/handlers/social-room-eviction.ts'
       - 'server/lib/liveMembership.ts'
@@ -110,10 +113,10 @@ jobs:
           npm run typecheck:server
           npm run typecheck:client
           cd server && npm run typecheck:test-strict
-      - name: Real social-room handler contract tests, zero skipped
+      - name: Real social-room and mini-golf handler contract tests, zero skipped
         working-directory: server
         run: |
-          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts tests/social-role-mutation-hooks.test.ts tests/plugin-actions.test.ts tests/messages-edit.test.ts tests/onboarding.test.ts --json --outputFile=social-room-evidence.json
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/mini-golf-authority.test.ts tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts tests/social-role-mutation-hooks.test.ts tests/plugin-actions.test.ts tests/messages-edit.test.ts tests/onboarding.test.ts --json --outputFile=social-room-evidence.json
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
