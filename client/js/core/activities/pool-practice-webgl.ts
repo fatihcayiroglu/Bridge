@@ -135,13 +135,19 @@ function outwardState(state:PoolState):PoolState {
 export function startPoolPractice(
   canvas:HTMLCanvasElement,onState:(s:PoolState)=>void,onLost?:()=>void,onRestored?:()=>void,
 ):PoolPracticeHandle|null {
+  // This is a DOM-bound renderer, not an offscreen simulation service.
+  if(!canvas.isConnected)return null;
   const context=selectSocialWebGLContext(canvas);
   if(!context)return null;
   const {gl,api}=context;
   const staticData=table();
   let gpu:GPU|null=allocate(gl,api,staticData);
-  let state=newPoolPractice(),disposed=false,lost=false,raf=0,lastTime=0,carry=0,lastDraw=0;
+  let state=newPoolPractice(),disposed=false,lost=false,detached=false,
+    raf=0,lastTime=0,carry=0,lastDraw=0;
   const camera=view();
+  // Once observed detached, this instance cannot silently resume or score
+  // after a modal unmount/remount. The UI must create a new renderer.
+  function connected(){if(!canvas.isConnected)detached=true;return !detached;}
   onState(outwardState(state));
   function draw(now:number) {
     if(!gpu)return;
@@ -183,7 +189,7 @@ export function startPoolPractice(
   }
   function tick(now:number) {
     raf=0;
-    if(disposed||lost||!canvas.isConnected||document.hidden)return;
+    if(disposed||lost||!connected()||document.hidden)return;
     const elapsed=lastTime?Math.min(.067,Math.max(0,(now-lastTime)/1000)):0;
     lastTime=now;carry+=elapsed;
     let steps=0,changed=false;
@@ -197,7 +203,7 @@ export function startPoolPractice(
     raf=requestAnimationFrame(tick);
   }
   function resume(){
-    if(!disposed&&!lost&&gpu&&!document.hidden&&!raf){
+    if(!disposed&&!lost&&gpu&&connected()&&!document.hidden&&!raf){
       lastTime=0;carry=0;raf=requestAnimationFrame(tick);
     }
   }
@@ -212,7 +218,7 @@ export function startPoolPractice(
     onLost?.();
   }
   function restoreContext() {
-    if(disposed)return;
+    if(disposed||!connected())return;
     try{gpu=allocate(gl,api,staticData);lost=false;lastDraw=0;resume();onRestored?.();}
     catch{lost=true;gpu=null;onLost?.();}
   }
@@ -222,21 +228,21 @@ export function startPoolPractice(
   resume();
   return {
     get state(){return outwardState(state);},
-    get isGraphicsAvailable(){return !disposed&&!lost&&gpu!==null;},
+    get isGraphicsAvailable(){return !disposed&&!lost&&gpu!==null&&connected();},
     shoot(angle,power){
-      if(disposed||lost||!gpu)return false;
+      if(disposed||lost||!gpu||!connected())return false;
       const next=strikePool(state,angle,power);
       if(next===state)return false;
       state=next;onState(outwardState(state));return true;
     },
     placeLocalTable(next){
-      if(disposed||lost||!gpu)return false;
+      if(disposed||lost||!gpu||!connected())return false;
       const accepted=acceptLocalPoolPlacement(state,next);
       if(!accepted)return false;
       state=accepted;carry=0;lastTime=0;lastDraw=0;onState(outwardState(state));
       return true;
     },
-    reset(){if(disposed)return;state=newPoolPractice();carry=0;onState(outwardState(state));},
+    reset(){if(disposed||!connected())return;state=newPoolPractice();carry=0;onState(outwardState(state));},
     dispose(){
       if(disposed)return;disposed=true;
       if(raf)cancelAnimationFrame(raf);
