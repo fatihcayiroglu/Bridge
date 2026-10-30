@@ -160,6 +160,32 @@ it('direct atomic vote withdrawal remains permitted after parent expiry', async 
   expect(events).toEqual([]);
 });
 
+it('expired parent refuses a direct idempotent replay without clearing the original vote', async () => {
+  const f = await seed();
+  await q('UPDATE polls SET "allowVoteChange"=false WHERE _id=$1', [f.poll]);
+  // Keep the originally accepted vote; an identical replay must not become
+  // a new authorization to disclose the expired poll.
+  expect((await Polls.mutateVoteAtomic(f.poll, f.user, ['0'], 'toggle'))?.status).toBe('ok');
+  expect((await rows(f)).rows[0]!.options[0].votes).toEqual([f.user]);
+  await expire(f);
+  const replay = await Polls.mutateVoteAtomic(f.poll, f.user, ['0'], 'toggle');
+  expect(replay).toEqual({ status: 'parent_unavailable' });
+  expect((await rows(f)).rows[0]!.options[0].votes).toEqual([f.user]);
+  expect(events).toEqual([]);
+});
+
+it('expired parent refuses an empty direct edit without changing persisted data', async () => {
+  const f = await seed();
+  const before = (await rows(f)).rows[0]!;
+  await expire(f);
+  const noop = await Polls.updateEditableAtomic(f.poll, {}, false);
+  expect(noop).toEqual({ status: 'parent_unavailable' });
+  const after = (await rows(f)).rows[0]!;
+  expect(after.question).toBe(before.question);
+  expect(after.options).toEqual(before.options);
+  expect(events).toEqual([]);
+});
+
 it('expired-parent vote withdrawal removes the real vote but never returns the stale question', async () => {
   const f = await seed();
   expect((await send(f, calls(f)[1]!)).status).toBe(200);
