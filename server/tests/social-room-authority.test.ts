@@ -275,6 +275,26 @@ describe('3D Social Space authority and presence', () => {
     }
   });
 
+  it('rejects in-flight admission when a server-wide role revision is committed', async () => {
+    const sid = server(), io = makeIo(), s = wire('member', sid, io);
+    let releaseMembership!: (value: unknown) => void;
+    let reached!: () => void;
+    const started = new Promise<void>(resolve => { reached = resolve; });
+    const held = new Promise(resolve => { releaseMembership = resolve; });
+    mockMembersFindOne.mockImplementationOnce(() => {
+      reached();
+      return held;
+    });
+    const pending = s.trigger('social:join', { serverId: sid });
+    await started;
+    await socialRoomStore.withLock(sid, () => socialRoomStore.markRevocationFence(sid, '__all__'));
+    releaseMembership({ userId: 'member', serverId: sid });
+    await pending;
+    expect(last(s, 'social:joined')).toBeUndefined();
+    expect(s.rooms.has('social-3d:' + sid)).toBe(false);
+    expect((await socialRoomStore.load(sid)).peers).toEqual([]);
+  });
+
   it('refuses joining if the shared Redis generation cannot be read', async () => {
     const sid = server(), io = makeIo(), s = wire('u1', sid, io);
     mockRedisReadFailure = true;
@@ -375,6 +395,12 @@ describe('3D social roster — membership revocation cleanup', () => {
 
 
 describe('3D Social Space — real role access change reconciliation contract', () => {
+  const existingFlag = process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER;
+  beforeEach(() => { process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER = '1'; });
+  afterEach(() => {
+    if (existingFlag === undefined) delete process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER;
+    else process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER = existingFlag;
+  });
   const peer = (socketId: string, userId: string) => ({
     socketId, userId, x: 0, z: 2.5, lastStepAt: 0,
   });
