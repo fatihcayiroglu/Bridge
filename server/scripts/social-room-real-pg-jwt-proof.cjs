@@ -70,18 +70,21 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
       reconnection: false, timeout: 5000,
     });
     clients.push(socket);
+    const ready = expectSuccess ? waitForEvent(socket, 'social:test-ready') : null;
     const outcome = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('SOCIAL_3D_REAL_PG_SOCKET_TIMEOUT')), 5000);
       socket.once('connect', () => { clearTimeout(timer); resolve('connected'); });
       socket.once('connect_error', () => { clearTimeout(timer); resolve('denied'); });
     });
     assert.equal(outcome, expectSuccess ? 'connected' : 'denied');
+    if (ready) await ready;
     return socket;
   }
 
   async function seed() {
     await db._initSchema();
     const createdAt = Date.now();
+    seeded = true;
     for (const [suffix, userId] of Object.entries({
       a: ids.a, b: ids.b, outsider: ids.outsider,
     })) {
@@ -102,7 +105,6 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
         [userId, ids.server, '[]', createdAt],
       );
     }
-    seeded = true;
   }
 
   async function runProof() {
@@ -128,6 +130,8 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
         const userId = socket.data.bridgeTestUserId;
         if (await Members.findOne(userId, ids.server)) await socket.join('server:' + ids.server);
         registerSocialRoomHandlers(socket, io, userId);
+        // Harness-only ready signal after the real DB-based membership join.
+        socket.emit('social:test-ready');
       } catch {
         socket.disconnect(true);
       }
