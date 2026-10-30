@@ -187,7 +187,17 @@ export function mountGolfOpponent(port: number, token: string, serverId: string)
     shoot(degrees: number, power: number) {
       socket.emit('mini-golf:shoot', { serverId, degrees, power });
     },
-    dispose() { socket.emit('mini-golf:leave', { serverId }); socket.disconnect(); },
+    async dispose() {
+      // Deterministic cleanup of the previous two-player match before the
+      // eight-seat test reuses its server. No blind sleep/retry.
+      const left = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('Mini Golf authoritative leave timed out')), 8000);
+        socket.once('mini-golf:left', () => { clearTimeout(timer); resolve(); });
+      });
+      socket.emit('mini-golf:leave', { serverId });
+      await left;
+      socket.disconnect();
+    },
   };
   socket.on('userAuthenticated', () => { state.ready = true; });
   socket.on('mini-golf:state', result => state.states.push(result));
