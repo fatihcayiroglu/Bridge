@@ -105,6 +105,8 @@ export function registerSocialRoomHandlers(
       // Capture the generation *before* any asynchronous authorization.
       // A kick that overlaps this join changes the generation on every node.
       const admissionFence = await socialRoomStore.readRevocationFence(serverId, userId);
+      // Role bit/assignment changes are server-wide permission revisions.
+      const serverPermissionFence = await socialRoomStore.readRevocationFence(serverId, '__all__');
       if (!await isAuthorized(socket, userId, serverId)) { error(); return; }
       if (disconnected || canceledJoins.has(serverId)) return;
 
@@ -112,7 +114,8 @@ export function registerSocialRoomHandlers(
         // Both presence mutation and revocation run under this room lock.
         // No pre-revocation join may write or be acknowledged afterwards.
         if (admissionExpired() || !socket.rooms.has('server:' + serverId) ||
-            await socialRoomStore.readRevocationFence(serverId, userId) !== admissionFence) {
+            (await socialRoomStore.readRevocationFence(serverId, userId) !== admissionFence ||
+             await socialRoomStore.readRevocationFence(serverId, '__all__') !== serverPermissionFence)) {
           return 'revoked' as const;
         }
         const room = await socialRoomStore.load(serverId);
@@ -140,8 +143,10 @@ export function registerSocialRoomHandlers(
       // it returns; eviction may have removed the user's server room while
       // the adapter was adding the social audience. A failed read fails closed.
       const finalFence = await socialRoomStore.readRevocationFence(serverId, userId);
+      const finalServerPermissionFence = await socialRoomStore.readRevocationFence(serverId, '__all__');
       if (disconnected || canceledJoins.has(serverId) || admissionExpired() ||
           finalFence !== admissionFence ||
+          finalServerPermissionFence !== serverPermissionFence ||
           !socket.rooms.has('server:' + serverId) ||
           !socket.rooms.has(socialSocketRoom(serverId))) {
         await dropReservation(serverId);
