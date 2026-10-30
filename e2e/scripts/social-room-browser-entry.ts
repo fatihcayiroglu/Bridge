@@ -34,6 +34,7 @@ export function mountSocialBrowser(
     room: NonNullable<ReturnType<typeof startLocalSocialRoom>>;
     lastFrame: Social3DSnapshot | null;
     dispose: () => void;
+    rejoin: () => void;
   } = {
     status: 'waiting-auth',
     errors: [], frames: [], api: '',
@@ -41,7 +42,7 @@ export function mountSocialBrowser(
     socket: null as unknown as ReturnType<typeof io>,
     room: null as unknown as NonNullable<ReturnType<typeof startLocalSocialRoom>>,
     lastFrame: null,
-    dispose: () => {},
+    dispose: () => {}, rejoin: () => {},
   };
   const room = startLocalSocialRoom(canvas, direction => state.session?.step(direction),
     () => {
@@ -62,8 +63,12 @@ export function mountSocialBrowser(
     state.errors.push(String(error?.message || error));
     state.status = 'auth-error';
   });
-  socket.on('userAuthenticated', () => {
-    state.socketId = socket.id;
+  // Explicit rejoin is test-only: restoring WebGL must NOT silently restore
+  // an online identity. The real shipped client has the same opt-in boundary.
+  state.rejoin = () => {
+    if (!socket.connected || !room.isGraphicsAvailable || state.session?.active) {
+      throw Error('Explicit social rejoin requires a connected, ready offline renderer');
+    }
     state.session = joinSocialRoomPreview(socket, serverId,
       (frame, ownSocketId) => {
         state.lastFrame = frame;
@@ -75,6 +80,10 @@ export function mountSocialBrowser(
         if (status !== 'online') room.leaveOnline();
       },
     );
+  };
+  socket.on('userAuthenticated', () => {
+    state.socketId = socket.id;
+    state.rejoin();
   });
   state.dispose = () => {
     state.session?.dispose();
