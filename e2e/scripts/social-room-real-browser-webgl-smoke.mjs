@@ -29,7 +29,14 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
 }
 
 const worker = fork(workerPath, [], {
-  env: { ...process.env, NODE_ENV: 'integration', BRIDGE_SOCIAL_3D_MULTIPLAYER: '1', BRIDGE_MINI_GOLF_MULTIPLAYER: '1' },
+  env: {
+    ...process.env, NODE_ENV: 'integration',
+    BRIDGE_SOCIAL_3D_MULTIPLAYER: '1', BRIDGE_MINI_GOLF_MULTIPLAYER: '1',
+    // Eight distinct authenticated test users share ONE CI loopback IP plus
+    // social/full-app control connections. Isolated worker ONLY; production
+    // WS connection limits remain unchanged and must be tested separately.
+    MAX_WS_PER_IP: '24', MAX_UNAUTH_WS_PER_IP: '12',
+  },
   stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
 });
 let workerLogs = '';
