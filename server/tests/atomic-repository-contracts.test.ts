@@ -194,6 +194,39 @@ describe('atomic PostgreSQL repository owners — mocked SQL contract only', () 
       expect(removed?.status).toBe('ok'); if(removed?.status==='ok'){expect(removed.poll.options[0].votes).toEqual(['other']); expect(removed.poll.options[1].votes).toEqual([]);}
     });
 
+    it('fails closed when the atomic vote UPDATE sees an expired or tombstoned parent', async () => {
+      const poll = { _id: 'poll-1', channelId: 'ch-1', serverId: 'srv-1', createdBy: 'owner',
+        question: 'Q', multiSelect: false, allowVoteChange: true,
+        options: [{ id: 'a', text: 'A', votes: [] }] };
+      const client = pgClient(sql => /SELECT \* FROM polls/.test(sql) ? { rows: [poll] } : { rows: [] });
+      pool.connect.mockResolvedValue(client);
+      await expect(PollRepository.mutateVoteAtomic('poll-1', 'u1', ['a'], 'toggle'))
+        .resolves.toEqual({ status: 'parent_unavailable' });
+      const query = client.query.mock.calls.find(([sql]) => /UPDATE polls SET options/.test(String(sql)));
+      expect(query?.[0]).toContain('channel_expiry_tombstones');
+      expect(query?.[0]).toContain('clock_timestamp()');
+      expect(query?.[0]).toContain('c."serverId" = polls."serverId"');
+      expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+      expect(client.query).not.toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('never gates an authorized vote withdrawal on parent expiry', async () => {
+      const poll = { _id: 'poll-1', channelId: 'ch-1', serverId: 'srv-1', createdBy: 'owner',
+        question: 'Q', multiSelect: true, allowVoteChange: true,
+        options: [{ id: 'a', text: 'A', votes: ['u1'] }] };
+      const client = pgClient((sql, params) => /SELECT \* FROM polls/.test(sql)
+        ? { rows: [poll] }
+        : /UPDATE polls SET options/.test(sql)
+          ? { rows: [{ ...poll, options: JSON.parse(String(params?.[1])) }] }
+          : { rows: [] });
+      pool.connect.mockResolvedValue(client);
+      const result = await PollRepository.mutateVoteAtomic('poll-1', 'u1', [], 'remove');
+      expect(result?.status).toBe('ok');
+      const query = client.query.mock.calls.find(([sql]) => /UPDATE polls SET options/.test(String(sql)));
+      expect(query?.[0]).not.toContain('channel_expiry_tombstones');
+      expect(client.query).toHaveBeenCalledWith('COMMIT');
+    });
+
     it('database failure rolls back and preserves the original error', async () => {
       const original=new Error('poll select failed');
       const client=pgClient(sql=>{if(sql==='BEGIN')return {rows:[]}; if(/SELECT \* FROM polls/.test(sql)) throw original; if(sql==='ROLLBACK') throw new Error('rollback failed'); return {rows:[]};}); pool.connect.mockResolvedValue(client);
@@ -203,6 +236,20 @@ describe('atomic PostgreSQL repository owners — mocked SQL contract only', () 
   });
 
   describe('PollRepository.updateEditableAtomic', () => {
+    it('rolls back when the edit UPDATE detects an unavailable parent', async () => {
+      const poll = { _id: 'poll-1', channelId: 'ch-1', serverId: 'srv-1',
+        createdBy: 'owner', question: 'Q', options: [{ id: 'a', text: 'A', votes: [] }] };
+      const client = pgClient(sql => /SELECT \* FROM polls/.test(sql) ? { rows: [poll] } : { rows: [] });
+      pool.connect.mockResolvedValue(client);
+      await expect(PollRepository.updateEditableAtomic('poll-1', { question: 'Changed' }, false))
+        .resolves.toEqual({ status: 'parent_unavailable' });
+      const query = client.query.mock.calls.find(([sql]) => /UPDATE polls SET/.test(String(sql)));
+      expect(query?.[0]).toContain('channel_expiry_tombstones');
+      expect(query?.[0]).toContain('clock_timestamp()');
+      expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+      expect(client.query).not.toHaveBeenCalledWith('COMMIT');
+    });
+
     it('optionlarda mevcut oy varsa options editini lock altında reddeder', async () => {
       const poll = {
         _id: 'poll-1', channelId: 'ch-1', serverId: 'srv-1', createdBy: 'owner', question: 'Q?',
