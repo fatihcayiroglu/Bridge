@@ -539,6 +539,7 @@ router.delete('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => 
   const atomic = await Polls.mutateVoteAtomic(pollId, _u.id, [], 'remove');
   if (atomic) {
     if (atomic.status !== 'ok') return mutationError(res, atomic.status);
+    if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
     emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
     return res.json(pollForViewer(atomic.poll, _u.id));
   }
@@ -556,6 +557,7 @@ router.delete('/:pid/vote', authMiddleware, limits.polls(), async (req, res) => 
   // The poll may be deleted concurrently between the write and the refresh read.
   // Honour the nullable repository contract instead of fabricating a stale payload.
   if (!updated) return res.status(404).json({ error: 'Poll not found' });
+  if (!await requireLivePollChannel(poll.channelId, poll.serverId, res)) return;
   emitPollInvalidation(req, poll.channelId, 'poll:updated', poll._id);
   res.json(pollForViewer(updated, _u.id));
 });

@@ -24,11 +24,10 @@ yields 503. Create/edit recheck after asynchronous content enforcement; writes
 and list reads recheck before publishing an invalidation or returning content.
 
 Authorized poll DELETE is left functional and tested for expired parents.
-Vote withdrawal and its existing response are unchanged: their erasure/response
-semantics still need separate review. This change does not silently select a
-new retention or account-erasure policy.
+The follow-up below also fences vote-withdrawal responses while preserving the
+existing authorized erasure. No new retention or account-erasure policy is selected.
 
-## Verification boundary
+## Initial source verification boundary (546daa2f)
 
 - Four focused unit suites passed **113/113**, zero failed/skipped, on the final
   typed fixture source; the no-skips CLI independently validated the result. The new suite has 15 tests, including
@@ -58,6 +57,28 @@ expiry barrier. A vote can commit while live and the parent expire before the
 postcheck. The real-PG interleaving explicitly expects that persisted vote to
 remain while refusing HTTP success/content and socket invalidation; it never
 pretends a rollback occurred. Direct poll repository writes, commit-time expiry,
-withdrawal responses, cleanup races and the complete lifecycle need further
+cleanup races and the complete lifecycle need further
 qualification. No active room eviction, device compatibility or P7 closure claim
 follows from these tests. Keep the PR draft and P7/#321/#209 open.
+
+
+## Withdrawal response follow-up
+
+Review found an additional stale-content route: DELETE /:pid/vote removed the
+vote but still returned the full poll question/options on an expired channel.
+Two new regressions first produced **15 PASS /2 FAIL /0 skipped**, preserved in
+bridge-p7-poll-withdrawal-red-20261030.json, SHA-256
+`378d9642075056f403ad9a581c85102996a0219bc2997bf755df5e5a3906758c`.
+The actual removal stays authorized and functional; only after removal do both
+atomic and compatibility paths consult canonical availability before returning
+content or invalidating the channel. Expired yields404, unverifiable503; neither
+returns the stale question. This does not pretend that an erasure was rolled back.
+
+The four local poll suites now pass **115/115**, zero skipped; production types
+and the strict test gate pass with zero debt. The initial new assertion tried to
+map an unknown mock-row field; it now compares the complete expected options
+structure without casts, suppression or weakened assertions. A tenth mandatory real-PG case verifies a live vote is actually stored,
+then removed after parent expiry, while the response is fixed404 and no
+invalidation is emitted. The previously verified first head546daa2f run41012830673
+(575 unit +232 realPG16/Redis) remains preserved. New-source exact-head CI is
+required; the earlier PASS does not qualify this follow-up.

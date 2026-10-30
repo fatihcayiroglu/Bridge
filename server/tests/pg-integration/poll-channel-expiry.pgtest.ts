@@ -124,3 +124,13 @@ it('expiry after real atomic vote commit suppresses HTTP success and invalidatio
   expect(response.status).toBe(404); expect(response.body).toEqual({ error: 'Channel not found' });
   expect((await rows(f)).rows[0].options[0].votes).toEqual([f.user]); expect(events).toEqual([]);
 });
+
+it('expired-parent vote withdrawal removes the real vote but never returns the stale question', async () => {
+  const f = await seed();
+  expect((await send(f, calls(f)[1]!)).status).toBe(200);
+  expect((await rows(f)).rows[0].options[0].votes).toEqual([f.user]);
+  await expire(f); events.length = 0;
+  const response = await request(app).delete(`/api/polls/${f.poll}/vote`).set('Authorization', `Bearer ${f.token}`);
+  expect(response.status).toBe(404); expect(response.body).toEqual({ error: 'Channel not found' });
+  expect((await rows(f)).rows[0].options[0].votes).toEqual([]); expect(events).toEqual([]);
+});

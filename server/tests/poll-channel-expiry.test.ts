@@ -145,3 +145,19 @@ test('authorized poll deletion remains available on an expired parent', async ()
   expect(response.status).toBe(200);
   expect(await db.polls.findOne({ _id: poll._id })).toBeNull();
 });
+
+test.each([404, 503])('vote withdrawal preserves erasure but refuses stale content with %s', async status => {
+  await db.polls.update({ _id: poll._id }, { $set: { options: [
+    { id: '0', text: 'One', votes: [user._id] }, { id: '1', text: 'Two', votes: [] },
+  ] } });
+  if (status === 404) await db.channels.update({ _id: channel._id }, { $set: { expiresAt: Date.now() - 1, expiryVersion: 1 } });
+  else require('../db/index')._pool = { query: async () => { throw new Error('unavailable'); } };
+  const response = await request(app).delete('/api/polls/expiry-poll/vote').set('Authorization', `Bearer ${token}`);
+  expect(response.status).toBe(status);
+  expect(response.body).toEqual({ error: status === 404 ? 'Channel not found' : 'Channel availability could not be verified' });
+  const saved = await db.polls.findOne({ _id: poll._id });
+  expect(saved?.options).toEqual([
+    { id: '0', text: 'One', votes: [] }, { id: '1', text: 'Two', votes: [] },
+  ]);
+  expect(emit).not.toHaveBeenCalled();
+});
