@@ -168,7 +168,9 @@ describe('2–8 player Mini Golf authority',()=>{
     await players[0]!.trigger('mini-golf:start',{serverId:server});
     await players[0]!.trigger('disconnect');
     let suspended=await golfMatchStore.load(server);
-    expect(suspended).toMatchObject({phase:'playing',turn:0,players:[{userId:'user0',socketId:players[0]!.id}]});
+    expect(suspended).toMatchObject({phase:'playing',turn:0});
+    expect(suspended.players).toHaveLength(8);
+    expect(suspended.players[0]).toMatchObject({userId:'user0',socketId:players[0]!.id});
     expect(suspended.players[0]?.reconnectUntil).toBeGreaterThan(Date.now());
     // A different user and a second live socket cannot displace this seat.
     await players[1]!.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
@@ -243,7 +245,7 @@ describe('2–8 player Mini Golf authority',()=>{
     await b.trigger('mini-golf:join',{serverId:server});
     await a.trigger('mini-golf:start',{serverId:server});
     await a.trigger('disconnect');
-    members.mockImplementation((id:string) => id==='a'?null:{banned:false});
+    members.mockImplementation(async (id:string) => id==='a'?null:{banned:false});
     const attempt=socket('a',server);
     await attempt.trigger('mini-golf:join',{serverId:server});
     expect(attempt.last('mini-golf:state')).toBeUndefined();
