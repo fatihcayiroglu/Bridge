@@ -4,7 +4,7 @@ name: Bridge Activities 3D foundation (supplemental)
 # Quality Gate/security audit/native acceptance. The audit remains blocking.
 on:
   pull_request:
-    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030]
+    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030, codex/activities-webgl2-fallback-quality-20261030]
     paths:
       - 'client/js/core/activities/**'
       - 'client/js/core/exclusive-surface.ts'
