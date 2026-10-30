@@ -277,15 +277,22 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
       outsider.emit('social:join', { serverId: ids.server });
       assert.deepEqual(await outsiderDenied, { code: 'SOCIAL_ROOM_UNAVAILABLE' });
 
+      // A join emits a targeted social:joined acknowledgement AND a room
+      // social:peers broadcast. Consume/assert both, not just the ack: Redis
+      // pub/sub can deliver the older snapshot AFTER the targeted ack.
       const aliceJoined = eventFrom(alice, 'social:joined');
+      const aliceSelfRoster = eventFrom(alice, 'social:peers');
       alice.emit('social:join', { serverId: ids.server });
       assert.deepEqual((await aliceJoined).peers.map(p => p.userId), [ids.alice]);
+      assert.deepEqual((await aliceSelfRoster).peers.map(p => p.userId), [ids.alice]);
 
       const aliceSeesBob = eventFrom(alice, 'social:peers');
       const bobJoined = eventFrom(bob, 'social:joined');
+      const bobOwnRoster = eventFrom(bob, 'social:peers');
       bob.emit('social:join', { serverId: ids.server });
       const bSnapshot = await bobJoined;
       assert.deepEqual(bSnapshot.peers.map(p => p.userId), [ids.alice, ids.bob]);
+      assert.deepEqual((await bobOwnRoster).peers.map(p => p.userId), [ids.alice, ids.bob]);
       const crossJoin = await aliceSeesBob;
       assert.deepEqual(crossJoin.peers.map(p => p.userId), [ids.alice, ids.bob]);
 
