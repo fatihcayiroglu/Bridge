@@ -87,6 +87,27 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     expect(document.getElementById('app')?.inert).toBe(false);
   });
 
+  it('exposes explicit illegal-break decision and re-racks for the incoming player',()=>{
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    click('.bridge-pool-hotseat-launch');
+    const power=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-power')!;
+    power.value='10'; // real physics cannot reach the distant rack
+    click('.bridge-pool-hotseat-shoot');
+    const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
+    expect(status()).toContain('Player 2');
+    expect(status()).toContain('Illegal break');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled).toBe(true);
+    const decisions=[...document.querySelectorAll<HTMLButtonElement>(
+      '.bridge-pool-hotseat-decisions button')];
+    expect(decisions).toHaveLength(3);
+    decisions[1]!.click(); // incoming player chooses a physical fresh rack
+    expect(status()).toContain('Player 2');
+    expect(status()).toContain('Break shot');
+    expect(status()).toContain('Shots: 0');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled).toBe(false);
+  });
+
   it('blocks unsupported fabricated pocket outcomes and cannot continue with a fake winning frame',()=>{
     renderer.mode='forged';
     showBridgeActivities('games');
