@@ -27,6 +27,9 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
 } else {
   const db = require('../dist/db/loader').default;
   const { Members, Users } = require('../dist/db/repositories');
+  const { invalidatePerms } = require('../dist/lib/permCache');
+  const { PERMS, resolvePermissions, hasPermission } = require('../dist/lib/permissions');
+  const { reconcileSocialRoomAccess } = require('../dist/socket/handlers/social-room-eviction');
   const { verifyToken } = require('../dist/middleware/auth');
   const { parseTokenVersion } = require('../dist/lib/tokenVersion');
   const { registerSocialRoomHandlers } = require('../dist/socket/handlers/social-room');
@@ -36,7 +39,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
   const run = 'social_pg_' + randomBytes(6).toString('hex');
   const ids = {
     a: run + '_a', b: run + '_b', outsider: run + '_outsider',
-    server: run + '_server',
+    server: run + '_server', role: run + '_restrict_connect',
   };
   const httpServer = createServer();
   const io = new Server(httpServer, {
@@ -148,7 +151,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     await connect(tokenFor(ids.a, 'different-test-signing-secret-32chars'), false);
     await connect(tokenFor(run + '_absent'), false);
     const a = await connect(tokenFor(ids.a));
-    const b = await connect(tokenFor(ids.b));
+    let b = await connect(tokenFor(ids.b));
     const outsider = await connect(tokenFor(ids.outsider));
 
     const denial = waitForEvent(outsider, 'social:error');
@@ -174,6 +177,42 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     const position = stepped.peers.find(p => p.userId === ids.a);
     assert.equal(position.x, 0.35);
     assert.equal(position.z, 2.5);
+
+    // A REAL persisted member-role grant reduces server permissions because
+    // role-bearing users use their explicit role mask instead of defaults.
+    // The user remains a member; revoke only their 3D CONNECT capability.
+    await q(
+      'INSERT INTO roles (_id, "serverId", name, color, permissions, position, "createdAt") ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [ids.role, ids.server, '3D restricted test', '#7799aa', PERMS.VIEW_CHANNELS, 1, Date.now()],
+    );
+    const assigned = await Members.addRole(ids.b, ids.server, ids.role);
+    assert.equal(Array.isArray(assigned), true);
+    invalidatePerms(ids.server, ids.b);
+    const afterRole = await resolvePermissions(ids.b, ids.server);
+    assert.equal(hasPermission(afterRole, PERMS.CONNECT), false);
+    assert.equal(Boolean(await Members.findOne(ids.b, ids.server)), true);
+
+    const bSeesRoleRevocation = waitForEvent(b, 'social:left');
+    const aSeesRoleRevocation = waitForEvent(a, 'social:peers');
+    assert.equal(await reconcileSocialRoomAccess(io, ids.server, ids.b), 1);
+    assert.deepEqual(await bSeesRoleRevocation, { serverId: ids.server });
+    assert.deepEqual((await aSeesRoleRevocation).peers.map(p => p.userId), [ids.a]);
+    assert.deepEqual((await socialRoomStore.load(ids.server)).peers.map(p => p.userId), [ids.a]);
+
+    // Restore a default permission set. A new authenticated socket can opt in
+    // again; the old, revoked subscription must never auto-rejoin.
+    const restored = await Members.removeRole(ids.b, ids.server, ids.role);
+    assert.equal(Array.isArray(restored), true);
+    invalidatePerms(ids.server, ids.b);
+    assert.equal(hasPermission(await resolvePermissions(ids.b, ids.server), PERMS.CONNECT), true);
+    const bRejoined = waitForEvent(a, 'social:peers');
+    b = await connect(tokenFor(ids.b));
+    const bAccepted = waitForEvent(b, 'social:joined');
+    b.emit('social:join', { serverId: ids.server });
+    assert.deepEqual((await bAccepted).peers.map(p => p.userId), [ids.a, ids.b]);
+    assert.deepEqual((await bRejoined).peers.map(p => p.userId), [ids.a, ids.b]);
+    console.log('SOCIAL_3D_REAL_POSTGRES_ROLE_PERMISSION_REVOKE_OK:1/1:0_skipped');
 
     // Persisted membership ban must immediately evict socket audience AND
     // Redis avatar presence, WITHOUT waiting for another client movement.
@@ -231,6 +270,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
       // Delete only rows created for this run, never truncate production data.
       for (const [sql, params] of [
         ['DELETE FROM members WHERE "serverId"=$1', [ids.server]],
+        ['DELETE FROM roles WHERE "serverId"=$1', [ids.server]],
         ['DELETE FROM servers WHERE _id=$1', [ids.server]],
         ['DELETE FROM users WHERE _id = ANY($1::text[])', [[ids.a, ids.b, ids.outsider]]],
       ]) {
