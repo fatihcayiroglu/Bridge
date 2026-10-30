@@ -4,6 +4,10 @@ import {
 } from '../js/core/activities/pool-practice-physics.ts';
 import {acceptLocalPoolPlacement} from
   '../js/core/activities/pool-local-placement.ts';
+import {newLocalEightBallRules,resolveLocalEightBallShot} from
+  './prototypes/pool-eight-ball-rules.ts';
+import {placeLocalCueBall} from './prototypes/pool-ball-in-hand.ts';
+import {chooseLocalEightOnBreak} from './prototypes/pool-eight-on-break.ts';
 
 function eightOnBreak():PoolState {
   const base=newPoolPractice();
@@ -39,6 +43,26 @@ describe('strict local-only physical handoff into the WebGL table',()=>{
     expect(accepted?.balls.find(b=>b.id===1)).toEqual(state.balls.find(b=>b.id===1));
     expect(accepted?.pocketEvents).toEqual([{ballId:8,pocketIndex:0}]);
     expect(state.balls.find(b=>b.id===8)?.pocketed).toBe(true);
+  });
+  it('accepts real prototype ball-in-hand and black-on-break physical outputs without granting permission itself',()=>{
+    const old=newPoolPractice(),before={...old,shots:2};
+    const after={...before,shots:3,firstObjectHit:null,railAfterContact:false};
+    const rules=resolveLocalEightBallShot({
+      ...newLocalEightBallRules(),phase:'assigned',shotsResolved:2,
+      groups:['solids','stripes'],
+    },before,after);
+    expect(rules?.ballInHand).toBe('anywhere');
+    const placed=placeLocalCueBall(rules!,after,1,-.9,1.2);
+    expect(placed).not.toBeNull();
+    expect(acceptLocalPoolPlacement(after,placed!.table)?.balls.find(b=>b.id===0))
+      .toMatchObject({x:-.9,z:1.2});
+    const eightState=eightOnBreak();
+    const breakRules=resolveLocalEightBallShot(newLocalEightBallRules(),old,eightState);
+    expect(breakRules?.phase).toBe('eight-respot-required');
+    const respot=chooseLocalEightOnBreak(breakRules!,eightState,0,'spot-eight');
+    expect(respot).not.toBeNull();
+    expect(acceptLocalPoolPlacement(eightState,respot!.table)?.balls.find(b=>b.id===8)?.pocketed)
+      .toBe(false);
   });
   it('rejects target movement, unpocketing a numbered ball and fake black recovery',()=>{
     const state=newPoolPractice();
