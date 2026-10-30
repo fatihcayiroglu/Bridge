@@ -89,6 +89,25 @@ describe('local ball-in-hand permission and physical placement',()=>{
     expect(placeLocalCueBall({...rules,phase:'illegal-break-choice'},table,1,0,0)).toBeNull();
     expect(placeLocalCueBall({...rules,ballInHand:null},table,1,0,0)).toBeNull();
   });
+  it('rejects phantom ball-in-hand permission and inconsistent pocket totals',()=>{
+    const {rules,table}=fullRulesFoul(null);
+    expect(placeLocalCueBall({...rules,last:null},table,1,0,0)).toBeNull();
+    expect(placeLocalCueBall({...rules,last:{...rules.last!,foul:null}},table,1,0,0)).toBeNull();
+    expect(placeLocalCueBall({...rules,last:{...rules.last!,actor:1}},table,1,0,0)).toBeNull();
+    expect(placeLocalCueBall(rules,{...table,pocketed:3},1,0,0)).toBeNull();
+    expect(placeLocalCueBall(rules,{...table,scratches:-1},1,0,0)).toBeNull();
+  });
+  it('permits an actual subsequent rules shot only after ball-in-hand is placed',()=>{
+    const {rules,table}=fullRulesFoul(null);
+    const placed=placeLocalCueBall(rules,table,1,-.9,1.2);
+    expect(placed).not.toBeNull();
+    const after:PoolState={...placed!.table,shots:4,
+      firstObjectHit:10,railAfterContact:true,breakObjectRails:[]};
+    const next=resolveLocalEightBallShot(placed!.rules,placed!.table,after);
+    expect(next?.shotsResolved).toBe(4);
+    expect(next?.last?.actor).toBe(1);
+    expect(next?.ballInHand).toBeNull();
+  });
   it('requires explicit placement after wrong first ball or scratch, not only misses',()=>{
     for(const [hit,scratch] of [[10,false],[1,true]] as const) {
       const {rules,table}=fullRulesFoul(hit,scratch);
