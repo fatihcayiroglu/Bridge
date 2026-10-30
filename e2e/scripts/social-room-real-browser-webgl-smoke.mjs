@@ -29,7 +29,7 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
 }
 
 const worker = fork(workerPath, [], {
-  env: { ...process.env, NODE_ENV: 'integration', BRIDGE_SOCIAL_3D_MULTIPLAYER: '1' },
+  env: { ...process.env, NODE_ENV: 'integration', BRIDGE_SOCIAL_3D_MULTIPLAYER: '1', BRIDGE_MINI_GOLF_MULTIPLAYER: '1' },
   stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
 });
 let workerLogs = '';
@@ -105,6 +105,87 @@ try {
   assert.equal(both[1].api, 'webgl1');
   assert.deepEqual(both[0].ids, both[1].ids);
   assert.equal(both[0].ids.length, 2);
+
+  // Separate experimental Mini Golf authority: two REAL PostgreSQL users
+  // and Redis-backed turns through the same production Socket.IO bootstrap.
+  // No synthetic game events, fake scores, or trusting client coordinates.
+  for (const page of [alice, bob]) await page.evaluate(() => {
+    const s = window.__bridge3DSmoke.socket;
+    const game = window.__miniGolfProof = { states: [], errors: [], left: [] };
+    s.on('mini-golf:state', value => game.states.push(value));
+    s.on('mini-golf:error', value => game.errors.push(value));
+    s.on('mini-golf:left', value => game.left.push(value));
+  });
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId, userId:'forged',score:99}),
+    fixture.serverId);
+  await alice.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'waiting',
+    null, { timeout: 10000 });
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId}),
+    fixture.serverId);
+  await bob.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'playing',
+    null, { timeout: 10000 });
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}), fixture.serverId);
+  await alice.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'playing',
+    null, { timeout: 10000 });
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:shoot', {serverId,degrees:0,power:60}),
+    fixture.serverId);
+  await bob.waitForFunction(() =>
+    window.__miniGolfProof?.errors.some(e => e.code === 'GOLF_INVALID_TURN'),
+    null, { timeout: 10000 });
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:shoot',
+      {serverId,degrees:0,power:60,x:9999,strokes:99}),
+    fixture.serverId);
+  await alice.waitForFunction(() =>
+    window.__miniGolfProof?.states.at(-1)?.players?.[0]?.won === true,
+    null, { timeout: 10000 });
+  const firstGolfShot = await alice.evaluate(() => window.__miniGolfProof.states.at(-1));
+  assert.equal(firstGolfShot.players[0].strokes,1);
+  assert.equal(firstGolfShot.players[0].z,-3.8);
+  assert.equal(firstGolfShot.turnUserId,firstGolfShot.players[1].userId);
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),
+    fixture.serverId);
+  await bob.waitForFunction(() =>
+    window.__miniGolfProof?.states.at(-1)?.players?.[0]?.won === true,
+    null, { timeout: 10000 });
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:shoot', {serverId,degrees:0,power:60}),
+    fixture.serverId);
+  await bob.waitForFunction(() =>
+    window.__miniGolfProof?.states.at(-1)?.phase === 'finished',
+    null, { timeout: 10000 });
+  const completed = await bob.evaluate(() => window.__miniGolfProof.states.at(-1));
+  assert.deepEqual(completed.players.map(p => p.strokes),[1,1]);
+  assert.equal(completed.turnUserId,null);
+  await bob.evaluate(otherServerId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId:otherServerId}),
+    fixture.otherServerId);
+  await bob.waitForFunction(otherServerId =>
+    window.__miniGolfProof?.errors.some(e =>
+      e.code === 'GOLF_UNAVAILABLE' && e.serverId === otherServerId),
+    fixture.otherServerId, { timeout: 10000 });
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:leave', {serverId}),fixture.serverId);
+  await bob.waitForFunction(() => window.__miniGolfProof?.left.length === 1,
+    null, { timeout: 10000 });
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() =>
+    window.__miniGolfProof?.states.at(-1)?.phase === 'waiting',
+    null, { timeout: 10000 });
+  const afterExit = await alice.evaluate(() => window.__miniGolfProof.states.at(-1));
+  assert.equal(afterExit.players.length,1);
+  assert.equal(afterExit.players[0].strokes,0);
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:leave', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() => window.__miniGolfProof?.left.length === 1,
+    null, { timeout: 10000 });
+  console.log('BRIDGE_MINI_GOLF_REAL_PG_REDIS_TWO_PLAYER_AUTHORITY:2/2:0_skipped');
 
   // Alice is authenticated to TWO real PostgreSQL servers on the SAME
   // Socket.IO transport. A second server's legitimate join, authoritative
@@ -320,6 +401,20 @@ try {
     return state?.status === 'online' && state.lastFrame?.peers.length === 2;
   }, null, { timeout: 10000 })));
 
+  // Keep a real two-user Mini Golf match ACTIVE while Bob loses database
+  // membership. Existing socket stays connected, but reads must fail closed.
+  for (const page of [alice, bob]) {
+    const before = await page.evaluate(() => window.__miniGolfProof.states.length);
+    await page.evaluate(serverId =>
+      window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId}),fixture.serverId);
+    await page.waitForFunction(count => window.__miniGolfProof.states.length > count,
+      before, { timeout: 10000 });
+  }
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() =>
+    window.__miniGolfProof.states.at(-1)?.phase === 'playing',null,{timeout:10000});
+
   // Real PostgreSQL ban -> actual Bridge membership eviction -> real
   // Socket.IO membership:revoked. No synthetic socket event is injected.
   const revoked = new Promise((resolve, reject) => {
@@ -354,6 +449,27 @@ try {
   await alice.waitForFunction(() =>
     window.__bridge3DSmoke.lastFrame?.peers.length === 1,
     null, { timeout: 10000 });
+
+  const bobGolfStates = await bob.evaluate(() => window.__miniGolfProof.states.length);
+  await bob.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await bob.waitForFunction(() =>
+    window.__miniGolfProof.errors.some(e => e.code === 'GOLF_UNAVAILABLE'
+      && e.serverId === window.__bridge3DSmoke.lastFrame.serverId),
+    null, {timeout:10000});
+  assert.equal(await bob.evaluate(() => window.__miniGolfProof.states.length),bobGolfStates,
+    'revoked browser must not receive the other player\'s current Mini Golf match');
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() =>
+    window.__miniGolfProof.states.at(-1)?.phase === 'waiting' &&
+    window.__miniGolfProof.states.at(-1)?.players.length === 1,
+    null,{timeout:10000});
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:leave', {serverId}),fixture.serverId);
+  await alice.waitForFunction(() => window.__miniGolfProof.left.length === 2,
+    null,{timeout:10000});
+  console.log('BRIDGE_MINI_GOLF_REAL_PG_REVOKED_SYNC_FAIL_CLOSED:1/1:0_skipped');
 
   // The revoked socket may remain connected for other Bridge features, but
   // it must NOT silently enter the social audience again.
