@@ -2,9 +2,9 @@ import { describe,expect,it } from 'vitest';
 import { POOL_POCKETS, newPoolPractice, strikePool, stepPool,
   type PoolState, type PoolPocketEvent } from '../js/core/activities/pool-practice-physics.ts';
 import { newLocalEightBallRules, type LocalEightBallRules } from
-  '../js/core/activities/pool-eight-ball-rules.ts';
+  './prototypes/pool-eight-ball-rules.ts';
 import { declareLocalPoolCall, evaluateLocalPoolCall, resolveLocalCalledEightBallShot } from
-  '../js/core/activities/pool-called-pocket.ts';
+  './prototypes/pool-called-pocket.ts';
 
 const assigned=(group:'solids'|'stripes'='solids'):LocalEightBallRules=>({
   ...newLocalEightBallRules(),phase:'assigned',shotsResolved:2,currentPlayer:0,
