@@ -5,7 +5,7 @@ import {
 import type { Social3DPeer } from './social-room-wire.ts';
 import {
   selectSocialWebGLContext, socialRoomShaderSources, socialRoomRenderSize,
-  type SocialGraphicsApi, type SocialGraphicsQuality,
+  SOCIAL_GRAPHICS_QUALITY, type SocialGraphicsApi, type SocialGraphicsQuality,
 } from './social-room-render-policy.ts';
 
 /**
@@ -148,8 +148,7 @@ export function startLocalSocialRoom(
       }
     }
     // Quality-capped draw cadence; the host does not render while hidden.
-    const policy = socialRoomRenderSize(1, 1, 1, quality);
-    if (!lastDraw || timestamp - lastDraw >= 1000 / policy.targetFps) {
+    if (!lastDraw || timestamp - lastDraw >= 1000 / SOCIAL_GRAPHICS_QUALITY[quality].targetFps) {
       lastDraw = timestamp;
       const rect = canvas.getBoundingClientRect();
       const renderSize = socialRoomRenderSize(rect.width, rect.height, window.devicePixelRatio || 1, quality);
