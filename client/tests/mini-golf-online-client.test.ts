@@ -24,10 +24,10 @@ function transport() {
 }
 const waiting = {
   serverId: 'server1', revision: 1, phase: 'waiting', you: 'alice',
-  turnUserId: null, minPlayers: 2, maxPlayers: 8, players: [{ userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false }],
+  turnUserId: null, minPlayers: 2, maxPlayers: 8, rematchReady: [], players: [{ userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false }],
 } as const;
 const playing = {
-  serverId: 'server1', revision: 2, phase: 'playing', you: 'alice', turnUserId: 'alice', minPlayers: 2, maxPlayers: 8,
+  serverId: 'server1', revision: 2, phase: 'playing', you: 'alice', turnUserId: 'alice', minPlayers: 2, maxPlayers: 8, rematchReady: [],
   players: [
     { userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false },
     { userId: 'bob', x: 0, z: 3.6, strokes: 0, won: false },
@@ -159,6 +159,47 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     expect(statuses).toHaveBeenCalledWith('disconnected');
     expect(t.count('mini-golf:join')).toBe(1);
     expect(t.count('mini-golf:leave')).toBe(0);
+  });
+  it('emits rematch consent only once on finished rounds, then accepts a new round', () => {
+    const t=transport();
+    const session=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),vi.fn());
+    t.incoming('mini-golf:state',playing);
+    expect(session.rematch()).toBe(false);
+    const finished={...playing,revision:3,phase:'finished',turnUserId:null,
+      players:[{...playing.players[0],strokes:1,won:true},
+        {...playing.players[1],strokes:1,won:true}]};
+    t.incoming('mini-golf:state',finished);
+    expect(session.rematch()).toBe(true);
+    expect(session.rematch()).toBe(false);
+    expect(t.count('mini-golf:rematch')).toBe(1);
+    t.incoming('mini-golf:state',{...finished,revision:4,rematchReady:['alice']});
+    expect(session.match?.rematchReady).toEqual(['alice']);
+    expect(session.rematch()).toBe(false);
+    t.incoming('mini-golf:state',{...playing,revision:5});
+    expect(session.match?.phase).toBe('playing');
+    expect(session.match?.players[0]?.strokes).toBe(0);
+    session.dispose();
+  });
+  it('refuses corrupt and duplicate rematch votes, or rematch while a peer reconnects', () => {
+    const t=transport(), statuses=vi.fn();
+    const finished={...playing,revision:3,phase:'finished',turnUserId:null,
+      players:[{...playing.players[0],strokes:1,won:true},
+        {...playing.players[1],strokes:1,won:true}]};
+    const one=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    t.incoming('mini-golf:state',{...finished,rematchReady:['alice','alice']});
+    expect(one.active).toBe(false);
+    expect(statuses).toHaveBeenCalledWith('invalid');
+    const two=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    t.incoming('mini-golf:state',{...finished,rematchReady:['outside']});
+    expect(two.active).toBe(false);
+    const three=joinOnlineMiniGolf(t.socket,'server1',vi.fn(),statuses);
+    t.incoming('mini-golf:state',{...finished,players:[
+      {...finished.players[0],reconnecting:false},
+      {...finished.players[1],reconnecting:true},
+    ]});
+    expect(three.rematch()).toBe(false);
+    expect(t.count('mini-golf:rematch')).toBe(0);
+    three.dispose();
   });
   it('times out pending admissions and leaves without creating a ghost session', () => {
     vi.useFakeTimers();
