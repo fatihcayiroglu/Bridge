@@ -1,7 +1,7 @@
 /**
  * Bridge Activities: product catalog, NOT an assertion that these games are
- * implemented. The sole solo-practice prototype is LOCAL ONLY. Multiplayer
- * requires a separately reviewed server authority; no catalog ID can reach
+ * implemented. Local 3D practice games are independent of multiplayer.
+ * Online Mini Golf requires a separately reviewed server authority; no catalog ID can reach
  * activity:start simply because a local preview exists.
  */
 export type BridgeGameId =
@@ -22,7 +22,7 @@ export const BRIDGE_3D_GAME_CATALOG: readonly PlannedBridgeGame[] = Object.freez
   { id: 'mini-kart-racing', title: 'Mini Kart Racing', minPlayers: 2, maxPlayers: 8, category: 'racing', state: 'planned' },
   { id: 'parkour-party', title: 'Parkour Party', minPlayers: 2, maxPlayers: 16, category: 'party', state: 'planned' },
   { id: 'mini-golf', title: 'Mini Golf', minPlayers: 2, maxPlayers: 8, category: 'sports', state: 'solo-practice' },
-  { id: 'eight-ball-pool', title: '8-Ball Pool', minPlayers: 2, maxPlayers: 2, category: 'sports', state: 'planned' },
+  { id: 'eight-ball-pool', title: '8-Ball Pool', minPlayers: 2, maxPlayers: 2, category: 'sports', state: 'solo-practice' },
   { id: 'mini-football', title: 'Mini Football', minPlayers: 2, maxPlayers: 6, category: 'sports', state: 'planned' },
   { id: 'hide-and-seek-3d', title: 'Hide & Seek 3D', minPlayers: 3, maxPlayers: 12, category: 'party', state: 'planned' },
   { id: 'tower-chaos', title: 'Tower Chaos', minPlayers: 2, maxPlayers: 8, category: 'physics', state: 'planned' },
