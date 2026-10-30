@@ -5,12 +5,15 @@ import {
 import {
   selectSocialWebGLContext, socialRoomShaderSources, socialRoomRenderSize,
 } from './social-room-render-policy.ts';
+import { acceptLocalPoolPlacement } from './pool-local-placement.ts';
 
 /** 3D GPU billiards pocket practice, local-only with WebGL1 fallback. */
 export interface PoolPracticeHandle {
   readonly state: PoolState;
   readonly isGraphicsAvailable:boolean;
   shoot(angle:number,power:number):boolean;
+  /** Local-only physical handoff; NOT a network or rules authorization. */
+  placeLocalTable(next:PoolState):boolean;
   reset():void;
   dispose():void;
 }
@@ -213,6 +216,13 @@ export function startPoolPractice(
       const next=strikePool(state,angle,power);
       if(next===state)return false;
       state=next;onState(state);return true;
+    },
+    placeLocalTable(next){
+      if(disposed||lost||!gpu)return false;
+      const accepted=acceptLocalPoolPlacement(state,next);
+      if(!accepted)return false;
+      state=accepted;carry=0;lastTime=0;lastDraw=0;onState(state);
+      return true;
     },
     reset(){if(disposed)return;state=newPoolPractice();carry=0;onState(state);},
     dispose(){
