@@ -124,8 +124,12 @@ try {
   await bob.evaluate(serverId =>
     window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId}),
     fixture.serverId);
-  await bob.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'playing',
+  await bob.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'waiting' &&
+    window.__miniGolfProof?.states.at(-1)?.players.length === 2,
     null, { timeout: 10000 });
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:start', {serverId}),
+    fixture.serverId);
   await alice.evaluate(serverId =>
     window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}), fixture.serverId);
   await alice.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'playing',
