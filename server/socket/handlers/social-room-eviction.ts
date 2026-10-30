@@ -9,6 +9,8 @@
  * failure the operation throws: never claim the avatar roster is clean.
  */
 import type { Server as SocketIOServer } from 'socket.io';
+import { Members } from '../../db/repositories';
+import { PERMS, hasPermission, resolvePermissions } from '../../lib/permissions';
 import { publicSocialRoom, socialRoomStore, type SocialRoom } from './social-room-store';
 
 /**
@@ -44,4 +46,59 @@ export async function evictSocialUserFromRoom(
   if (!updated) return 0;
   io.to('social-3d:' + serverId).emit('social:peers', publicSocialRoom(updated.room));
   return updated.removed;
+}
+
+
+/**
+ * Reconcile the independent server-scoped 3D Social Space after actual
+ * server-role permissions or member-role assignments are committed.
+ *
+ * Unlike channel room eviction, social access uses server-wide VIEW_CHANNELS
+ * and CONNECT. Every affected in-flight admission sees a changed Redis
+ * generation; existing unauthorized sockets leave their delivery audience
+ * BEFORE the Redis avatar roster is published to remaining subscribers.
+ *
+ * Do not silently treat Redis failure or distributed adapter failure as a
+ * successful removal. Callers must invalidate the permission cache first.
+ */
+export async function reconcileSocialRoomAccess(
+  io: Pick<SocketIOServer, 'to' | 'in'> | null | undefined,
+  serverId: string,
+  targetUserId?: string,
+): Promise<number> {
+  if (process.env.BRIDGE_SOCIAL_3D_MULTIPLAYER !== '1' || !io || !serverId) return 0;
+  // A global role-permission edit affects every member, including joins which
+  // haven't yet reserved an avatar. Per-member assignment affects only one.
+  const fenceSubject = targetUserId || '__all__';
+  await socialRoomStore.withLock(serverId, async () => {
+    await socialRoomStore.markRevocationFence(serverId, fenceSubject);
+  });
+  const snapshot = await socialRoomStore.load(serverId);
+  const candidates = [...new Set(snapshot.peers.map(peer => peer.userId))]
+    .filter(id => !targetUserId || id === targetUserId);
+  let removed = 0;
+  for (const userId of candidates) {
+    let permitted = false;
+    try {
+      const member = await Members.findOne(userId, serverId);
+      if (member) {
+        const resolved = await resolvePermissions(userId, serverId);
+        permitted = hasPermission(resolved, PERMS.VIEW_CHANNELS)
+          && hasPermission(resolved, PERMS.CONNECT);
+      }
+    } catch {
+      permitted = false; // Fail closed on unreadable DB / permissions.
+    }
+    if (permitted) continue;
+
+    const socketRoom = 'social-3d:' + serverId;
+    const userSockets = await io.in('user:' + userId).fetchSockets();
+    for (const socket of userSockets) {
+      if (!socket.rooms.has(socketRoom)) continue;
+      await socket.leave(socketRoom);
+      socket.emit('social:left', { serverId });
+    }
+    removed += await evictSocialUserFromRoom(io, userId, serverId);
+  }
+  return removed;
 }
