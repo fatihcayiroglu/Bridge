@@ -97,6 +97,36 @@ describe('real renderer lifecycle against a deterministic WebGL command recorder
     expect(gl.deleteShader).toHaveBeenCalledTimes(2);
     handle?.dispose();
   });
+  it('Pool uploads 16 full spheres with real white caps for stripes 9–15, colored solids and a dark eight', () => {
+    const { canvas, gl } = surface('webgl1');
+    const game = startPoolPractice(canvas, vi.fn());
+    expect(game?.state.balls).toHaveLength(16);
+    frames(3);
+    const captured = (gl.bufferData as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const dynamic = captured.find(call => call[2] === gl.DYNAMIC_DRAW)?.[1];
+    expect(dynamic).toBeInstanceOf(Float32Array);
+    const verticesPerBall = 8 * 12 * 6;
+    const floatsPerBall = verticesPerBall * 6;
+    const data = dynamic as Float32Array;
+    expect(data.length).toBe(16 * floatsPerBall);
+    const color = (id:number,latitudeRow:number) => {
+      const position = game!.state.balls.findIndex(ball => ball.id === id);
+      expect(position).toBeGreaterThanOrEqual(0);
+      const firstVertex = position * floatsPerBall + latitudeRow * 12 * 6 * 6;
+      return Array.from(data.slice(firstVertex + 3, firstVertex + 6));
+    };
+    const stripeTop = color(9, 0);
+    const stripeBelt = color(9, 3);
+    const stripeBottom = color(9, 7);
+    expect(stripeTop[0]).toBeCloseTo(.96, 4);
+    expect(stripeTop[2]).toBeCloseTo(.93, 4);
+    expect(stripeBelt[2]).toBeLessThan(.60);
+    expect(stripeBottom[0]).toBeGreaterThan(.60);
+    expect(color(1, 0)[2]).toBeCloseTo(.15, 4); // solid yellow, not white
+    expect(color(8, 0)[0]).toBeLessThan(.1); // eight ball remains black
+    game?.dispose();
+    expect(pending.size).toBe(0);
+  });
   it('Pool fails closed on lost context and only resumes after explicit GPU recovery', () => {
     const { canvas, gl } = surface('webgl1');
     const lost = vi.fn(), restored = vi.fn();
