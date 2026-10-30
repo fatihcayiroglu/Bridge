@@ -221,6 +221,16 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
           [userId, ids.server, '[]', Date.now()]);
       }
     }
+    async function connectDenied(port, token, reason) {
+      const client = createClient('http://127.0.0.1:' + port, {
+        auth: { token }, transports: ['websocket'], forceNew: true,
+        reconnection: false, timeout: 6000,
+      });
+      clients.push(client);
+      const denied = await eventFrom(client, 'connect_error');
+      assert.ok(denied instanceof Error, 'real production middleware must reject ' + reason);
+      assert.equal(client.connected, false, reason + ' must not establish a socket');
+    }
     async function connect(port, userId) {
       const client = createClient('http://127.0.0.1:' + port, {
         auth: { token: sign(userId) },
@@ -244,6 +254,19 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
       workers.push(nodeB);
       const [portA, portB] = await Promise.all([nodeA.ready, nodeB.ready]);
       assert.notEqual(portA, portB, 'two actual separate network listeners');
+
+      // These three connections exercise the PRODUCTION auth middleware,
+      // including Redis-backed connection limits and token-version checks,
+      // before any user-room or Social Space handlers can be registered.
+      const wrongSig = jwt.sign({ id: ids.alice, username: ids.alice, v: 0 },
+        'wrong-signature-secret-32-bytes-minimum', { algorithm: 'HS256', expiresIn: '2m' });
+      const missingUser = sign(roomPrefix + '-not-in-database');
+      const revokedVersion = jwt.sign({ id: ids.bob, username: ids.bob, v: 99 },
+        process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '2m' });
+      await connectDenied(portA, wrongSig, 'invalid JWT signature');
+      await connectDenied(portB, missingUser, 'signed but missing PostgreSQL user');
+      await connectDenied(portB, revokedVersion, 'wrong persisted token version');
+      process.stdout.write('SOCIAL_3D_PRODUCTION_TWO_NODE_AUTH_DENIAL:3/3:0_skipped\n');
 
       const alice = await connect(portA, ids.alice);
       const bob = await connect(portB, ids.bob);
