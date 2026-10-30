@@ -37,7 +37,7 @@ function disk(out:number[],x:number,y:number,z:number,r:number,c:Color) {
       [x+Math.cos(b)*r,y,z+Math.sin(b)*r]]) out.push(...p,...c);
   }
 }
-function sphere(out:number[],x:number,y:number,z:number,c:Color) {
+function sphere(out:number[],x:number,y:number,z:number,c:Color,striped=false) {
   const r=POOL_RADIUS;
   for(let i=0;i<8;i++)for(let j=0;j<12;j++){
     const t0=i*Math.PI/8,t1=(i+1)*Math.PI/8,
@@ -47,7 +47,10 @@ function sphere(out:number[],x:number,y:number,z:number,c:Color) {
     ];
     const a=point(t0,p0),b=point(t1,p0),d=point(t0,p1),e=point(t1,p1);
     const light=.65+.35*Math.max(0,Math.cos(t0));
-    for(const v of [a,b,e,a,e,d])out.push(...v,...c.map(n=>n*light));
+    // Mesh-only white polar caps + a colored equatorial belt visibly
+    // distinguish 9–15 from solids without textures or additional draw calls.
+    const material:Color=striped&&(i<2||i>=6)?[.96,.96,.93]:c;
+    for(const v of [a,b,e,a,e,d])out.push(...v,...material.map(n=>n*light));
   }
 }
 function table():Float32Array {
@@ -146,9 +149,9 @@ export function startPoolPractice(
     };
     render(gpu.staticBuffer,staticData.length/6);
     const dynamic:number[]=[];
-    // Cue + solids (1–7), eight ball, stripes (9–15). Stripes use
-    // contrasting lighter shades in this mesh-only prototype: no numbered
-    // texture or competitive 8-ball rule is implied.
+    // Cue + solids (1–7), eight ball, stripes (9–15). Stripes also
+    // receive contrasting white polar caps; numbered textures and
+    // competitive 8-ball rules are not implemented.
     const palette:Color[]=[
       [1,1,.96], [.97,.78,.15], [.18,.37,.86], [.94,.23,.25],
       [.52,.22,.68], [.98,.55,.14], [.18,.58,.32], [.57,.18,.17],
@@ -156,7 +159,7 @@ export function startPoolPractice(
       [.77,.58,.92], [1,.76,.47], [.56,.86,.70], [.84,.48,.45],
     ];
     for(const ball of state.balls)if(!ball.pocketed){
-      sphere(dynamic,ball.x,.16,ball.z,palette[ball.id]??[1,1,1]);
+      sphere(dynamic,ball.x,.16,ball.z,palette[ball.id]??[1,1,1],ball.id>=9);
     }
     gl.bindBuffer(gl.ARRAY_BUFFER,gpu.dynamicBuffer);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(dynamic),gl.DYNAMIC_DRAW);
