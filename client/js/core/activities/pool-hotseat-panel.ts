@@ -2,7 +2,7 @@ import {
   startLocalHotSeatLiveSession,type LocalHotSeatLiveSession,
 } from './pool-local-live-session.ts';
 import {type LocalHotSeatMatch} from './pool-local-hotseat.ts';
-import {type EightBallPhase,type EightBallPlayer} from './pool-eight-ball-rules.ts';
+import {type EightBallPhase} from './pool-eight-ball-rules.ts';
 import {activityStringsForLanguage} from './bridge-activities-copy.ts';
 
 export interface LocalPoolHotSeatPanelHandle { dispose():void; }
@@ -112,23 +112,22 @@ export function showLocalPoolHotSeat(
     pocket.disabled=!called||safety.checked;
     decisions.replaceChildren();
     if(!available)return;
-    const run=(act:()=>boolean)=>act();
     if(rules.phase==='choose-group'){
-      offer(s.poolHotSeatSolids,()=>run(()=>live!.chooseGroup(actor,'solids')));
-      offer(s.poolHotSeatStripes,()=>run(()=>live!.chooseGroup(actor,'stripes')));
+      offer(s.poolHotSeatSolids,()=>live!.chooseGroup(actor,'solids'));
+      offer(s.poolHotSeatStripes,()=>live!.chooseGroup(actor,'stripes'));
     }else if(rules.phase==='illegal-break-choice'){
-      offer(s.poolHotSeatAccept,()=>run(()=>live!.chooseIllegalBreak(actor,'accept-position')));
+      offer(s.poolHotSeatAccept,()=>live!.chooseIllegalBreak(actor,'accept-position'));
       offer(s.poolHotSeatRerackIncoming,
-        ()=>run(()=>live!.chooseIllegalBreak(actor,'rerack-incoming-break')));
+        ()=>live!.chooseIllegalBreak(actor,'rerack-incoming-break'));
       offer(s.poolHotSeatRerackOriginal,
-        ()=>run(()=>live!.chooseIllegalBreak(actor,'rerack-original-break')));
+        ()=>live!.chooseIllegalBreak(actor,'rerack-original-break'));
     }else if(rules.phase==='break-foul-choice'){
       offer(s.poolHotSeatHeadString,
-        ()=>run(()=>live!.chooseBreakFoul(actor,'take-head-string')));
-      offer(s.poolHotSeatAccept,()=>run(()=>live!.chooseBreakFoul(actor,'accept-position')));
+        ()=>live!.chooseBreakFoul(actor,'take-head-string'));
+      offer(s.poolHotSeatAccept,()=>live!.chooseBreakFoul(actor,'accept-position'));
     }else if(rules.phase==='eight-respot-required'){
-      offer(s.poolHotSeatSpotEight,()=>run(()=>live!.chooseEightOnBreak(actor,'spot-eight')));
-      offer(s.poolHotSeatRerack,()=>run(()=>live!.chooseEightOnBreak(actor,'rerack')));
+      offer(s.poolHotSeatSpotEight,()=>live!.chooseEightOnBreak(actor,'spot-eight'));
+      offer(s.poolHotSeatRerack,()=>live!.chooseEightOnBreak(actor,'rerack'));
     }
     if(rules.ballInHand!==null){
       const x=make('input') as HTMLInputElement,z=make('input') as HTMLInputElement;
@@ -136,7 +135,8 @@ export function showLocalPoolHotSeat(
       z.type='number';z.step='0.1';z.min='-3.8';z.max='3.8';z.value='2.7';
       decisions.append(field('X','bridge-pool-hotseat-place-x',x),
         field('Z','bridge-pool-hotseat-place-z',z));
-      offer(s.poolHotSeatPlace,()=>run(()=>live!.placeCue(actor,Number(x.value),Number(z.value))));
+      offer(s.poolHotSeatPlace,()=>x.value.trim()!==''&&z.value.trim()!==''&&
+        live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
   container.append(back,heading,help,canvas,status,notice,controls,decisions);
