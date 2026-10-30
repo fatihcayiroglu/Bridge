@@ -23,7 +23,28 @@ type PollRow = {
 
 export type PollMutationResult =
   | { status: 'ok'; poll: PollRow }
-  | { status: 'not_found' | 'closed' | 'expired' | 'single_choice' | 'invalid_option' | 'vote_change_forbidden' | 'has_votes' };
+  | { status: 'not_found' | 'closed' | 'expired' | 'parent_unavailable' | 'single_choice' | 'invalid_option' | 'vote_change_forbidden' | 'has_votes' };
+
+/**
+ * P7 D2: statement-time, tenant-scoped parent availability predicate for
+ * atomic poll writes. A route preflight is not a transaction barrier: the
+ * channel may expire or gain a tombstone before the actual UPDATE. Keep the
+ * check inside the PostgreSQL UPDATE using the database clock. This does
+ * not claim that PostgreSQL can roll back an already committed vote if the
+ * channel expires between this statement and COMMIT.
+ *
+ * Do not use this predicate to block vote withdrawal: erasure remains
+ * permitted even after the parent expires.
+ */
+const LIVE_POLL_PARENT_WRITE_SQL = [
+  'AND EXISTS (SELECT 1 FROM channels c',
+  ' WHERE c._id = polls."channelId" AND c."serverId" = polls."serverId"',
+  ' AND c."expiryVersion" IS NOT NULL AND c."expiryVersion" >= 0',
+  ' AND (c."expiresAt" IS NULL OR (c."expiresAt" > 0 AND c."expiryVersion" > 0',
+  '   AND c."expiresAt" > FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT))',
+  ' AND NOT EXISTS (SELECT 1 FROM channel_expiry_tombstones t',
+  '   WHERE t."channelId" = c._id))',
+].join('\n');
 
 function normalizeOptions(value: unknown): PollOption[] {
   if (!Array.isArray(value)) return [];
@@ -149,10 +170,18 @@ class PollRepository {
         if (!alreadySelected) selected.votes.push(userId);
       }
 
+      const parentGuard = mode === 'remove' ? '' : `\n${LIVE_POLL_PARENT_WRITE_SQL}`;
       const updated = await client.query<PollRow>(
-        'UPDATE polls SET options = $2::jsonb WHERE _id = $1 RETURNING *',
+        `UPDATE polls SET options = $2::jsonb WHERE _id = $1${parentGuard} RETURNING *`,
         [id, JSON.stringify(poll.options)],
       );
+      // A channel may have expired/tombstoned since the HTTP preflight.
+      // A refused UPDATE changes no poll data; do not commit an empty write
+      // and never treat it as a successful vote. Withdrawal is exempt.
+      if (!updated.rows.length) {
+        await client.query('ROLLBACK');
+        return { status: mode === 'remove' ? 'not_found' : 'parent_unavailable' };
+      }
       await client.query('COMMIT');
       const out = updated.rows[0]!;
       out.options = normalizeOptions(out.options);
@@ -213,8 +242,13 @@ class PollRepository {
         assignments.push(`"${key}" = $${params.length}${cast}`);
       }
       const updated = await client.query<PollRow>(
-        `UPDATE polls SET ${assignments.join(', ')} WHERE _id = $1 RETURNING *`, params,
+        `UPDATE polls SET ${assignments.join(', ')} WHERE _id = $1
+${LIVE_POLL_PARENT_WRITE_SQL} RETURNING *`, params,
       );
+      if (!updated.rows.length) {
+        await client.query('ROLLBACK');
+        return { status: 'parent_unavailable' };
+      }
       await client.query('COMMIT');
       const out = updated.rows[0]!;
       out.options = normalizeOptions(out.options);
