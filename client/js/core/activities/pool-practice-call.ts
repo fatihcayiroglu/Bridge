@@ -14,17 +14,34 @@ export interface PracticePocketCall {
 }
 export type PracticePocketResult = 'made' | 'missed';
 
+/** A declaration may only refer to a genuine settled 16-ball practice inventory. */
+function validReadyInventory(state:PoolState):boolean {
+  if(!Array.isArray(state.balls)||state.balls.length!==16)return false;
+  const ids=new Set<number>();
+  let targets=0;
+  for(const ball of state.balls) {
+    if(!ball||!Number.isSafeInteger(ball.id)||ball.id<0||ball.id>15||
+        ids.has(ball.id)||typeof ball.pocketed!=='boolean'||
+        ![ball.x,ball.z,ball.vx,ball.vz].every(Number.isFinite)||
+        ball.vx!==0||ball.vz!==0||
+        (ball.id===0&&ball.pocketed))return false;
+    ids.add(ball.id);
+    if(ball.id!==0&&ball.pocketed)targets++;
+  }
+  return ids.size===16&&targets===state.pocketed;
+}
+
 export function declarePracticePocketCall(
   state:PoolState, ballId:number, pocketIndex:number,
 ):PracticePocketCall|null {
-  if(state.status!=='ready'||!Number.isSafeInteger(state.shots)||state.shots>=999||
+  if(state.status!=='ready'||!Number.isSafeInteger(state.shots)||
+      state.shots<0||state.shots>=999||
       !Number.isSafeInteger(ballId)||ballId<1||ballId>15||
       !Number.isSafeInteger(pocketIndex)||pocketIndex<0||
       pocketIndex>=POOL_POCKETS.length||
-      !Number.isSafeInteger(state.pocketed)||state.pocketed<0||
+      !Number.isSafeInteger(state.pocketed)||state.pocketed<0||state.pocketed>15||
       !Number.isSafeInteger(state.scratches)||state.scratches<0||
-      state.balls.length!==16||
-      state.pocketed!==state.balls.filter(b=>b.id!==0&&b.pocketed).length||
+      state.scratches>state.shots||!validReadyInventory(state)||
       !state.balls.some(b=>b.id===ballId&&!b.pocketed))return null;
   return {shot:state.shots+1,ballId,pocketIndex,
     pocketedBefore:state.pocketed,scratchesBefore:state.scratches};
