@@ -200,12 +200,17 @@ describe('3D Social Space authority and presence', () => {
   it('rejects a pending stale join when the user is revoked during the DB lookup', async () => {
     const sid = server(), io = makeIo(), s = wire('revoked', sid, io);
     let allowMembership!: (value: unknown) => void;
+    let membershipEntered!: () => void;
+    const membershipStarted = new Promise<void>(resolve => { membershipEntered = resolve; });
     const membershipPending = new Promise(resolve => { allowMembership = resolve; });
-    mockMembersFindOne.mockImplementationOnce(() => membershipPending);
+    mockMembersFindOne.mockImplementationOnce(() => {
+      membershipEntered();
+      return membershipPending;
+    });
     const pending = s.trigger('social:join', { serverId: sid });
-    // Wait until the handler is blocked on the first permission lookup.
-    await Promise.resolve();
-    await Promise.resolve();
+    // This handshake makes the overlap deterministic: the handler already
+    // captured the old generation and is blocked on actual membership lookup.
+    await membershipStarted;
     await socialRoomStore.withLock(sid, () => socialRoomStore.markRevocationFence(sid, 'revoked'));
     s.rooms.delete('server:' + sid);
     allowMembership({ userId: 'revoked', banned: false });
