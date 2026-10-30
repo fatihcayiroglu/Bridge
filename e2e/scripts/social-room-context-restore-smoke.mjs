@@ -58,7 +58,7 @@ try {
       const s = window.__socialGraphicsLifecycle;
       const gl = s.canvas.getContext(s.api === 'webgl2' ? 'webgl2' : 'webgl');
       return s.holder.isGraphicsAvailable && Boolean(gl?.getParameter(gl.CURRENT_PROGRAM));
-    }, { timeout: 8000 });
+    }, null, { timeout: 8000 });
 
     const allowed = await page.evaluate(() => {
       const { canvas, api } = window.__socialGraphicsLifecycle;
@@ -76,7 +76,7 @@ try {
     await page.waitForFunction(() => {
       const s = window.__socialGraphicsLifecycle;
       return s.lost === 1 && !s.holder.isGraphicsAvailable;
-    }, { timeout: 8000 });
+    }, null, { timeout: 8000 });
     const lostRejectsPeers = await page.evaluate(() => {
       const s = window.__socialGraphicsLifecycle;
       return s.holder.setOnlinePeers([{
@@ -91,7 +91,7 @@ try {
       const gl = s.canvas.getContext(s.api === 'webgl2' ? 'webgl2' : 'webgl');
       return s.restored === 1 && s.holder.isGraphicsAvailable &&
         Boolean(gl?.getParameter(gl.CURRENT_PROGRAM));
-    }, { timeout: 10000 });
+    }, null, { timeout: 10000 });
 
     // Simulate repeated foreground redraw and disposal after recovery.
     await page.evaluate(() => {
