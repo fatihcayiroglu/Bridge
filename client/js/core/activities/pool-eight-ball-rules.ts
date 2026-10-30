@@ -1,4 +1,4 @@
-import type { PoolState } from './pool-practice-physics.ts';
+import { newPoolPractice, type PoolState } from './pool-practice-physics.ts';
 
 /**
  * LOCAL ONLY: a strict, pure rules foundation for future hot-seat 8-ball.
@@ -174,4 +174,40 @@ export function chooseLocalEightBallGroup(
   const groups:readonly [EightBallGroup,EightBallGroup]=rules.currentPlayer===0
     ?[group,opposite]:[opposite,group];
   return {...rules,groups,phase:'assigned'};
+}
+
+/**
+ * Atomic local-only response to an illegal break. The three WPA choices are
+ * explicit: accept the untouched settled layout, or physically re-rack with
+ * the incoming/original player breaking. A scratch cannot silently accept
+ * the solo-practice auto-re-spotted cue as legal ball-in-hand: fail closed.
+ * This API is not bound to Bridge UI or a socket and does not modify inputs.
+ */
+export type IllegalBreakChoice =
+  | 'accept-position' | 'rerack-incoming-break' | 'rerack-original-break';
+export interface IllegalBreakResolution {
+  readonly rules: LocalEightBallRules;
+  readonly table: PoolState;
+}
+export function chooseLocalIllegalBreak(
+  rules: LocalEightBallRules,
+  table: PoolState,
+  choice: IllegalBreakChoice,
+): IllegalBreakResolution | null {
+  const last=rules.last;
+  if(rules.phase!=='illegal-break-choice'||rules.winner!==null||
+      !last||last.actor===rules.currentPlayer||last.pocketed.length!==0||
+      table.status!=='ready'||table.shots!==rules.shotsResolved||
+      !mapBalls(table)||table.pocketed!==0||
+      (choice!=='accept-position'&&choice!=='rerack-incoming-break'&&
+       choice!=='rerack-original-break'))return null;
+  if(choice==='accept-position') {
+    // A scratch or another simultaneous foul needs an explicit legal
+    // head-string ball-in-hand flow before continuing: not implemented.
+    if(last.foul!=='illegal-break'||table.scratches!==0)return null;
+    return {rules:{...rules,phase:'open'},table};
+  }
+  const breaker=choice==='rerack-incoming-break'?rules.currentPlayer:last.actor;
+  return {rules:{...newLocalEightBallRules(),currentPlayer:breaker},
+    table:newPoolPractice()};
 }
