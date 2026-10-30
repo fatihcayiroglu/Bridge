@@ -178,6 +178,32 @@ describe('3D Social Space authority and presence', () => {
     expect((await socialRoomStore.load(sid)).peers).toEqual([]);
   });
 
+  it('cancels an in-flight join after the user closes the room before permission resolves', async () => {
+    const sid = server(), io = makeIo(), s = wire('user-pending', sid, io);
+    let release!: (value: unknown) => void;
+    const permissionPending = new Promise(resolve => { release = resolve; });
+    mockMembersFindOne.mockImplementationOnce(() => permissionPending);
+    const pending = s.trigger('social:join', { serverId: sid });
+    // The server received the request but DB permissions have not resolved.
+    await Promise.resolve();
+    await s.trigger('social:leave', { serverId: sid });
+    expect(last(s, 'social:left')).toEqual({ serverId: sid });
+    release({ userId: 'user-pending', banned: false });
+    await pending;
+    expect(last(s, 'social:joined')).toBeUndefined();
+    expect(s.rooms.has('social-3d:' + sid)).toBe(false);
+    expect((await socialRoomStore.load(sid)).peers).toHaveLength(0);
+    expect(io.events).toHaveLength(0);
+  });
+
+  it('double join does not create duplicate participant slots', async () => {
+    const sid = server(), io = makeIo(), s = wire('user-one', sid, io);
+    await s.trigger('social:join', { serverId: sid });
+    await s.trigger('social:join', { serverId: sid });
+    expect((await socialRoomStore.load(sid)).peers).toHaveLength(1);
+    expect(s.emitted.filter(e => e.name === 'social:joined')).toHaveLength(1);
+  });
+
   it('caps real peer capacity at 16 and rejects the seventeenth', async () => {
     const sid = server(), io = makeIo();
     const peers = Array.from({length: SOCIAL_SPACE_MAX_PEERS + 1}, (_, i) => wire('user-' + i, sid, io));
