@@ -110,6 +110,9 @@ describe('local-only WPA 8-ball-on-break choices and physical respot',()=>{
     expect(chooseLocalEightOnBreak(rules,table,0,'invalid' as never)).toBeNull();
     expect(chooseLocalEightOnBreak({...rules,phase:'finished'},table,0,'spot-eight')).toBeNull();
     expect(chooseLocalEightOnBreak(rules,{...table,status:'moving'},0,'spot-eight')).toBeNull();
+    expect(chooseLocalEightOnBreak({...rules,last:{...rules.last!,actor:4 as never}},table,0,'spot-eight')).toBeNull();
+    expect(chooseLocalEightOnBreak({...rules,last:{...rules.last!,pocketed:null as never}},table,0,'spot-eight')).toBeNull();
+    expect(chooseLocalEightOnBreak(rules,{...table,scratches:2},0,'spot-eight')).toBeNull();
     expect(chooseLocalEightOnBreak(rules,{...table,shots:2},0,'spot-eight')).toBeNull();
     expect(chooseLocalEightOnBreak(rules,{...table,pocketed:3},0,'spot-eight')).toBeNull();
     expect(chooseLocalEightOnBreak(rules,{...table,pocketEvents:[]},0,'spot-eight')).toBeNull();
