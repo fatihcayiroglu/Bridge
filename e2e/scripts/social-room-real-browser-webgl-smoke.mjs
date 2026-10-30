@@ -314,6 +314,71 @@ try {
   assert.ok(postDeny.subsequent.every(count => count === 1),
     'a revoked user must not be broadcast back into the room');
 
+  // Mount the actual production Bridge Activities panel (not a replacement
+  // test UI), behind the real BridgeRegistry and the real authenticated
+  // Socket.IO middleware. The surrounding app shell/CSS is a fixture.
+  const panelContext = await browser.newContext({ viewport: { width: 850, height: 600 } });
+  const panelPage = await panelContext.newPage();
+  pages.push({ page: panelPage, context: panelContext });
+  await panelPage.goto('http://127.0.0.1:' + fixture.port + '/');
+  await panelPage.addScriptTag({ content: built.outputFiles[0].text });
+  await panelPage.evaluate(({ port, token, serverId }) =>
+    window.BridgeSocialRealBrowser.mountRealActivitiesPanel(port, token, serverId),
+    { port: fixture.port, token: fixture.aliceToken, serverId: fixture.serverId });
+  await panelPage.waitForFunction(() =>
+    window.__bridge3DPanel?.ready &&
+    Boolean(document.querySelector('.bridge-activities-dialog canvas')) &&
+    document.getElementById('app')?.inert === true,
+    null, { timeout: 12000 });
+  assert.equal(await panelPage.locator('.bridge-activities-card').count(), 0,
+    'social tab must not auto-mount the games catalog');
+  assert.equal(await alice.evaluate(() => window.__bridge3DSmoke.lastFrame.peers.length), 1,
+    'opening the real panel must not autojoin the social network');
+  assert.match(await panelPage.locator('.bridge-activities-help').first().textContent(),
+    /experimental room/, 'shipped help must describe gated multiplayer honestly');
+
+  await panelPage.getByRole('button', { name: 'Try shared room (experimental)' }).click();
+  await panelPage.waitForFunction(() =>
+    document.querySelector('p.bridge-room-status[role="status"]')?.textContent?.includes('In shared room'),
+    null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 2,
+    null, { timeout: 10000 });
+
+  // A real user switching to Games tears down the shared 3D subscription.
+  // The 10 selected mini games remain correctly marked planned, not playable.
+  await panelPage.getByRole('tab', { name: '3D Mini Games' }).click();
+  assert.equal(await panelPage.locator('.bridge-activities-card').count(), 10);
+  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 10);
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+
+  // Switching back does not silently reconnect; explicit user opt-in is
+  // required. Logout must close the modal and revoke the live avatar.
+  await panelPage.getByRole('tab', { name: '3D Social Space' }).click();
+  assert.equal(await panelPage.getByRole('button',
+    { name: 'Try shared room (experimental)' }).count(), 1);
+  assert.equal(await alice.evaluate(() => window.__bridge3DSmoke.lastFrame.peers.length), 1);
+  await panelPage.getByRole('button', { name: 'Try shared room (experimental)' }).click();
+  await panelPage.waitForFunction(() =>
+    document.querySelector('p.bridge-room-status[role="status"]')?.textContent?.includes('In shared room'),
+    null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 2,
+    null, { timeout: 10000 });
+  await panelPage.evaluate(() => document.dispatchEvent(new Event('bridge:auth-logout')));
+  await panelPage.waitForFunction(() =>
+    !document.querySelector('.bridge-activities-overlay') &&
+    document.getElementById('app')?.inert === false,
+    null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+  assert.deepEqual(await panelPage.evaluate(() =>
+    window.__bridge3DPanel.errors), [], 'real panel auth must have no transport errors');
+
+  console.log('SOCIAL_3D_REAL_ACTIVITIES_PANEL_JOIN_SWITCH_LOGOUT:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_SERVER_ERROR_LEAVE:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MEMBERSHIP_REVOKED:1/1:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_WEBGL_TWO_USERS:2/2:0_skipped');
