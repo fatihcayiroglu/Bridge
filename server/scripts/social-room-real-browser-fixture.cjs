@@ -35,7 +35,8 @@ const serverId = testId + '_server';
 const otherServerId = testId + '_other';
 const alice = testId + '_alice';
 const bob = testId + '_bob';
-const users = [alice, bob];
+const charlie = testId + '_charlie';
+const users = [alice, bob, charlie];
 const q = (sql, args = []) => db._pool.query(sql, args);
 let seeded = false;
 let io;
@@ -157,7 +158,7 @@ async function main() {
     { algorithm: 'HS256', expiresIn: '2m' });
   process.send({ type: 'ready', port,
     serverId, otherServerId, aliceUsername: alice, proofPassword,
-    aliceToken: token(alice), bobToken: token(bob) });
+    aliceToken: token(alice), bobToken: token(bob), charlieToken: token(charlie) });
 }
 
 process.on('message', async msg => {
