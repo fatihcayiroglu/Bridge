@@ -231,6 +231,7 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
     shoot(i: number, degrees: number, power: number) {
       players[i]!.socket.emit('mini-golf:shoot', { serverId, degrees, power });
     },
+    rematch(i: number) { players[i]!.socket.emit('mini-golf:rematch', { serverId }); },
     leave(i: number) { players[i]!.socket.emit('mini-golf:leave', { serverId }); },
     /** A real transport drop. Never sends a voluntary leave. */
     drop(i: number) { players[i]!.socket.disconnect(); },
