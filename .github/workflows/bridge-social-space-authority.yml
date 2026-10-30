@@ -90,6 +90,8 @@ on:
       - 'client/js/core/activities/pool-practice-webgl.ts'
       - 'client/tests/pool-practice-physics.test.ts'
       - 'client/tests/prototypes/pool-eight-ball-rules.ts'
+      - 'client/tests/prototypes/pool-local-hotseat.ts'
+      - 'client/tests/pool-local-hotseat.test.ts'
       - 'client/tests/pool-eight-ball-rules.test.ts'
       - 'client/tests/pool-ball-in-hand.test.ts'
       - 'client/tests/prototypes/pool-called-pocket.ts'
