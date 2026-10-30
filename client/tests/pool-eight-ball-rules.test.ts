@@ -44,6 +44,20 @@ describe('8-ball local-only adjudication foundation — no online or official ru
     expect(nextShot.firstObjectHit).toBeNull();
     expect(nextShot.railAfterContact).toBe(false);
   });
+  it('can score a full real 15-ball break using only emitted physics evidence',()=>{
+    const before=newPoolPractice();
+    let after=strikePool(before,0,100);
+    for(let i=0;i<6000&&after.status==='moving';i++)after=stepPool(after);
+    expect(after.status).not.toBe('moving');
+    expect(after.shots).toBe(1);
+    const next=resolveLocalEightBallShot(newLocalEightBallRules(),before,after);
+    expect(next).not.toBeNull();
+    expect(next?.shotsResolved).toBe(1);
+    expect(next?.last?.firstObjectHit).toBe(after.firstObjectHit);
+    expect(next?.last?.pocketed).toEqual(after.balls
+      .filter(ball=>ball.id!==0&&ball.pocketed).map(ball=>ball.id).sort((a,b)=>a-b));
+    expect(next?.winner).toBeNull();
+  });
   it('keeps groups open on break and passes an empty legal shot',()=>{
     const {rules,after}=resolve(newLocalEightBallRules(),newPoolPractice(),
       {first:1,rail:true});
