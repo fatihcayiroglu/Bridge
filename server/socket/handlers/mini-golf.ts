@@ -10,7 +10,7 @@ import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions'
 import {
   golfMatchStore, emptyGolfMatch, resolveGolfShot, currentGolfTurn,
   golfGameOver, publicGolfMatch, removeGolfPlayer,
-  expireGolfSeats, suspendGolfSeat, resumeGolfSeat,
+  expireGolfSeats, suspendGolfSeat, resumeGolfSeat, voteGolfRematch,
   GOLF_MIN_PLAYERS, GOLF_MAX_PLAYERS,
 } from './mini-golf-match';
 
@@ -210,6 +210,33 @@ export function registerMiniGolfHandlers(
     });
     if (denial || !game) { reject(serverId, 'GOLF_INVALID_TURN'); return; }
     if (!await authorized(socket, userId, serverId)) { await remove(serverId); reject(serverId); return; }
+    reply(game);
+  }));
+
+  socket.on('mini-golf:rematch', isolateSocketHandler(socket, 'mini-golf:rematch', async (payload: unknown) => {
+    const serverId = serverFrom(payload);
+    if (!serverId || disconnected || !joined.has(serverId) ||
+        !await authorized(socket, userId, serverId)) {
+      reject(serverId); return;
+    }
+    let denied = false;
+    const game = await golfMatchStore.withLock(serverId, async () => {
+      if (disconnected || !await authorized(socket, userId, serverId)) {
+        denied = true; return null;
+      }
+      const state = await loadFresh(serverId);
+      if (!voteGolfRematch(state, userId, socket.id)) {
+        denied = true; return null;
+      }
+      await golfMatchStore.save(serverId, state);
+      return state;
+    });
+    if (denied || !game || disconnected) {
+      reject(serverId, 'GOLF_REMATCH_UNAVAILABLE'); return;
+    }
+    if (!await authorized(socket, userId, serverId)) {
+      await remove(serverId); reject(serverId); return;
+    }
     reply(game);
   }));
 
