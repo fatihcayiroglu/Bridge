@@ -5,7 +5,8 @@ import {newPoolPractice,strikePool,stepPool,type PoolState} from
 import {acceptLocalPoolPlacement} from '../js/core/activities/pool-local-placement.ts';
 import {startPoolPractice,type PoolPracticeHandle} from '../js/core/activities/pool-practice-webgl.ts';
 
-const renderer=vi.hoisted(()=>({disposes:vi.fn(),mode:'real' as 'real'|'forged'}));
+const renderer=vi.hoisted(()=>({disposes:vi.fn(),
+  mode:'real' as 'real'|'forged'|'deferred-forged',emit:null as null|(()=>void)}));
 vi.mock('../js/core/exclusive-surface.ts',()=>({closeExclusivePeers:vi.fn()}));
 vi.mock('../js/core/bridge-registry.ts',()=>({BridgeRegistry:{
   register:vi.fn(),call:vi.fn(()=>null),get:vi.fn(()=>null),
@@ -24,6 +25,9 @@ vi.mock('../js/core/activities/pool-practice-webgl.ts',()=>({
         state=fired;onState(state);
         if(renderer.mode==='forged'){
           onState({...state,status:'ready',pocketed:15});return true;
+        }
+        if(renderer.mode==='deferred-forged'){
+          renderer.emit=()=>onState({...state,status:'ready',pocketed:15});return true;
         }
         for(let i=0;i<6000&&state.status==='moving';i++)state=stepPool(state);
         if(state.status==='moving')throw Error('STROKE_DID_NOT_SETTLE');
@@ -47,7 +51,7 @@ function click(selector:string):void {
   el!.click();
 }
 beforeEach(()=>{
-  renderer.disposes.mockClear();renderer.mode='real';
+  renderer.disposes.mockClear();renderer.mode='real';renderer.emit=null;
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
 });
@@ -98,4 +102,23 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     expect(document.querySelector('.bridge-pool-hotseat-status')?.textContent)
       .not.toContain('Winning player');
   });
+  it('shows a blocked warning when a delayed fabricated renderer frame arrives',()=>{
+    renderer.mode='deferred-forged';
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    click('.bridge-pool-hotseat-launch');
+    click('.bridge-pool-hotseat-shoot');
+    expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
+      .toContain('Waiting for motion');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(true);
+    renderer.emit?.();
+    expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
+      .toContain('could not be verified');
+    expect(document.querySelector('.bridge-pool-hotseat-status')?.textContent)
+      .toContain('Shots: 0');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(true);
+  });
+
 });
