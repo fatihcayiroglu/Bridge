@@ -1,0 +1,63 @@
+name: Bridge Activities 3D foundation (supplemental)
+
+# Supplemental feature evidence, NEVER a substitute for the required full
+# Quality Gate/security audit/native acceptance. The audit remains blocking.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'client/js/core/activities/**'
+      - 'client/js/core/exclusive-surface.ts'
+      - 'client/js/app.ts'
+      - 'client/index.html'
+      - 'client/css/**'
+      - 'client/tests/bridge-activities-foundation.test.ts'
+      - 'docs/BRIDGE_ACTIVITIES_3D_FOUNDATION.md'
+      - '.github/workflows/bridge-activities-3d-foundation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  client-3d-foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Real strict client checks
+        run: |
+          npm run typecheck:client
+          npm run typecheck:strict-client
+          npm run typecheck:client-bridge5
+      - name: Focused feature Vitest, zero skips
+        run: |
+          cd client
+          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts --reporter=json --outputFile=activities-3d-proof.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync('activities-3d-proof.json', 'utf8'));
+          if (!Number.isInteger(r.numTotalTests) || r.numTotalTests < 6 ||
+              r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
+              r.numPassedTests !== r.numTotalTests) {
+            console.error('BRIDGE_ACTIVITIES_3D_TEST_PROOF_INVALID');
+            process.exit(1);
+          }
+          console.log('BRIDGE_ACTIVITIES_3D_TEST_PROOF_OK:' + r.numPassedTests + '/' + r.numTotalTests + ':0_skipped');
+          NODE
+      - name: Actual production client build and bundle budget
+        run: npm run build:ci
+      - name: Preserve first-attempt evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: activities-3d-proof
+          path: client/activities-3d-proof.json
+          if-no-files-found: warn
