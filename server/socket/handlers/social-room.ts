@@ -93,6 +93,14 @@ export function registerSocialRoomHandlers(
       return;
     }
     joining.add(serverId);
+    // The fence only lives for two minutes in Redis. A bounded admission
+    // lifetime guarantees an old request cannot outwait the fence's TTL and
+    // then join after both generations read as null.
+    const admissionStartedAt = Date.now();
+    const admissionExpired = (): boolean => {
+      const elapsed = Date.now() - admissionStartedAt;
+      return elapsed < 0 || elapsed > 15_000;
+    };
     try {
       // Capture the generation *before* any asynchronous authorization.
       // A kick that overlaps this join changes the generation on every node.
@@ -103,7 +111,7 @@ export function registerSocialRoomHandlers(
       const state = await socialRoomStore.withLock(serverId, async () => {
         // Both presence mutation and revocation run under this room lock.
         // No pre-revocation join may write or be acknowledged afterwards.
-        if (!socket.rooms.has('server:' + serverId) ||
+        if (admissionExpired() || !socket.rooms.has('server:' + serverId) ||
             await socialRoomStore.readRevocationFence(serverId, userId) !== admissionFence) {
           return 'revoked' as const;
         }
@@ -132,7 +140,7 @@ export function registerSocialRoomHandlers(
       // it returns; eviction may have removed the user's server room while
       // the adapter was adding the social audience. A failed read fails closed.
       const finalFence = await socialRoomStore.readRevocationFence(serverId, userId);
-      if (disconnected || canceledJoins.has(serverId) ||
+      if (disconnected || canceledJoins.has(serverId) || admissionExpired() ||
           finalFence !== admissionFence ||
           !socket.rooms.has('server:' + serverId) ||
           !socket.rooms.has(socialSocketRoom(serverId))) {
