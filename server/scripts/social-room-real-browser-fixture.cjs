@@ -29,6 +29,7 @@ const { setupRoutes } = require('../dist/app/setupRoutes');
 const { setupSocket } = require('../dist/socket/index');
 const { applyAdapter, disconnect, isRedisAvailable } = require('../dist/lib/redisAdapter');
 const { socialRoomStore } = require('../dist/socket/handlers/social-room-store');
+const { golfMatchStore } = require('../dist/socket/handlers/mini-golf-match');
 const { evictUserFromServerRooms } = require('../dist/lib/liveMembership');
 const testId = 's3d_' + randomBytes(6).toString('hex');
 const serverId = testId + '_server';
@@ -36,8 +37,10 @@ const otherServerId = testId + '_other';
 const alice = testId + '_alice';
 const bob = testId + '_bob';
 const charlie = testId + '_charlie';
-const users = [alice, bob, charlie];
+const golfExtraUsers = Array.from({ length: 7 }, (_, i) => testId + '_golf_' + i);
+const users = [alice, bob, charlie, ...golfExtraUsers];
 const q = (sql, args = []) => db._pool.query(sql, args);
+const golfMatchStoreEmpty = serverId => ({serverId, revision:0, phase:'waiting', turn:0, players:[]});
 let seeded = false;
 let io;
 const proofPassword = 'BridgeSocialRealLoginProof987!';
@@ -106,6 +109,12 @@ async function cleanup() {
         socialRoomStore.save(serverId, { serverId, peers: [] }));
     }
   } catch (e) { failed = true; console.error('SOCIAL_BROWSER_REDIS_CLEANUP_FAILED', e); }
+  try {
+    if (seeded) {
+      await golfMatchStore.withLock(serverId, () =>
+        golfMatchStore.save(serverId, golfMatchStoreEmpty(serverId)));
+    }
+  } catch (e) { failed = true; console.error('GOLF_BROWSER_REDIS_CLEANUP_FAILED', e); }
   if (seeded) for (const [query, args] of [
     ['DELETE FROM members WHERE "serverId"=$1', [otherServerId]],
     ['DELETE FROM members WHERE "serverId"=$1', [serverId]],
@@ -158,7 +167,8 @@ async function main() {
     { algorithm: 'HS256', expiresIn: '2m' });
   process.send({ type: 'ready', port,
     serverId, otherServerId, aliceUsername: alice, proofPassword,
-    aliceToken: token(alice), bobToken: token(bob), charlieToken: token(charlie) });
+    aliceToken: token(alice), bobToken: token(bob), charlieToken: token(charlie),
+    golfExtraTokens: golfExtraUsers.map(token) });
 }
 
 process.on('message', async msg => {

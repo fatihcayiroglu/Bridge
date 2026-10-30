@@ -29,6 +29,7 @@ on:
       - codex/activities-3d-real-login-full-shell-e2e-20261030
       - codex/activities-3d-mini-golf-solo-practice-20261030
       - codex/activities-mini-golf-authoritative-two-player-contract-20261030
+      - codex/activities-mini-golf-explicit-online-ui-20261030
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'

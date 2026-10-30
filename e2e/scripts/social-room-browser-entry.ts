@@ -187,10 +187,56 @@ export function mountGolfOpponent(port: number, token: string, serverId: string)
     shoot(degrees: number, power: number) {
       socket.emit('mini-golf:shoot', { serverId, degrees, power });
     },
-    dispose() { socket.emit('mini-golf:leave', { serverId }); socket.disconnect(); },
+    async dispose() {
+      // Deterministic cleanup of the previous two-player match before the
+      // eight-seat test reuses its server. No blind sleep/retry.
+      const left = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('Mini Golf authoritative leave timed out')), 8000);
+        socket.once('mini-golf:left', () => { clearTimeout(timer); resolve(); });
+      });
+      socket.emit('mini-golf:leave', { serverId });
+      await left;
+      socket.disconnect();
+    },
   };
   socket.on('userAuthenticated', () => { state.ready = true; });
   socket.on('mini-golf:state', result => state.states.push(result));
   socket.on('mini-golf:error', result => state.errors.push(result));
   (window as typeof window & { __miniGolfOpponent?: typeof state }).__miniGolfOpponent = state;
+}
+
+/**
+ * Eight-seat acceptance uses seven real independently authenticated sockets
+ * (plus Alice in the full Bridge app). The eighth extra token tests overflow.
+ * All traffic goes through production JWT middleware and PostgreSQL/Redis.
+ */
+export function mountGolfRoster(port: number, tokens: string[], serverId: string): void {
+  const players = tokens.map(token => {
+    const socket = io('http://127.0.0.1:' + port, {
+      auth: { token }, transports: ['websocket'],
+      reconnection: false, forceNew: true, timeout: 7000,
+    });
+    const player = { socket, ready: false, states: [] as unknown[], errors: [] as unknown[] };
+    socket.on('userAuthenticated', () => { player.ready = true; });
+    socket.on('mini-golf:state', state => player.states.push(state));
+    socket.on('mini-golf:error', error => player.errors.push(error));
+    return player;
+  });
+  const state = {
+    players,
+    join(i: number) { players[i]!.socket.emit('mini-golf:join', { serverId }); },
+    start(i: number) { players[i]!.socket.emit('mini-golf:start', { serverId }); },
+    sync(i: number) { players[i]!.socket.emit('mini-golf:sync', { serverId }); },
+    shoot(i: number, degrees: number, power: number) {
+      players[i]!.socket.emit('mini-golf:shoot', { serverId, degrees, power });
+    },
+    leave(i: number) { players[i]!.socket.emit('mini-golf:leave', { serverId }); },
+    dispose() {
+      for (const p of players) {
+        p.socket.emit('mini-golf:leave', { serverId });
+        p.socket.disconnect();
+      }
+    },
+  };
+  (window as typeof window & { __miniGolfRoster?: typeof state }).__miniGolfRoster = state;
 }

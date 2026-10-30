@@ -29,7 +29,14 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
 }
 
 const worker = fork(workerPath, [], {
-  env: { ...process.env, NODE_ENV: 'integration', BRIDGE_SOCIAL_3D_MULTIPLAYER: '1', BRIDGE_MINI_GOLF_MULTIPLAYER: '1' },
+  env: {
+    ...process.env, NODE_ENV: 'integration',
+    BRIDGE_SOCIAL_3D_MULTIPLAYER: '1', BRIDGE_MINI_GOLF_MULTIPLAYER: '1',
+    // Eight distinct authenticated test users share ONE CI loopback IP plus
+    // social/full-app control connections. Isolated worker ONLY; production
+    // WS connection limits remain unchanged and must be tested separately.
+    MAX_WS_PER_IP: '24', MAX_UNAUTH_WS_PER_IP: '12',
+  },
   stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
 });
 let workerLogs = '';
@@ -124,8 +131,12 @@ try {
   await bob.evaluate(serverId =>
     window.__bridge3DSmoke.socket.emit('mini-golf:join', {serverId}),
     fixture.serverId);
-  await bob.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'playing',
+  await bob.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'waiting' &&
+    window.__miniGolfProof?.states.at(-1)?.players.length === 2,
     null, { timeout: 10000 });
+  await alice.evaluate(serverId =>
+    window.__bridge3DSmoke.socket.emit('mini-golf:start', {serverId}),
+    fixture.serverId);
   await alice.evaluate(serverId =>
     window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}), fixture.serverId);
   await alice.waitForFunction(() => window.__miniGolfProof?.states.at(-1)?.phase === 'playing',
@@ -411,7 +422,7 @@ try {
       before, { timeout: 10000 });
   }
   await alice.evaluate(serverId =>
-    window.__bridge3DSmoke.socket.emit('mini-golf:sync', {serverId}),fixture.serverId);
+    window.__bridge3DSmoke.socket.emit('mini-golf:start', {serverId}),fixture.serverId);
   await alice.waitForFunction(() =>
     window.__miniGolfProof.states.at(-1)?.phase === 'playing',null,{timeout:10000});
 
@@ -721,6 +732,19 @@ try {
     null, { timeout: 12000 });
   await opponentPage.evaluate(() => window.__miniGolfOpponent.join());
   await opponentPage.waitForFunction(() =>
+    window.__miniGolfOpponent.states.at(-1)?.phase==='waiting' &&
+    window.__miniGolfOpponent.states.at(-1)?.players.length===2,
+    null, { timeout: 12000 });
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===2 &&
+    !!document.querySelector('.bridge-mini-golf-start:not([hidden])'),
+    null, { timeout: 12000 });
+  await fullPage.locator('.bridge-mini-golf-start').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Your turn|Sıra sende/),
+    null, { timeout: 12000 });
+  await opponentPage.evaluate(() => window.__miniGolfOpponent.sync());
+  await opponentPage.waitForFunction(() =>
     window.__miniGolfOpponent.states.at(-1)?.phase==='playing',
     null, { timeout: 12000 });
   await fullPage.waitForFunction(() =>
@@ -769,6 +793,84 @@ try {
   await fullPage.locator('.bridge-mini-golf-back').click();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(),10);
   console.log('BRIDGE_MINI_GOLF_REAL_AUTH_APP_TWO_PLAYER_UI:2/2:0_skipped');
+
+  // The same real logged-in Bridge app must admit eight distinct POSTGRES
+  // members on eight independent production JWT Socket.IO connections. A
+  // ninth authenticated user is denied without seeing the match roster.
+  const rosterContext = await browser.newContext({ viewport: { width: 540, height: 440 } });
+  const rosterPage = await rosterContext.newPage();
+  pages.push({ page: rosterPage, context: rosterContext });
+  await rosterPage.goto(fullOrigin + '/');
+  await rosterPage.addScriptTag({ content: built.outputFiles[0].text });
+  await rosterPage.evaluate(({port,tokens,serverId}) =>
+    window.BridgeSocialRealBrowser.mountGolfRoster(port,tokens,serverId),{
+      port:fixture.port,
+      tokens:[fixture.charlieToken,...fixture.golfExtraTokens],
+      serverId:fixture.serverId,
+    });
+  await rosterPage.waitForFunction(() =>
+    window.__miniGolfRoster?.players.length===8 &&
+    window.__miniGolfRoster.players.every(p=>p.ready),
+    null,{timeout:20000});
+  await fullPage.locator('[data-game-id="mini-golf"]').click();
+  assert.equal(await fullPage.locator('.bridge-mini-golf-start').isHidden(),true,
+    'lobby must not start without two authenticated members');
+  await fullPage.locator('.bridge-mini-golf-online-button').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===1,
+    null,{timeout:12000});
+  for(let i=0;i<7;i++){
+    await rosterPage.evaluate(i=>window.__miniGolfRoster.join(i),i);
+    await rosterPage.waitForFunction(i=>{
+      const current=window.__miniGolfRoster.players[i].states.at(-1);
+      return current?.phase==='waiting' && current?.players.length===i+2;
+    },i,{timeout:12000});
+  }
+  await rosterPage.evaluate(()=>window.__miniGolfRoster.join(7));
+  await rosterPage.waitForFunction(() =>
+    window.__miniGolfRoster.players[7].errors.some(e=>e.code==='GOLF_UNAVAILABLE'),
+    null,{timeout:12000});
+  assert.equal(await rosterPage.evaluate(() =>
+    window.__miniGolfRoster.players[7].states.length),0,
+    'ninth player must not receive another tenant-private eight-seat roster');
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===8 &&
+    !!document.querySelector('.bridge-mini-golf-start:not([hidden])'),
+    null,{timeout:16000});
+  await fullPage.locator('.bridge-mini-golf-start').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Your turn|Sıra sende/),
+    null,{timeout:12000});
+  await fullPage.locator('.bridge-mini-golf-shoot').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Opponent|Rakibinin/),
+    null,{timeout:12000});
+  for(let i=0;i<7;i++){
+    await rosterPage.evaluate(i=>window.__miniGolfRoster.shoot(i,0,60),i);
+    await rosterPage.waitForFunction(i=>{
+      const current=window.__miniGolfRoster.players[i].states.at(-1);
+      return current?.players[i+1]?.won===true &&
+        current?.players[i+1]?.strokes===1;
+    },i,{timeout:12000});
+  }
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Match finished|Maç sona erdi/) &&
+    [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')].filter(li =>
+      /Strokes: 1|Vuruş: 1/.test(li.textContent||'')).length===8,
+    null,{timeout:16000});
+  assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isDisabled(),true);
+  await fullPage.locator('.bridge-mini-golf-online-button').click();
+  await fullPage.waitForFunction(() =>
+    document.querySelectorAll('.bridge-mini-golf-scoreboard li').length===0,
+    null,{timeout:12000});
+  await rosterPage.evaluate(()=>window.__miniGolfRoster.sync(0));
+  await rosterPage.waitForFunction(() =>
+    window.__miniGolfRoster.players[0].states.at(-1)?.players.length===7,
+    null,{timeout:12000});
+  await rosterPage.evaluate(()=>window.__miniGolfRoster.dispose());
+  await fullPage.locator('.bridge-mini-golf-back').click();
+  console.log('BRIDGE_MINI_GOLF_REAL_AUTH_APP_EIGHT_PLAYER_CAPACITY:8/8:0_skipped');
+
   console.log('BRIDGE_3D_MINI_GOLF_REAL_AUTH_APP_JOURNEY:1/1:0_skipped');
   await fullPage.locator('.bridge-activities-tab[data-tab="social"]').click();
   // Language is user-configurable; the join control is the single direct

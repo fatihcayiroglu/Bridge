@@ -26,13 +26,15 @@ const translations = {
     golfHelp: 'Yerel antrenman · Sunucuya skor gönderilmez, rakip ve çok oyunculu mod yok.',
     golfAim: 'Yön (derece)', golfPower: 'Vuruş gücü', golfShoot: 'Vur', golfReset: 'Yeniden başlat',
     golfStrokes: 'Vuruş', golfReady: 'Top hazır', golfMoving: 'Top hareket ediyor', golfWon: 'Tebrikler! Top deliğe girdi.',
-    golfOnlineHelp: 'Deneysel iki oyunculu mod sunucuda ayrıca açılmalıdır. Yerel antrenman varsayılandır. Çevrimiçi maçta fizik ve skor sunucuya aittir.',
+    golfOnlineHelp: 'Deneysel 2–8 oyunculu mod sunucuda ayrıca açılmalıdır. Yerel antrenman varsayılandır. Çevrimiçi maçta fizik ve skor sunucuya aittir.',
     golfJoin: 'İki oyunculu maça katıl (deneysel)', golfLeave: 'Çevrimiçi maçtan ayrıl',
     golfWait: 'İkinci oyuncu bekleniyor…', golfTurn: 'Sıra sende', golfOtherTurn: 'Rakibinin sırası',
     golfFinished: 'Maç sona erdi', golfConnecting: 'Maç durumuna bağlanıyor…',
     golfUnavailable: 'Çevrimiçi maç kapalı veya erişim reddedildi. Yerel antrenman açık.',
     golfInvalid: 'Geçersiz sunucu maç verisi reddedildi.', golfDisconnected: 'Maç bağlantısı kapandı.',
     golfYou: '(sen)', golfPlayer: 'Oyuncu', golfGoal: 'Deliğe girdi',
+    golfStart: 'Maçı başlat (2–8 kişi)', golfLobby: 'Bekleme odası',
+    golfWaitStart: 'Maçın başlaması bekleniyor…',
     socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
     roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
     moveHelp: 'Hareket etmek için 3D alana dokun, sonra WASD veya ok tuşlarını kullan. Mobilde ekrandaki yön tuşlarını kullan.',
@@ -57,13 +59,15 @@ const translations = {
     golfHelp: 'Local practice only · No server scores, opponents or multiplayer.',
     golfAim: 'Aim (degrees)', golfPower: 'Shot power', golfShoot: 'Shoot', golfReset: 'Restart',
     golfStrokes: 'Strokes', golfReady: 'Ball ready', golfMoving: 'Ball rolling', golfWon: 'Nice shot! Ball in the hole.',
-    golfOnlineHelp: 'Experimental two-player mode requires a separate server feature gate. Solo practice is the default. Online ball physics and scores belong to the server.',
+    golfOnlineHelp: 'Experimental 2–8 player mode requires a separate server feature gate. Solo practice is the default. Online ball physics and scores belong to the server.',
     golfJoin: 'Join two-player match (experimental)', golfLeave: 'Leave online match',
     golfWait: 'Waiting for second player…', golfTurn: 'Your turn', golfOtherTurn: 'Opponent\'s turn',
     golfFinished: 'Match finished', golfConnecting: 'Connecting to match…',
     golfUnavailable: 'Online match disabled or access denied. Solo practice remains available.',
     golfInvalid: 'Invalid server match rejected.', golfDisconnected: 'Match disconnected.',
     golfYou: '(you)', golfPlayer: 'Player', golfGoal: 'Holed',
+    golfStart: 'Start match (2–8 players)', golfLobby: 'Lobby',
+    golfWaitStart: 'Waiting for host to start…',
     socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
     roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
     moveHelp: 'Focus the 3D room and use WASD or arrow keys. On mobile use the directional controls.',
@@ -175,6 +179,10 @@ function showMiniGolf(container: HTMLElement): void {
   onlineStatus.setAttribute('role','status');
   onlineStatus.setAttribute('aria-live','polite');
   const scoreboard = element('ol', 'bridge-mini-golf-scoreboard');
+  const startButton = makeButton(s.golfStart, 'bridge-room-direction bridge-mini-golf-start', () => {
+    onlineGolf?.start();
+  });
+  startButton.hidden = true;
   const onlineButton = makeButton(s.golfJoin, 'bridge-room-direction bridge-mini-golf-online-button', toggleOnline);
   let joiningOnline = false;
   function updateMatch(match: OnlineGolfMatch): void {
@@ -190,13 +198,19 @@ function showMiniGolf(container: HTMLElement): void {
     if (!displayed || !miniGolf?.setAuthoritativeBall(displayed.x, displayed.z)) {
       onlineGolf?.dispose(); return;
     }
+    const canStart = match.phase === 'waiting' && match.players.length >= match.minPlayers &&
+      match.players.length <= match.maxPlayers && match.players[0]?.userId === match.you;
+    startButton.hidden = !canStart;
+    startButton.disabled = !canStart;
     const myTurn = match.phase === 'playing' && match.turnUserId === match.you;
     const canShoot = myTurn && miniGolf.isGraphicsAvailable;
     shoot.disabled = !canShoot;
     aim.disabled = !canShoot;
     power.disabled = !canShoot;
     reset.disabled = true;
-    onlineStatus.textContent = match.phase === 'waiting' ? s.golfWait :
+    onlineStatus.textContent = match.phase === 'waiting'
+      ? s.golfLobby + ' · ' + match.players.length + '/' + match.maxPlayers + ' · ' +
+        (match.players.length < match.minPlayers ? s.golfWait : s.golfWaitStart) :
       match.phase === 'finished' ? s.golfFinished : myTurn ? s.golfTurn : s.golfOtherTurn;
   }
   function onlineState(status: OnlineGolfStatus): void {
@@ -206,6 +220,7 @@ function showMiniGolf(container: HTMLElement): void {
       aim.disabled = true;
       power.disabled = true;
       reset.disabled = true;
+      startButton.disabled = true;
       return;
     }
     if (status === 'waiting' || status === 'playing' || status === 'finished') {
@@ -217,6 +232,7 @@ function showMiniGolf(container: HTMLElement): void {
     onlineGolf = null;
     miniGolf?.leaveOnline();
     scoreboard.replaceChildren();
+    startButton.hidden = true;
     onlineButton.textContent = s.golfJoin;
     onlineStatus.textContent = {
       unavailable: s.golfUnavailable, invalid: s.golfInvalid,
@@ -276,7 +292,7 @@ function showMiniGolf(container: HTMLElement): void {
   }
   controls.append(aimLabel, powerLabel, shoot, reset);
   container.append(back, heading, help, canvas, status, controls,
-    onlineHelp, onlineStatus, onlineButton, scoreboard);
+    onlineHelp, onlineStatus, onlineButton, startButton, scoreboard);
   try {
     miniGolf = startMiniGolfPractice(canvas, update, () => {
       onlineGolf?.dispose();

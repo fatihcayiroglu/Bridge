@@ -23,7 +23,7 @@ jest.mock('../lib/logger', () => ({
   __esModule: true, default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 import { registerMiniGolfHandlers } from '../socket/handlers/mini-golf';
-import { golfMatchStore, resolveGolfShot, emptyGolfMatch, GOLF_MAX_STROKES } from '../socket/handlers/mini-golf-match';
+import { golfMatchStore, resolveGolfShot, emptyGolfMatch, GOLF_MAX_STROKES, GOLF_MAX_PLAYERS } from '../socket/handlers/mini-golf-match';
 
 let seq=0;
 function socket(userId: string, serverId: string) {
@@ -56,7 +56,7 @@ beforeEach(()=>{
 });
 afterAll(()=>delete process.env.BRIDGE_MINI_GOLF_MULTIPLAYER);
 
-describe('two-player Mini Golf authority',()=>{
+describe('2–8 player Mini Golf authority',()=>{
   it('does not register socket listeners when the feature flag is off',async()=>{
     delete process.env.BRIDGE_MINI_GOLF_MULTIPLAYER;
     const s=socket('a',sid());
@@ -83,7 +83,11 @@ describe('two-player Mini Golf authority',()=>{
     await a.trigger('mini-golf:join',{serverId:server,userId:'b',strokes:99});
     expect(a.last('mini-golf:state')).toMatchObject({phase:'waiting',turnUserId:null});
     await b.trigger('mini-golf:join',{serverId:server,userId:'fake',x:900});
-    expect(b.last('mini-golf:state')).toMatchObject({phase:'playing',turnUserId:'a'});
+    expect(b.last('mini-golf:state')).toMatchObject({phase:'waiting',turnUserId:null});
+    await b.trigger('mini-golf:start',{serverId:server});
+    expect(b.last('mini-golf:error')).toMatchObject({code:'GOLF_CANNOT_START'});
+    await a.trigger('mini-golf:start',{serverId:server});
+    expect(a.last('mini-golf:state')).toMatchObject({phase:'playing',turnUserId:'a'});
     await a.trigger('mini-golf:sync',{serverId:server});
     const data=a.last('mini-golf:state') as { players:Array<{userId:string;strokes:number}> };
     expect(data.players).toEqual(expect.arrayContaining([
@@ -99,6 +103,7 @@ describe('two-player Mini Golf authority',()=>{
     const server=sid(),a=socket('a',server),b=socket('b',server);
     await a.trigger('mini-golf:join',{serverId:server});
     await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
     await b.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
     expect(b.last('mini-golf:error')).toMatchObject({code:'GOLF_INVALID_TURN'});
     await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60,x:-999,strokes:99});
@@ -116,6 +121,7 @@ describe('two-player Mini Golf authority',()=>{
     const server=sid(),a=socket('a',server),b=socket('b',server);
     await a.trigger('mini-golf:join',{serverId:server});
     await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
     for(const [degrees,power] of [['0',60],[0,Infinity],[0,0],[71,10]]) {
       await a.trigger('mini-golf:shoot',{serverId:server,degrees,power});
       expect(a.last('mini-golf:error')).toMatchObject({serverId:server});
@@ -129,6 +135,7 @@ describe('two-player Mini Golf authority',()=>{
     const server=sid(),a=socket('a',server),b=socket('b',server);
     await a.trigger('mini-golf:join',{serverId:server});
     await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
     const before=b.emitted.length;
     members.mockResolvedValue(null);
     await b.trigger('mini-golf:sync',{serverId:server});
@@ -140,6 +147,7 @@ describe('two-player Mini Golf authority',()=>{
     const server=sid(),a=socket('a',server),b=socket('b',server);
     await a.trigger('mini-golf:join',{serverId:server});
     await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
     await a.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
     await b.trigger('mini-golf:leave',{serverId:server});
     expect(await golfMatchStore.load(server)).toMatchObject({
@@ -165,6 +173,82 @@ describe('two-player Mini Golf authority',()=>{
     await pending;
     expect(a.last('mini-golf:state')).toBeUndefined();
     expect((await golfMatchStore.load(server)).players).toEqual([]);
+  });
+
+  it('admits exactly eight players in a waiting lobby and refuses ninth without a roster leak',async()=>{
+    const server=sid();
+    const users=Array.from({length:GOLF_MAX_PLAYERS+1},(_,i)=>socket('player-'+i,server));
+    for (let i=0;i<GOLF_MAX_PLAYERS;i++) {
+      await users[i]!.trigger('mini-golf:join',{serverId:server,strokes:200});
+      expect((await golfMatchStore.load(server)).players).toHaveLength(i+1);
+      expect((await golfMatchStore.load(server)).phase).toBe('waiting');
+    }
+    await users[8]!.trigger('mini-golf:join',{serverId:server});
+    expect(users[8]!.last('mini-golf:error')).toMatchObject({code:'GOLF_UNAVAILABLE'});
+    expect(users[8]!.last('mini-golf:state')).toBeUndefined();
+    await users[0]!.trigger('mini-golf:start',{serverId:server});
+    expect((await golfMatchStore.load(server)).phase).toBe('playing');
+    const state=users[0]!.last('mini-golf:state') as {maxPlayers:number;players:unknown[]};
+    expect(state).toMatchObject({maxPlayers:8});
+    expect(state.players).toHaveLength(8);
+    expect(JSON.stringify(state)).not.toContain(users[1]!.id);
+  });
+
+  it('cycles all eight seats, skipping holed balls and finishes only when all are done',async()=>{
+    const server=sid(),players=Array.from({length:8},(_,i)=>socket('p'+i,server));
+    for (const p of players) await p.trigger('mini-golf:join',{serverId:server});
+    await players[0]!.trigger('mini-golf:start',{serverId:server});
+    for (let i=0;i<8;i++) {
+      const p=players[i]!;
+      await p.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+      const game=await golfMatchStore.load(server);
+      expect(game.players[i]).toMatchObject({strokes:1,won:true});
+      expect(game.phase).toBe(i===7?'finished':'playing');
+      if(i!==7)expect(game.players[game.turn]?.userId).toBe('p'+(i+1));
+      else expect(p.last('mini-golf:state')).toMatchObject({turnUserId:null});
+    }
+    await players[0]!.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    expect(players[0]!.last('mini-golf:error')).toMatchObject({code:'GOLF_INVALID_TURN'});
+  });
+
+  it('keeps the remaining match alive with correct turn when one of eight leaves',async()=>{
+    const server=sid(),players=Array.from({length:8},(_,i)=>socket('u'+i,server));
+    for(const p of players)await p.trigger('mini-golf:join',{serverId:server});
+    await players[0]!.trigger('mini-golf:start',{serverId:server});
+    await players[0]!.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    await players[3]!.trigger('mini-golf:leave',{serverId:server});
+    let game=await golfMatchStore.load(server);
+    expect(game.players).toHaveLength(7);
+    expect(game.players[game.turn]?.userId).toBe('u1');
+    await players[1]!.trigger('mini-golf:leave',{serverId:server});
+    game=await golfMatchStore.load(server);
+    expect(game.players).toHaveLength(6);
+    expect(game.players[game.turn]?.userId).toBe('u2');
+    await players[2]!.trigger('mini-golf:shoot',{serverId:server,degrees:0,power:60});
+    game=await golfMatchStore.load(server);
+    expect(game.players[game.turn]?.userId).toBe('u4');
+    for (const i of [4,5,6,7]) await players[i]!.trigger('mini-golf:leave',{serverId:server});
+    game=await golfMatchStore.load(server);
+    expect(game.phase).toBe('finished');
+    expect(game.players).toHaveLength(2);
+    // Both remaining players already holed, so their current match is finished.
+    // Only a drop below two resets the score into a fresh waiting lobby.
+    // Once only one remains, its score resets for an unambiguous fresh lobby.
+    await players[2]!.trigger('mini-golf:leave',{serverId:server});
+    game=await golfMatchStore.load(server);
+    expect(game).toMatchObject({phase:'waiting',players:[{userId:'u0',strokes:0,won:false}]});
+  });
+
+  it('rejects starting with fewer than two, and joining a started 2–8 game',async()=>{
+    const server=sid(),a=socket('a',server),b=socket('b',server),c=socket('c',server);
+    await a.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
+    expect(a.last('mini-golf:error')).toMatchObject({code:'GOLF_CANNOT_START'});
+    await b.trigger('mini-golf:join',{serverId:server});
+    await a.trigger('mini-golf:start',{serverId:server});
+    await c.trigger('mini-golf:join',{serverId:server});
+    expect(c.last('mini-golf:error')).toMatchObject({code:'GOLF_UNAVAILABLE'});
+    expect((await golfMatchStore.load(server)).players).toHaveLength(2);
   });
 
   it('isolates server-specific match records and rejects another tenant',async()=>{
