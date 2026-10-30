@@ -160,6 +160,33 @@ describe('real renderer lifecycle against a deterministic WebGL command recorder
     game!.dispose();
     expect(pending.size).toBe(0);
   });
+  it('Pool refuses detached canvases and stale handles cannot shoot or change placement after unmount', () => {
+    const unattached=document.createElement('canvas');
+    expect(startPoolPractice(unattached,vi.fn())).toBeNull();
+    const {canvas}=surface();
+    const onState=vi.fn();
+    const game=startPoolPractice(canvas,onState);
+    expect(game?.isGraphicsAvailable).toBe(true);
+    const original=game!.state;
+    const moved={...original,balls:original.balls.map(b=>
+      b.id===0?{...b,x:.55,z:2.5}:b)};
+    canvas.remove();
+    expect(game?.isGraphicsAvailable).toBe(false);
+    expect(game?.shoot(0,60)).toBe(false);
+    expect(game?.placeLocalTable(moved)).toBe(false);
+    game?.reset();
+    expect(onState).toHaveBeenCalledTimes(1);
+    expect(game?.state.shots).toBe(0);
+    expect(game?.state.balls[0]?.x).toBe(0);
+    frames(3);
+    expect(pending.size).toBe(0);
+    document.body.append(canvas);
+    expect(game?.isGraphicsAvailable).toBe(false);
+    expect(game?.shoot(0,60)).toBe(false);
+    expect(game?.placeLocalTable(moved)).toBe(false);
+    game?.dispose();
+    expect(pending.size).toBe(0);
+  });
   it('Pool uploads 16 full spheres with real white caps for stripes 9–15, colored solids and a dark eight', () => {
     const { canvas, gl } = surface('webgl1');
     const game = startPoolPractice(canvas, vi.fn());
