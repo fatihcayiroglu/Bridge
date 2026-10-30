@@ -75,10 +75,20 @@ function onDocumentKeydown(event: KeyboardEvent): void {
     return;
   }
   if (event.key !== 'Tab') return;
+  // Include native interactive controls used by Mini Golf, Pool and social
+  // graphics settings. Exclude negative-tabindex tabs and hidden descendants.
+  // A modal must not leak keyboard focus into the underlying application.
   const targets = [...overlay.querySelectorAll<HTMLElement>(
-    'button:not([disabled]),canvas[tabindex="0"],[href],[tabindex="0"]',
-  )].filter(item => item.getClientRects().length > 0);
+    'button:not([disabled]),input:not([disabled]):not([type="hidden"]),' +
+    'select:not([disabled]),textarea:not([disabled]),a[href],canvas[tabindex="0"],[tabindex="0"]',
+  )].filter(item => item.tabIndex >= 0 && item.getClientRects().length > 0 &&
+    !item.closest('[hidden],[inert],[aria-hidden="true"]'));
   if (!targets.length) { event.preventDefault(); return; }
+  if (!overlay.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? targets[targets.length - 1]! : targets[0]!).focus();
+    return;
+  }
   if (event.shiftKey && document.activeElement === targets[0]) {
     event.preventDefault();
     targets[targets.length - 1]!.focus();
