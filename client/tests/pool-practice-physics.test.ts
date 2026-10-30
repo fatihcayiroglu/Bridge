@@ -1,6 +1,6 @@
 import { describe,expect,it } from 'vitest';
 import {
-  POOL_DT, POOL_POCKETS, POOL_RADIUS, newPoolPractice, strikePool, stepPool,
+  POOL_DT, POOL_POCKETS, POOL_RADIUS, POOL_TARGET_COUNT, newPoolPractice, strikePool, stepPool,
   type PoolState,
 } from '../js/core/activities/pool-practice-physics.ts';
 
@@ -10,10 +10,21 @@ const finish=(initial:PoolState)=>{
   return state;
 };
 describe('local 3D pool physics without server scores or multiplayer',()=>{
-  it('racks exactly one cue and five object balls with safe stationary positions',()=>{
+  it('racks a real fifteen-target triangle with one cue and finite nonoverlapping positions',()=>{
     const state=newPoolPractice();
     expect(state.status).toBe('ready');
-    expect(state.balls.map(b=>b.id)).toEqual([0,1,2,3,4,5]);
+    expect(state.balls).toHaveLength(POOL_TARGET_COUNT+1);
+    expect(POOL_TARGET_COUNT).toBe(15);
+    expect([...state.balls.map(b=>b.id)].sort((a,b)=>a-b))
+      .toEqual(Array.from({length:16},(_,i)=>i));
+    // The eight is centered in the third row of the triangular rack.
+    const eight=state.balls.find(b=>b.id===8)!;
+    expect(eight.x).toBe(0);
+    expect(eight.z).toBeLessThan(-1.5);
+    // The last-row corners are one solid and one striped ball.
+    const last=state.balls.slice(-5);
+    expect(last[0]!.id).toBeLessThan(8);
+    expect(last[4]!.id).toBeGreaterThan(8);
     expect(state.shots).toBe(0);
     expect(state.pocketed).toBe(0);
     expect(POOL_DT).toBeCloseTo(1/120,9);
@@ -76,9 +87,57 @@ describe('local 3D pool physics without server scores or multiplayer',()=>{
   it('finishes only when every object ball is pocketed',()=>{
     const initial=newPoolPractice();
     const balls=initial.balls.map(b=>b.id===0?b:{...b,pocketed:true});
-    const complete=stepPool({...initial,balls,status:'moving',pocketed:5});
+    const complete=stepPool({...initial,balls,status:'moving',pocketed:POOL_TARGET_COUNT});
     expect(complete.status).toBe('complete');
     expect(strikePool(complete,0,60)).toBe(complete);
     expect(stepPool(complete)).toBe(complete);
+  });
+});
+
+describe('15-target pocket-practice extended physics integrity', () => {
+  it('settles a real full-power rack break deterministically without NaN or ghost pocket claims', () => {
+    const first=finish(strikePool(newPoolPractice(),0,100));
+    const second=finish(strikePool(newPoolPractice(),0,100));
+    expect(first).toEqual(second);
+    expect(first.status).toMatch(/ready|complete/);
+    expect(first.shots).toBe(1);
+    expect(first.scratches).toBeGreaterThanOrEqual(0);
+    expect(first.pocketed).toBeGreaterThanOrEqual(0);
+    expect(first.pocketed).toBeLessThanOrEqual(POOL_TARGET_COUNT);
+    expect(first.balls).toHaveLength(16);
+    expect(first.balls.every(b=>[b.x,b.z,b.vx,b.vz].every(Number.isFinite))).toBe(true);
+    expect(first.balls.filter(b=>b.id>0 && b.pocketed)).toHaveLength(first.pocketed);
+    expect(first.balls.every(b=>b.vx===0 && b.vz===0)).toBe(true);
+  });
+  it('never overlaps a re-spotted cue when normal and first fallback locations are occupied', () => {
+    const initial=newPoolPractice();
+    const pocket=POOL_POCKETS[0];
+    const blockers=[
+      {id:1,x:0,z:2.7},{id:2,x:0,z:3.05},{id:3,x:0,z:3.4},{id:4,x:0,z:3.75},
+    ];
+    const balls=initial.balls.map(b=>{
+      if(b.id===0)return {...b,x:pocket.x+.01,z:pocket.z+.01,vx:.05,vz:0};
+      const block=blockers.find(x=>x.id===b.id);
+      return block?{...b,x:block.x,z:block.z}:b;
+    });
+    const result=stepPool({...initial,balls,status:'moving'});
+    const cue=result.balls.find(b=>b.id===0)!;
+    expect(result.status).toBe('ready');
+    expect(result.scratches).toBe(1);
+    expect(cue.pocketed).toBe(false);
+    expect(result.balls.filter(b=>b.id!==0&&!b.pocketed).every(b=>
+      Math.hypot(b.x-cue.x,b.z-cue.z)>=POOL_RADIUS*2.1)).toBe(true);
+  });
+  it('marks complete only after the fifteenth unique target enters a pocket', () => {
+    const initial=newPoolPractice();
+    const pocket=POOL_POCKETS[1];
+    const last=initial.balls.map(b=>{
+      if(b.id===15)return {...b,x:pocket.x-.01,z:pocket.z-.01,vx:.05,vz:0};
+      return b.id===0?b:{...b,pocketed:true};
+    });
+    const state=stepPool({...initial,balls:last,status:'moving',pocketed:14});
+    expect(state.pocketed).toBe(15);
+    expect(state.status).toBe('complete');
+    expect(strikePool(state,0,80)).toBe(state);
   });
 });
