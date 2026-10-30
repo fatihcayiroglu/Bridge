@@ -146,9 +146,14 @@ export function startPoolPractice(
     };
     render(gpu.staticBuffer,staticData.length/6);
     const dynamic:number[]=[];
+    // Cue + solids (1–7), eight ball, stripes (9–15). Stripes use
+    // contrasting lighter shades in this mesh-only prototype: no numbered
+    // texture or competitive 8-ball rule is implied.
     const palette:Color[]=[
-      [1,1,.96],[.97,.78,.15],[.18,.37,.86],[.94,.23,.25],
-      [.52,.22,.68],[.98,.55,.14],
+      [1,1,.96], [.97,.78,.15], [.18,.37,.86], [.94,.23,.25],
+      [.52,.22,.68], [.98,.55,.14], [.18,.58,.32], [.57,.18,.17],
+      [.055,.055,.065], [.99,.92,.53], [.52,.69,.99], [.99,.58,.56],
+      [.77,.58,.92], [1,.76,.47], [.56,.86,.70], [.84,.48,.45],
     ];
     for(const ball of state.balls)if(!ball.pocketed){
       sphere(dynamic,ball.x,.16,ball.z,palette[ball.id]??[1,1,1]);
