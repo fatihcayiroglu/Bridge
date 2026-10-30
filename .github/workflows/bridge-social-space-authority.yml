@@ -8,11 +8,13 @@ on:
       - main
       - codex/activities-3d-social-room-foundation-20261030
       - codex/activities-3d-social-presence-authority-20261030
+      - codex/activities-3d-context-recovery-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/index.ts'
       - 'server/tests/social-room-authority.test.ts'
       - 'server/scripts/social-room-real-redis-proof.cjs'
+      - 'server/scripts/social-room-real-socket-proof.cjs'
       - '.github/workflows/bridge-social-space-authority.yml'
   workflow_dispatch:
 
@@ -70,6 +72,10 @@ jobs:
         env:
           REDIS_URL: redis://127.0.0.1:6379
         run: cd server && node scripts/social-room-real-redis-proof.cjs
+      - name: Two live Socket.IO clients + real Redis 7 cross-client events
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+        run: cd server && node scripts/social-room-real-socket-proof.cjs
       - name: Preserve exact-head first attempt
         if: always()
         uses: actions/upload-artifact@v4
