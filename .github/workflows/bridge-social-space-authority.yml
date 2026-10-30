@@ -73,10 +73,12 @@ on:
       - 'client/tests/bridge-activities-copy.test.ts'
       - 'client/js/core/activities/pool-practice-physics.ts'
       - 'client/js/core/activities/pool-practice-webgl.ts'
-      - 'client/tests/pool-practice-physics.test.ts tests/activities-webgl-renderer-lifecycle.test.ts tests/bridge-activities-foundation.test.ts tests/activities-panel-dom-lifecycle.test.ts'
+      - 'client/tests/pool-practice-physics.test.ts'
       - 'client/tests/activities-webgl-renderer-lifecycle.test.ts'
       - 'client/tests/activities-panel-dom-lifecycle.test.ts'
       - 'client/tests/bridge-activities-foundation.test.ts'
+      - 'client/tests/social-room-session-fail-closed-coverage.test.ts'
+      - 'client/tests/activities-entry-lazy-boundary-coverage.test.ts'
       - 'client/js/core/activities/bridge-activities-entry.ts'
       - 'client/index.html'
       - 'client/css/style.css'
@@ -148,7 +150,7 @@ jobs:
           console.log('SOCIAL_3D_AUTHORITY_TESTS:' + r.numPassedTests + '/' + r.numTotalTests + ':0_skipped');
           NODE
       - name: 3D games local physics, online protocol and copy contracts
-        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts tests/bridge-activities-copy.test.ts tests/pool-practice-physics.test.ts
+        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts tests/bridge-activities-copy.test.ts tests/pool-practice-physics.test.ts tests/activities-webgl-renderer-lifecycle.test.ts tests/activities-panel-dom-lifecycle.test.ts tests/bridge-activities-foundation.test.ts tests/social-room-session-fail-closed-coverage.test.ts tests/activities-entry-lazy-boundary-coverage.test.ts
       - name: Design system token and modal stacking ratchets (no exemptions)
         run: cd client && npx vitest run --config vitest.config.mts tests/design-system-tokens.test.ts tests/z-index-scale.test.ts
       - name: Server build
