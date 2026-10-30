@@ -34,6 +34,7 @@ const translations = {
     golfInvalid: 'Geçersiz sunucu maç verisi reddedildi.', golfDisconnected: 'Maç bağlantısı kapandı.',
     golfYou: '(sen)', golfPlayer: 'Oyuncu', golfGoal: 'Deliğe girdi',
     golfStart: 'Maçı başlat (2–8 kişi)', golfLobby: 'Bekleme odası',
+    golfWaitStart: 'Maçın başlaması bekleniyor…',
     socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
     roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
     moveHelp: 'Hareket etmek için 3D alana dokun, sonra WASD veya ok tuşlarını kullan. Mobilde ekrandaki yön tuşlarını kullan.',
@@ -66,6 +67,7 @@ const translations = {
     golfInvalid: 'Invalid server match rejected.', golfDisconnected: 'Match disconnected.',
     golfYou: '(you)', golfPlayer: 'Player', golfGoal: 'Holed',
     golfStart: 'Start match (2–8 players)', golfLobby: 'Lobby',
+    golfWaitStart: 'Waiting for host to start…',
     socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
     roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
     moveHelp: 'Focus the 3D room and use WASD or arrow keys. On mobile use the directional controls.',
@@ -207,7 +209,8 @@ function showMiniGolf(container: HTMLElement): void {
     power.disabled = !canShoot;
     reset.disabled = true;
     onlineStatus.textContent = match.phase === 'waiting'
-      ? s.golfLobby + ' · ' + match.players.length + '/' + match.maxPlayers + ' · ' + s.golfWait :
+      ? s.golfLobby + ' · ' + match.players.length + '/' + match.maxPlayers + ' · ' +
+        (match.players.length < match.minPlayers ? s.golfWait : s.golfWaitStart) :
       match.phase === 'finished' ? s.golfFinished : myTurn ? s.golfTurn : s.golfOtherTurn;
   }
   function onlineState(status: OnlineGolfStatus): void {
