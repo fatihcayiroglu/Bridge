@@ -114,6 +114,44 @@ try {
     return Boolean(peer && peer.x === 0.35 && peer.z === 2.5);
   }, ownId, { timeout: 10000 });
 
+  // Lose the REAL WebGL1 context while Bob is online. This must tear down
+  // the authoritative socket-room membership, not just hide the GPU pixels.
+  await bob.evaluate(() => {
+    const canvas = document.querySelector('canvas');
+    const gl = canvas.getContext('webgl');
+    const lose = gl?.getExtension('WEBGL_lose_context');
+    if (!lose) throw Error('Real Chromium WebGL context-loss extension missing');
+    window.__bridge3DContextRestore = () => lose.restoreContext();
+    lose.loseContext();
+  });
+  await bob.waitForFunction(() => {
+    const s = window.__bridge3DSmoke;
+    return s?.status === 'graphics-lost' &&
+      !s.room.isGraphicsAvailable && s.session === null && s.socket.connected;
+  }, null, { timeout: 10000 });
+  await alice.waitForFunction(() =>
+    window.__bridge3DSmoke.lastFrame?.peers.length === 1,
+    null, { timeout: 10000 });
+
+  // GPU recovery must rebuild a valid shader/program but NEVER silently
+  // rejoin the online room. A genuine user action can explicitly rejoin.
+  await bob.evaluate(() => window.__bridge3DContextRestore());
+  await bob.waitForFunction(() => {
+    const s = window.__bridge3DSmoke;
+    const gl = document.querySelector('canvas').getContext('webgl');
+    return s.room.isGraphicsAvailable &&
+      Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)) &&
+      s.session === null && s.status === 'graphics-lost' && s.socket.connected;
+  }, null, { timeout: 10000 });
+  assert.equal(await alice.evaluate(() =>
+    window.__bridge3DSmoke.lastFrame.peers.length), 1,
+  'Restoring a GPU context must not resurrect an online avatar');
+  await bob.evaluate(() => window.__bridge3DSmoke.rejoin());
+  await Promise.all([alice, bob].map(page => page.waitForFunction(() => {
+    const s = window.__bridge3DSmoke;
+    return s?.status === 'online' && s.lastFrame?.peers.length === 2;
+  }, null, { timeout: 10000 })));
+
   // The network session must leave when the user explicitly quits. The
   // other Chromium tab receives the authoritative updated peer roster.
   await bob.evaluate(() => window.__bridge3DSmoke.session.dispose());
@@ -127,6 +165,7 @@ try {
   assert.deepEqual(final, { online: 'online', gpu: true, count: 1, errors: [] });
   console.log('SOCIAL_3D_REAL_BROWSER_WEBGL_TWO_USERS:2/2:0_skipped');
   console.log('SOCIAL_3D_REAL_BROWSER_MOVEMENT_AND_LEAVE:2/2:0_skipped');
+  console.log('SOCIAL_3D_REAL_WEBGL1_CONTEXT_LOSS_REJOIN:1/1:0_skipped');
 } finally {
   for (const { page, context } of pages) {
     try { await page.evaluate(() => window.__bridge3DSmoke?.dispose()); } catch {}
