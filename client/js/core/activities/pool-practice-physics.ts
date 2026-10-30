@@ -27,6 +27,11 @@ export interface PoolBall {
   readonly vx: number; readonly vz: number;
   readonly pocketed: boolean;
 }
+/** 0-5 indexes refer to the six fixed pockets, in POOL_POCKETS order. */
+export interface PoolPocketEvent {
+  readonly ballId:number;
+  readonly pocketIndex:number;
+}
 export interface PoolState {
   readonly balls: readonly PoolBall[];
   readonly shots: number;
@@ -39,6 +44,8 @@ export interface PoolState {
   readonly railAfterContact: boolean;
   /** Unique object IDs driven to a rail after first cue contact on the break. */
   readonly breakObjectRails: readonly number[];
+  /** This shot's actual pocket events; no inferred pocket from a boolean. */
+  readonly pocketEvents: readonly PoolPocketEvent[];
 }
 const base = (id:number,x:number,z:number):PoolBall =>
   ({ id,x,z,vx:0,vz:0,pocketed:false });
@@ -54,7 +61,7 @@ export function newPoolPractice():PoolState {
       return base(id, (column - row / 2) * spacing, -1.14 - row * depth);
     })],
     shots:0,scratches:0,pocketed:0,status:'ready',
-    firstObjectHit:null,railAfterContact:false,breakObjectRails:[],
+    firstObjectHit:null,railAfterContact:false,breakObjectRails:[],pocketEvents:[],
   };
 }
 export function strikePool(s:PoolState, angle:number, power:number):PoolState {
@@ -65,13 +72,13 @@ export function strikePool(s:PoolState, angle:number, power:number):PoolState {
   const r=angle*Math.PI/180, speed=power*.075;
   return {
     ...s,shots:s.shots+1,status:'moving',
-    firstObjectHit:null,railAfterContact:false,breakObjectRails:[],
+    firstObjectHit:null,railAfterContact:false,breakObjectRails:[],pocketEvents:[],
     balls:s.balls.map(b=>b.id===0 ? {...b,vx:Math.sin(r)*speed,vz:-Math.cos(r)*speed} : b),
   };
 }
 type MutableBall={-readonly [K in keyof PoolBall]:PoolBall[K]};
-const nearPocket=(b:PoolBall):boolean =>
-  POOL_POCKETS.some(p=>Math.hypot(b.x-p.x,b.z-p.z)<.31);
+const pocketIndex=(b:PoolBall):number =>
+  POOL_POCKETS.findIndex(p=>Math.hypot(b.x-p.x,b.z-p.z)<.31);
 
 /** One fixed, bounded physics tick. Ball/rail collisions and pocket claims are local only. */
 export function stepPool(s:PoolState):PoolState {
@@ -80,6 +87,7 @@ export function stepPool(s:PoolState):PoolState {
   let pocketed=s.pocketed, scratches=s.scratches;
   let firstObjectHit=s.firstObjectHit, railAfterContact=s.railAfterContact;
   const breakObjectRails=[...s.breakObjectRails];
+  const pocketEvents=[...s.pocketEvents];
   for(const b of balls) {
     if(b.pocketed)continue;
     const v=Math.hypot(b.vx,b.vz);
@@ -89,8 +97,10 @@ export function stepPool(s:PoolState):PoolState {
       b.vx*=next/v;b.vz*=next/v;
       b.x+=b.vx*POOL_DT;b.z+=b.vz*POOL_DT;
     }
-    if(nearPocket(b)) {
+    const pocket=pocketIndex(b);
+    if(pocket!==-1) {
       b.pocketed=true;b.vx=0;b.vz=0;
+      pocketEvents.push({ballId:b.id,pocketIndex:pocket});
       if(b.id===0)scratches++;
       else pocketed++;
       continue;
@@ -160,6 +170,6 @@ export function stepPool(s:PoolState):PoolState {
   // Do not freeze the cue or remaining motion when the final target falls.
   // Completion is only announced once the entire table has settled.
   return {balls,shots:s.shots,scratches,pocketed,
-    firstObjectHit,railAfterContact,breakObjectRails,status:
+    firstObjectHit,railAfterContact,breakObjectRails,pocketEvents,status:
     moving?'moving':allPocketed?'complete':'ready'};
 }
