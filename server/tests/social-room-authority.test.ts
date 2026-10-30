@@ -34,6 +34,7 @@ jest.mock('../lib/logger', () => ({
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 import { registerSocialRoomHandlers } from '../socket/handlers/social-room';
+import { evictSocialUserFromRoom } from '../socket/handlers/social-room-eviction';
 import {
   SOCIAL_SPACE_BOUNDS, SOCIAL_SPACE_MAX_PEERS, socialRoomStore,
 } from '../socket/handlers/social-room-store';
@@ -229,5 +230,56 @@ describe('3D Social Space authority and presence', () => {
     expect(last(s, 'social:joined')).toBeUndefined();
     expect(last(s, 'error:message')).toMatchObject({ event: 'social:join' });
     expect(io.events).toHaveLength(0);
+  });
+});
+
+
+describe('3D social roster — membership revocation cleanup', () => {
+  const makePeer = (socketId: string, userId: string) => ({
+    socketId, userId, x: 0, z: 2.5, lastStepAt: 0,
+  });
+
+  it('removes all revoked user tabs but retains friends and other tenants', async () => {
+    const sid = server(), other = server(), io = makeIo();
+    await socialRoomStore.save(sid, {
+      serverId: sid, peers: [
+        makePeer('revoked-tab-a', 'revoked'),
+        makePeer('friend-tab', 'friend'),
+        makePeer('revoked-tab-b', 'revoked'),
+      ],
+    });
+    await socialRoomStore.save(other, {
+      serverId: other, peers: [makePeer('other-server-tab', 'revoked')],
+    });
+    const removed = await evictSocialUserFromRoom(io as never, 'revoked', sid);
+    expect(removed).toBe(2);
+    expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['friend']);
+    expect((await socialRoomStore.load(other)).peers.map(p => p.userId)).toEqual(['revoked']);
+    expect(io.events).toEqual([{
+      room: 'social-3d:' + sid, name: 'social:peers',
+      data: { serverId: sid, peers: [{ socketId: 'friend-tab', userId: 'friend', x: 0, z: 2.5 }] },
+    }]);
+  });
+
+  it('is idempotent: no write or roster broadcast when no revoked peer exists', async () => {
+    const sid = server(), io = makeIo();
+    await socialRoomStore.save(sid, { serverId: sid, peers: [makePeer('friend-tab', 'friend')] });
+    expect(await evictSocialUserFromRoom(io as never, 'missing', sid)).toBe(0);
+    expect(await evictSocialUserFromRoom(io as never, '', sid)).toBe(0);
+    expect(io.events).toEqual([]);
+    expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['friend']);
+  });
+
+  it('fails closed on Redis read failure without publishing an unverified roster', async () => {
+    const sid = server(), io = makeIo();
+    await socialRoomStore.save(sid, {
+      serverId: sid, peers: [makePeer('revoked-tab', 'revoked')],
+    });
+    mockRedisReadFailure = true;
+    await expect(evictSocialUserFromRoom(io as never, 'revoked', sid))
+      .rejects.toThrow('Redis read unavailable');
+    expect(io.events).toEqual([]);
+    mockRedisReadFailure = false;
+    expect((await socialRoomStore.load(sid)).peers.map(p => p.userId)).toEqual(['revoked']);
   });
 });
