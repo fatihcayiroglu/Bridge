@@ -3,6 +3,10 @@ import {
   type RoomPosition,
 } from './social-room-geometry.ts';
 import type { Social3DPeer } from './social-room-wire.ts';
+import {
+  selectSocialWebGLContext, socialRoomShaderSources, socialRoomRenderSize,
+  type SocialGraphicsApi, type SocialGraphicsQuality,
+} from './social-room-render-policy.ts';
 
 /**
  * Actual WebGL-rendered third-person 3D room, local-only proof of concept.
@@ -12,7 +16,9 @@ import type { Social3DPeer } from './social-room-wire.ts';
  */
 export type RoomDirection = 'forward' | 'back' | 'left' | 'right';
 export interface SocialRoomHandle {
+  readonly graphicsApi: SocialGraphicsApi;
   dispose(): void;
+  setQuality(quality: SocialGraphicsQuality): void;
   setDirection(direction: RoomDirection, pressed: boolean): void;
   /** The caller must validate the bounded server snapshot before calling. */
   setOnlinePeers(peers: readonly Social3DPeer[], ownSocketId: string): boolean;
@@ -68,20 +74,14 @@ function compileShader(gl: WebGLRenderingContext, kind: number, source: string):
 export function startLocalSocialRoom(
   canvas: HTMLCanvasElement,
   onDirectionStep?: (direction: RoomDirection) => void,
+  onGraphicsLost?: () => void,
 ): SocialRoomHandle | null {
-  const context = canvas.getContext('webgl', { alpha: false, antialias: true, powerPreference: 'low-power' });
-  if (!context) return null;
-  // A narrowed local captured by RAF callbacks; DOM getContext() is nullable.
-  const gl: WebGLRenderingContext = context;
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, [
-    'attribute vec3 aPosition;', 'attribute vec3 aColor;',
-    'uniform mat4 uProjection;', 'uniform mat4 uView;', 'varying vec3 vColor;',
-    'void main() { vColor = aColor; gl_Position = uProjection * uView * vec4(aPosition, 1.0); }',
-  ].join('\n'));
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, [
-    'precision mediump float;', 'varying vec3 vColor;',
-    'void main() { gl_FragColor = vec4(vColor, 1.0); }',
-  ].join('\n'));
+  const selected = selectSocialWebGLContext(canvas);
+  if (!selected) return null;
+  const { gl, api } = selected;
+  const shaders = socialRoomShaderSources(api);
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, shaders.vertex);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, shaders.fragment);
   const program = gl.createProgram();
   if (!program) throw new Error('WebGL program unavailable');
   gl.attachShader(program, vertex);
@@ -119,6 +119,7 @@ export function startLocalSocialRoom(
   let animationId = 0;
   let lastFrame = 0;
   let lastDraw = 0;
+  let quality: SocialGraphicsQuality = 'balanced';
 
   function renderBuffer(buffer: WebGLBuffer, vertexCount: number): void {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -146,13 +147,14 @@ export function startLocalSocialRoom(
         avatarChanged = true;
       }
     }
-    // ~30 FPS cap; the host does not render while the room tab is hidden.
-    if (!lastDraw || timestamp - lastDraw >= 33) {
+    // Quality-capped draw cadence; the host does not render while hidden.
+    const policy = socialRoomRenderSize(1, 1, 1, quality);
+    if (!lastDraw || timestamp - lastDraw >= 1000 / policy.targetFps) {
       lastDraw = timestamp;
       const rect = canvas.getBoundingClientRect();
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-      const w = Math.max(1, Math.floor(rect.width * pixelRatio));
-      const h = Math.max(1, Math.floor(rect.height * pixelRatio));
+      const renderSize = socialRoomRenderSize(rect.width, rect.height, window.devicePixelRatio || 1, quality);
+      const w = renderSize.width;
+      const h = renderSize.height;
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       gl.viewport(0, 0, w, h);
       gl.clearColor(0.045, 0.075, 0.13, 1);
@@ -214,8 +216,11 @@ export function startLocalSocialRoom(
   function onContextLost(event: Event): void {
     event.preventDefault();
     stoppedForContextLoss = true;
+    pressed.clear();
     if (animationId) cancelAnimationFrame(animationId);
     animationId = 0;
+    // Resource handles are invalid. Never keep a frozen "online" room open.
+    onGraphicsLost?.();
   }
   function onBlur(): void { pressed.clear(); }
   canvas.addEventListener('keydown', onKeyDown);
@@ -225,6 +230,13 @@ export function startLocalSocialRoom(
   document.addEventListener('visibilitychange', onVisibility);
   resume();
   return {
+    graphicsApi: api,
+    setQuality(nextQuality) {
+      if (disposed || stoppedForContextLoss) return;
+      if (!['low', 'balanced', 'high'].includes(nextQuality)) return;
+      quality = nextQuality;
+      lastDraw = 0;
+    },
     setDirection(direction, down) {
       if (disposed) return;
       if (down) pressed.add(direction);
