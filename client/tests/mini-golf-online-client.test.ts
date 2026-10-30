@@ -50,6 +50,9 @@ describe('Mini Golf experimental client is explicit, bounded and server owned', 
     t.incoming('mini-golf:state',waiting);
     expect(session.active).toBe(true);
     expect(session.match?.phase).toBe('waiting');
+    t.incoming('mini-golf:state',{...playing,phase:'waiting',turnUserId:null});
+    expect(session.start()).toBe(true);
+    expect(t.count('mini-golf:start')).toBe(1);
     t.incoming('mini-golf:state',playing);
     expect(session.match?.players).toHaveLength(2);
     expect(statuses).toHaveBeenCalledWith('playing');
