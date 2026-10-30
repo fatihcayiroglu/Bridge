@@ -128,6 +128,22 @@ describe('15-target pocket-practice extended physics integrity', () => {
     expect(result.balls.filter(b=>b.id!==0&&!b.pocketed).every(b=>
       Math.hypot(b.x-cue.x,b.z-cue.z)>=POOL_RADIUS*2.1)).toBe(true);
   });
+  it('does not freeze the cue when the final target drops before motion settles', () => {
+    const initial=newPoolPractice();
+    const point=POOL_POCKETS[2];
+    const balls=initial.balls.map(b=>
+      b.id===0?{...b,vx:1.5,vz:0}:b.id===15?
+        {...b,x:point.x+.01,z:point.z+.01,vx:.08}:
+        {...b,pocketed:true});
+    const stillMoving=stepPool({...initial,status:'moving',balls,pocketed:14});
+    expect(stillMoving.pocketed).toBe(15);
+    expect(stillMoving.status).toBe('moving');
+    expect(stillMoving.balls[0]!.vx).toBeGreaterThan(0);
+    const complete=finish(stillMoving);
+    expect(complete.status).toBe('complete');
+    expect(complete.balls[0]!.vx).toBe(0);
+    expect(complete.balls[0]!.vz).toBe(0);
+  });
   it('marks complete only after the fifteenth unique target enters a pocket', () => {
     const initial=newPoolPractice();
     const pocket=POOL_POCKETS[1];
