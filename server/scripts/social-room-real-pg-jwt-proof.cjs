@@ -199,6 +199,11 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     assert.deepEqual(await bSeesRoleRevocation, { serverId: ids.server });
     assert.deepEqual((await aSeesRoleRevocation).peers.map(p => p.userId), [ids.a]);
     assert.deepEqual((await socialRoomStore.load(ids.server)).peers.map(p => p.userId), [ids.a]);
+    // The browser controller will send social:leave on receiving social:left.
+    // Mirror that handshake so no stale local handler remains during teardown.
+    const oldSessionLeft = waitForEvent(b, 'social:left');
+    b.emit('social:leave', { serverId: ids.server });
+    assert.deepEqual(await oldSessionLeft, { serverId: ids.server });
 
     // Restore a default permission set. A new authenticated socket can opt in
     // again; the old, revoked subscription must never auto-rejoin.
@@ -227,8 +232,11 @@ if (!process.env.DATABASE_URL?.includes('/bridge_social_3d_test') ||
     assert.deepEqual(await membershipRevoked, { serverId: ids.server });
     assert.deepEqual((await aSeesEviction).peers.map(p => p.userId), [ids.a]);
     const revokedSockets = await io.in('user:' + ids.b).fetchSockets();
-    assert.equal(revokedSockets.length, 1);
-    assert.equal(revokedSockets[0].rooms.has('social-3d:' + ids.server), false);
+    // First tab stayed connected after its role-only eviction; the second
+    // tab rejoined after the role was removed. Both must be revoked on ban.
+    assert.equal(revokedSockets.length, 2);
+    assert.equal(revokedSockets.every(socket =>
+      !socket.rooms.has('social-3d:' + ids.server)), true);
     assert.deepEqual((await socialRoomStore.load(ids.server)).peers.map(p => p.userId), [ids.a]);
 
     // Handler authorization continues to fail on any late movement from the
