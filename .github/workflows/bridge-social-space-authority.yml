@@ -50,6 +50,7 @@ on:
       - codex/activities-pool-safe-local-placement-renderer-20261031
       - chatgpt/activities-pool-snapshot-boundary-20261031
       - chatgpt/activities-pool-detached-canvas-guard-20261031
+      - chatgpt/activities-mini-golf-state-lifecycle-20261031
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
