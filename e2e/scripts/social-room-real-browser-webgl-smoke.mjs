@@ -772,6 +772,12 @@ try {
     [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
       .filter(li => li.textContent?.match(/Strokes: 1|Vuruş: 1/)).length===2,
     null, { timeout: 16000 });
+  const twoResults=await fullPage.locator('.bridge-mini-golf-results li').allTextContents();
+  assert.equal(twoResults.length,2,'the signed two-user match must expose both ranked results');
+  assert.ok(twoResults.every(label => /Place 1|Sıra 1/.test(label)),
+    'two one-shot winners share first place, never a fabricated second place');
+  assert.ok(twoResults.every(label => /Strokes: 1|Vuruş: 1/.test(label)),
+    'results must display the server-owned individual stroke counts');
   const onlineVisual = await fullPage.evaluate(() => {
     const canvas=document.querySelector('canvas.bridge-mini-golf-canvas');
     const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
@@ -894,6 +900,16 @@ try {
       /Strokes: 1|Vuruş: 1/.test(li.textContent||'')).length===8,
     null,{timeout:16000});
   assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isDisabled(),true);
+  const eightResults=await fullPage.locator('.bridge-mini-golf-results li').allTextContents();
+  assert.equal(eightResults.length,8);
+  assert.ok(eightResults.every(label => /Place 1|Sıra 1/.test(label) &&
+    /Strokes: 1|Vuruş: 1/.test(label)),
+    'all eight one-shot winners must tie in the server-owned final ranking');
+  const officialResults=await rosterPage.evaluate(() =>
+    window.__miniGolfRoster.players[6].states.at(-1).results);
+  assert.equal(officialResults.length,8);
+  assert.ok(officialResults.every(p=>p.rank===1&&p.strokes===1&&p.holed));
+  console.log('BRIDGE_MINI_GOLF_REAL_AUTH_EIGHT_PLAYER_RANKED_RESULTS:8/8:0_skipped');
   // All eight independent, authenticated PostgreSQL members must consent
   // to the rematch; 1–7 votes MUST NOT silently erase the first-round scores.
   const rematchControl=fullPage.locator('.bridge-mini-golf-rematch');
@@ -927,6 +943,8 @@ try {
       .every(li => /Strokes: 0|Vuruş: 0/.test(li.textContent||'')),
     null,{timeout:16000});
   assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isEnabled(),true);
+  assert.equal(await fullPage.locator('.bridge-mini-golf-results li').count(),0,
+    'new round must not carry over previous standings');
   await fullPage.locator('.bridge-mini-golf-shoot').click();
   await fullPage.waitForFunction(() =>
     [...document.querySelectorAll('.bridge-mini-golf-scoreboard li')]
