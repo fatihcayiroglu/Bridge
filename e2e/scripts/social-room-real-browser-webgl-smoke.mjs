@@ -68,9 +68,9 @@ try {
     await page.evaluate(({ port, token, serverId, webgl1 }) => {
       window.BridgeSocialRealBrowser.mountSocialBrowser(port, token, serverId, webgl1);
     }, { port: fixture.port, token, serverId: fixture.serverId, webgl1 });
-    await page.waitForFunction(() => {
+    await page.waitForFunction((count) => {
       const s = window.__bridge3DSmoke;
-      return s?.status === 'online' && s.lastFrame?.peers.length === expectedPeers;
+      return s?.status === 'online' && s.lastFrame?.peers.length === count;
     }, expectedPeers, { timeout: 12000 });
     const gpu = await page.evaluate(() => {
       const s = window.__bridge3DSmoke;
