@@ -1005,17 +1005,17 @@ try {
   await mobilePage.locator('#app').waitFor({state:'visible',timeout:20000});
   const mobileServerIcon=mobilePage.locator('.server-icon[data-id="'+fixture.serverId+'"]');
   await mobileServerIcon.waitFor({state:'visible',timeout:20000});
-  // A selected server may sit under the collapsed rail off-screen on mobile.
-  // Do not fake a click on an already-selected icon; require real active state.
-  if (await mobileServerIcon.getAttribute('aria-current') !== 'true') {
-    await mobileServerIcon.tap();
-  }
-  assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
-    'actual server selection must be active before opening mobile Activities');
-  // The server rail is an off-screen drawer on genuine narrow devices.
-  // Navigate via the shipped bottom tab, not DOM click() on a hidden button.
+  // On a phone, the "active" icon may be hydrated before the actual selected
+  // server is registered. Exercise the SAME tap as a human to establish the
+  // current server, then open the real Servers drawer for Activities.
   await mobilePage.locator('#mnav-servers').tap();
   await mobilePage.locator('.server-list').waitFor({state:'visible'});
+  await mobileServerIcon.tap();
+  assert.equal(await mobileServerIcon.getAttribute('aria-current'),'true',
+    'a real mobile server tap must establish the active server');
+  if (!await mobilePage.locator('.server-list').evaluate(el=>el.classList.contains('open'))) {
+    await mobilePage.locator('#mnav-servers').tap();
+  }
   await mobilePage.locator('#bridge-activities-entry').tap();
   await mobilePage.getByRole('dialog',{name:'Bridge Activities'}).waitFor();
   await mobilePage.locator('[data-game-id="mini-golf"]').tap();
