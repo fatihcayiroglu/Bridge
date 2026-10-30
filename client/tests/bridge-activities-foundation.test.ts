@@ -5,16 +5,26 @@ import { BRIDGE_3D_GAME_CATALOG, BRIDGE_SOCIAL_SPACE } from '../js/core/activiti
 import { moveRoomAvatar, socialRoomAvatarGeometry, staticSocialRoomGeometry, SOCIAL_ROOM_BOUNDS } from '../js/core/activities/social-room-geometry.ts';
 
 describe('Bridge Activities 3D product foundation (not game acceptance)', () => {
-  it('catalogs exactly 10 planned games without claiming a playable session', () => {
+  it('keeps nine games planned and explicitly labels Mini Golf local solo practice', () => {
     expect(BRIDGE_3D_GAME_CATALOG).toHaveLength(10);
     expect(new Set(BRIDGE_3D_GAME_CATALOG.map(game => game.id)).size).toBe(10);
+    expect(BRIDGE_3D_GAME_CATALOG.filter(game => game.state === 'planned')).toHaveLength(9);
+    expect(BRIDGE_3D_GAME_CATALOG.filter(game => game.state === 'solo-practice')).toHaveLength(1);
+    const golf = BRIDGE_3D_GAME_CATALOG.find(game => game.id === 'mini-golf');
+    expect(golf).toMatchObject({
+      id: 'mini-golf', state: 'solo-practice', minPlayers: 2, maxPlayers: 8,
+    });
     for (const game of BRIDGE_3D_GAME_CATALOG) {
-      expect(game.state).toBe('planned');
       expect(game.id).toMatch(/^[a-z0-9-]+$/);
       expect(game.minPlayers).toBeGreaterThanOrEqual(2);
       expect(game.maxPlayers).toBeGreaterThanOrEqual(game.minPlayers);
       expect(game.maxPlayers).toBeLessThanOrEqual(16);
     }
+    const panel = fs.readFileSync(
+      path.resolve(__dirname, '../js/core/activities/bridge-activities-panel.ts'), 'utf8');
+    expect(panel).toContain('bridge-mini-golf-start');
+    expect(panel).toContain('miniGolf?.setAuthoritativeBall');
+    expect(panel).toContain('onlineGolf?.start()');
   });
 
   it('keeps the 3D social destination separate from all games', () => {
