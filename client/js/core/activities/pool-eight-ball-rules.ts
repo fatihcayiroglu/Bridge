@@ -29,12 +29,14 @@ export interface LocalEightBallRules {
   readonly winner: EightBallPlayer | null;
   readonly shotsResolved: number;
   readonly last: EightBallShotResult | null;
+  /** After a non-terminal foul the incoming player must physically place the cue. */
+  readonly ballInHand: 'anywhere' | 'head-string' | null;
 }
 
 export function newLocalEightBallRules(): LocalEightBallRules {
   return {
     phase: 'break', currentPlayer: 0, groups: [null, null],
-    winner: null, shotsResolved: 0, last: null,
+    winner: null, shotsResolved: 0, last: null, ballInHand: null,
   };
 }
 
@@ -64,6 +66,7 @@ export function resolveLocalEightBallShot(
   if(rules.phase==='finished'||rules.phase==='choose-group'||
       rules.phase==='illegal-break-choice'||
       rules.phase==='eight-respot-required'||rules.winner!==null ||
+      rules.ballInHand!==null ||
       before.shots!==rules.shotsResolved || after.shots!==before.shots+1 ||
       before.status!=='ready'||after.status==='moving' ||
       after.scratches<before.scratches||after.scratches>before.scratches+1 ||
@@ -120,16 +123,21 @@ export function resolveLocalEightBallShot(
     actor,pocketed,firstObjectHit:hit,foul,retainedTurn,eightPocketed,
   };
   const common={shotsResolved:after.shots,last:result};
+  // The old solo-practice cue auto-respot is not legal ball-in-hand.
+  // An independent, validated placement must be explicitly completed before
+  // the next local rules shot. Break scratches are restricted behind the head line.
+  const ballInHand: 'anywhere'|'head-string'|null = foul
+    ? (isBreak?'head-string':'anywhere') : null;
   if(eightPocketed) {
     if(isBreak) {
       // Eight on break is not an automatic win/loss. Physics must re-spot it
       // safely before any next shot, so do not advance this candidate match.
       return {...rules,...common,phase:'eight-respot-required',
-        currentPlayer:foul?other(actor):actor};
+        currentPlayer:foul?other(actor):actor,ballInHand:null};
     }
     const legalEight=requiredEight&&hit===8&&!foul;
     return {...rules,...common,phase:'finished',
-      winner:legalEight?actor:other(actor),currentPlayer:actor};
+      winner:legalEight?actor:other(actor),currentPlayer:actor,ballInHand:null};
   }
   if(isBreak) {
     // WPA: if no object was pocketed, four DIFFERENT object balls must
@@ -139,10 +147,10 @@ export function resolveLocalEightBallShot(
     if(pocketed.length===0&&breakRails.length<4) {
       return {...rules,shotsResolved:after.shots,
         last:{...result,foul:foul??'illegal-break',retainedTurn:false},
-        phase:'illegal-break-choice',currentPlayer:other(actor)};
+        phase:'illegal-break-choice',currentPlayer:other(actor),ballInHand:null};
     }
     // Table stays open after break even if a solid/stripe was sunk.
-    return {...rules,...common,phase:'open',
+    return {...rules,...common,phase:'open',ballInHand,
       currentPlayer:retainedTurn?actor:other(actor)};
   }
   if(rules.phase==='open') {
@@ -161,7 +169,7 @@ export function resolveLocalEightBallShot(
       return {...rules,...common,phase:'choose-group',currentPlayer:actor};
     }
   }
-  return {...rules,...common,phase:myGroup===null?'open':'assigned',
+  return {...rules,...common,phase:myGroup===null?'open':'assigned',ballInHand,
     currentPlayer:retainedTurn?actor:other(actor)};
 }
 
