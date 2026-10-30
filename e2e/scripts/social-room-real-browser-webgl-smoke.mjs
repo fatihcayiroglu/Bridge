@@ -531,12 +531,12 @@ try {
     null, { timeout: 10000 });
 
   // A real user switching to Games tears down the shared 3D subscription.
-  // The 10 selected mini games remain correctly marked planned, not playable.
+  // Ten catalog cards: eight planned games and two local playable 3D practices.
   await panelPage.getByRole('tab', { name: '3D Mini Games' }).click();
   assert.equal(await panelPage.locator('.bridge-activities-card').count(), 10);
-  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 9);
-  assert.equal(await panelPage.locator('.bridge-activities-solo').count(), 1,
-    'solo-only Mini Golf must not be mistaken for multiplayer ready');
+  assert.equal(await panelPage.locator('.bridge-activities-planned').count(), 8);
+  assert.equal(await panelPage.locator('.bridge-activities-solo').count(), 2,
+    'Mini Golf and Pool local practices must not be mistaken for multiplayer ready');
   await panelPage.getByRole('button', { name: 'Play 3D Mini Golf practice' }).click();
   const golfCanvas = panelPage.locator('canvas.bridge-mini-golf-canvas');
   await golfCanvas.waitFor();
@@ -724,6 +724,24 @@ try {
     null, { timeout: 12000 });
   await fullPage.locator('.bridge-mini-golf-back').click();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+  // Second playable prototype: actual logged-in Bridge UI, 3D WebGL
+  // pocket-practice shot, deterministic local score and reset. Not online 8-ball.
+  await fullPage.locator('[data-game-id="eight-ball-pool"]').click();
+  await fullPage.locator('canvas.bridge-pool-canvas').waitFor({state:'visible'});
+  assert.match(await fullPage.locator('.bridge-pool-status').textContent(), /Shots: 0|Vuruş: 0/);
+  const poolWebGL=await fullPage.locator('canvas.bridge-pool-canvas').evaluate(canvas=>
+    Boolean(canvas.getContext('webgl2')||canvas.getContext('webgl')));
+  assert.equal(poolWebGL,true,'Pool practice requires actual WebGL');
+  await fullPage.locator('.bridge-pool-shoot').click();
+  await fullPage.waitForFunction(()=>/Shots: 1|Vuruş: 1/.test(
+    document.querySelector('.bridge-pool-status')?.textContent||''),null,{timeout:8000});
+  assert.equal(await fullPage.locator('.bridge-pool-shoot').isDisabled(),true,
+    'cue is locked during physical rolling');
+  await fullPage.locator('.bridge-pool-reset').click();
+  assert.match(await fullPage.locator('.bridge-pool-status').textContent(),/Shots: 0|Vuruş: 0/);
+  await fullPage.locator('.bridge-pool-back').click();
+  assert.equal(await fullPage.locator('.bridge-activities-card').count(),10);
+  console.log('BRIDGE_3D_POOL_REAL_AUTH_APP_SOLO_SHOOT_RESET:1/1:0_skipped');
   // FULL SHIPPED UI: real Express login Alice plus a third real PostgreSQL
   // member on an independent, production-JWT Socket.IO connection. The UI
   // starts offline and must explicitly join; state/turn/score are server-owned.
@@ -1156,7 +1174,27 @@ try {
 
   await mobilePage.locator('.bridge-mini-golf-back').tap();
   assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
+  await mobilePage.locator('[data-game-id="eight-ball-pool"]').tap();
+  const mobilePool=mobilePage.locator('canvas.bridge-pool-canvas');
+  await mobilePool.waitFor({state:'visible'});
+  const mobilePoolLayout=await mobilePage.evaluate(()=>{
+    const d=document.querySelector('.bridge-activities-dialog');
+    const shoot=document.querySelector('.bridge-pool-shoot');
+    const canvas=document.querySelector('canvas.bridge-pool-canvas');
+    return {overflow:(d?.scrollWidth||0)-(d?.clientWidth||0),
+      shotHeight:shoot?.getBoundingClientRect().height||0,
+      webgl:Boolean(canvas?.getContext('webgl2')||canvas?.getContext('webgl'))};
+  });
+  assert.ok(mobilePoolLayout.overflow<=3,'mobile pool must not horizontally overflow');
+  assert.ok(mobilePoolLayout.shotHeight>=44,'pool mobile cue target must be touch friendly');
+  assert.equal(mobilePoolLayout.webgl,true);
+  await mobilePage.locator('.bridge-pool-shoot').tap();
+  await mobilePage.waitForFunction(()=>/Shots: 1|Vuruş: 1/.test(
+    document.querySelector('.bridge-pool-status')?.textContent||''),null,{timeout:8000});
+  await mobilePage.locator('.bridge-pool-back').tap();
+  assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
   await mobilePage.locator('.bridge-activities-close').tap();
+  console.log('BRIDGE_3D_POOL_MOBILE_CHROMIUM_TOUCH_SOLO:1/1:0_skipped');
   console.log('BRIDGE_MINI_GOLF_REAL_MOBILE_CHROMIUM_TOUCH:1/1:0_skipped');
 
   console.log('BRIDGE_3D_MINI_GOLF_REAL_AUTH_APP_JOURNEY:1/1:0_skipped');

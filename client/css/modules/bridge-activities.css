@@ -212,3 +212,18 @@
   .bridge-mini-golf-controls button { min-width: 0; }
   .bridge-mini-golf-online-button, .bridge-mini-golf-rematch, .bridge-mini-golf-start { min-height: 48px; }
 }
+
+/* 8-Ball Pool local practice: uses the same responsive controls and semantic
+   design tokens as Mini Golf. No fullscreen or permission-grabbing layer. */
+.bridge-pool-canvas { height: clamp(260px, 48dvh, 500px); }
+.bridge-mini-golf-label input.bridge-pool-aim,
+.bridge-mini-golf-label input.bridge-pool-power {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--focus-ring);
+  touch-action: pan-y;
+}
+.bridge-pool-shoot,
+.bridge-pool-reset,
+.bridge-pool-back { min-height: 44px; }

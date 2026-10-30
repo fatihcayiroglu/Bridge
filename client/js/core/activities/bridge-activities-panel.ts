@@ -6,6 +6,8 @@ import { startLocalSocialRoom, type RoomDirection, type SocialRoomHandle } from 
 import { joinSocialRoomPreview, type SocialClient, type SocialClientStatus, type SocialSocket } from './social-room-client.ts';
 import { startMiniGolfPractice, type MiniGolfHandle } from './mini-golf-webgl.ts';
 import type { GolfState } from './mini-golf-physics.ts';
+import { startPoolPractice, type PoolPracticeHandle } from './pool-practice-webgl.ts';
+import type { PoolState } from './pool-practice-physics.ts';
 import { joinOnlineMiniGolf, type OnlineGolfSession, type OnlineGolfMatch, type OnlineGolfStatus } from './mini-golf-client.ts';
 
 type ActivitiesTab = 'games' | 'social';
@@ -15,6 +17,7 @@ let previousAppInert = false;
 let room: SocialRoomHandle | null = null;
 let socialSession: SocialClient | null = null;
 let miniGolf: MiniGolfHandle | null = null;
+let poolPractice: PoolPracticeHandle | null = null;
 let onlineGolf: OnlineGolfSession | null = null;
 let currentTab: ActivitiesTab = 'games';
 
@@ -43,6 +46,8 @@ function disposeRoom(): void {
   onlineGolf = null;
   miniGolf?.dispose();
   miniGolf = null;
+  poolPractice?.dispose();
+  poolPractice = null;
   socialSession?.dispose();
   socialSession = null;
   room?.dispose();
@@ -283,6 +288,63 @@ function showMiniGolf(container: HTMLElement): void {
   }
 }
 
+/** A second genuinely playable local 3D practice, not networked 8-ball. */
+function showPoolPractice(container:HTMLElement):void {
+  const s=strings();
+  container.replaceChildren();
+  const back=makeButton(s.backToGames,'bridge-room-direction bridge-pool-back',()=>{
+    poolPractice?.dispose();
+    poolPractice=null;
+    container.replaceChildren();showGames(container);
+  });
+  const heading=element('h3','bridge-mini-golf-heading','8-Ball Pool · '+s.poolSolo);
+  const help=element('p','bridge-activities-help',s.poolHelp);
+  const canvas=element('canvas','bridge-activities-canvas bridge-pool-canvas');
+  canvas.setAttribute('aria-label','3D Pool pocket practice');
+  const status=element('p','bridge-room-status bridge-pool-status');
+  status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+  const controls=element('div','bridge-mini-golf-controls');
+  const aimLabel=element('label','bridge-mini-golf-label',s.poolAim);
+  const aim=element('input','bridge-pool-aim');
+  aim.type='range';aim.min='-70';aim.max='70';aim.step='5';aim.value='0';
+  aimLabel.append(aim);
+  const powerLabel=element('label','bridge-mini-golf-label',s.poolPower);
+  const power=element('input','bridge-pool-power');
+  power.type='range';power.min='10';power.max='100';power.step='5';power.value='60';
+  powerLabel.append(power);
+  const shoot=makeButton(s.poolShoot,'bridge-room-direction bridge-pool-shoot',()=>{
+    poolPractice?.shoot(Number(aim.value),Number(power.value));
+  });
+  const reset=makeButton(s.poolReset,'bridge-room-direction bridge-pool-reset',()=>{
+    poolPractice?.reset();
+  });
+  function update(state:PoolState):void {
+    status.textContent=s.poolShots+': '+state.shots+' · '+s.poolPocketed+': '+state.pocketed+
+      '/5 · '+s.poolScratches+': '+state.scratches+' · '+
+      (state.status==='complete'?s.poolComplete:
+        state.status==='moving'?s.poolMoving:s.poolReady);
+    const ready=state.status==='ready' && (poolPractice?.isGraphicsAvailable??true);
+    shoot.disabled=!ready;aim.disabled=!ready;power.disabled=!ready;
+  }
+  controls.append(aimLabel,powerLabel,shoot,reset);
+  container.append(back,heading,help,canvas,status,controls);
+  try{
+    poolPractice=startPoolPractice(canvas,update,()=>{
+      shoot.disabled=true;aim.disabled=true;power.disabled=true;
+      status.textContent=s.graphicsLost;
+    },()=>{if(poolPractice)update(poolPractice.state);});
+    if(!poolPractice){
+      status.textContent=s.noWebgl;shoot.disabled=true;reset.disabled=true;
+      aim.disabled=true;power.disabled=true;return;
+    }
+    update(poolPractice.state);
+  }catch{
+    poolPractice?.dispose();poolPractice=null;
+    status.textContent=s.noWebgl;
+    shoot.disabled=true;reset.disabled=true;aim.disabled=true;power.disabled=true;
+  }
+}
+
 function showGames(container: HTMLElement): void {
   const s = strings();
   container.append(element('p', 'bridge-activities-help', s.gamesHelp));
@@ -296,8 +358,11 @@ function showGames(container: HTMLElement): void {
         game.state === 'solo-practice' ? s.solo : s.planned),
     );
     if (game.state === 'solo-practice') {
-      const play = makeButton(s.tryGolf, 'bridge-room-direction bridge-mini-golf-launch', () => showMiniGolf(container));
-      play.setAttribute('data-game-id', game.id);
+      const isGolf=game.id==='mini-golf';
+      const play=makeButton(isGolf?s.tryGolf:s.tryPool,
+        'bridge-room-direction bridge-mini-golf-launch',
+        ()=>isGolf?showMiniGolf(container):showPoolPractice(container));
+      play.setAttribute('data-game-id',game.id);
       card.append(play);
     }
     grid.append(card);
