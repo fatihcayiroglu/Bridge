@@ -148,6 +148,25 @@ describe('two-player Mini Golf authority',()=>{
     await a.trigger('disconnect');
     expect((await golfMatchStore.load(server)).players).toEqual([]);
   });
+  it('cancels an in-flight join BEFORE the first awaited membership check, no ghost slot',async()=>{
+    const server=sid(),a=socket('a',server);
+    let authStarted: (()=>void)|undefined;
+    let releaseAuth: ((v: { banned: boolean })=>void)|undefined;
+    const entered=new Promise<void>(resolve=>{authStarted=resolve;});
+    members.mockImplementationOnce(() => {
+      authStarted?.();
+      return new Promise<{ banned:boolean }>(resolve=>{releaseAuth=resolve;});
+    });
+    const pending=a.trigger('mini-golf:join',{serverId:server});
+    await entered;
+    await a.trigger('mini-golf:leave',{serverId:server});
+    expect(a.last('mini-golf:left')).toEqual({serverId:server});
+    releaseAuth?.({banned:false});
+    await pending;
+    expect(a.last('mini-golf:state')).toBeUndefined();
+    expect((await golfMatchStore.load(server)).players).toEqual([]);
+  });
+
   it('isolates server-specific match records and rejects another tenant',async()=>{
     const first=sid(),second=sid(),a=socket('a',first);
     await a.trigger('mini-golf:join',{serverId:first});
