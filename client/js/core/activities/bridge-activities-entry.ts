@@ -5,7 +5,7 @@
  */
 let opening = false;
 
-function bindActivitiesEntry(): void {
+export function bindActivitiesEntry(): void {
   const button = document.getElementById('bridge-activities-entry');
   if (!(button instanceof HTMLButtonElement) || button.dataset.activitiesBound === 'true') return;
   button.dataset.activitiesBound = 'true';
