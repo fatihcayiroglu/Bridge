@@ -86,8 +86,10 @@ function click(selector:string) {
   button!.click();
 }
 function setServer(socket:unknown) {
-  vi.mocked(BridgeRegistry.call).mockImplementation((name:string)=>name==='getCurrentServer'?{_id:'server1'}:undefined);
-  vi.mocked(BridgeRegistry.get).mockImplementation((name:string)=>name==='socket'?socket:null);
+  const call = BridgeRegistry.call as unknown as { mockImplementation(fn:(name:string)=>unknown):void };
+  const get = BridgeRegistry.get as unknown as { mockImplementation(fn:(name:string)=>unknown):void };
+  call.mockImplementation(name=>name==='getCurrentServer'?{_id:'server1'}:undefined);
+  get.mockImplementation(name=>name==='socket'?socket:null);
 }
 beforeEach(() => {
   document.documentElement.lang='en';
@@ -184,8 +186,13 @@ describe('real Activities panel DOM behavior, with isolated renderer/socket unit
   it('supports social arrow movement, Escape and backdrop exit without leaving modal state behind',()=>{
     showBridgeActivities('social');
     const forward=document.querySelector<HTMLButtonElement>('.bridge-room-direction')!;
-    forward.dispatchEvent(new PointerEvent('pointerdown', {pointerId:1,pointerType:'mouse',button:0}));
-    forward.dispatchEvent(new PointerEvent('pointerup', {pointerId:1,pointerType:'mouse'}));
+    Object.defineProperty(forward,'setPointerCapture',{value:vi.fn(),configurable:true});
+    const down=new Event('pointerdown',{bubbles:true});
+    Object.assign(down,{pointerId:1,pointerType:'mouse',button:0});
+    const up=new Event('pointerup',{bubbles:true});
+    Object.assign(up,{pointerId:1,pointerType:'mouse'});
+    forward.dispatchEvent(down);
+    forward.dispatchEvent(up);
     click('[data-tab="games"]');
     showBridgeActivities('social');
     expect(document.querySelectorAll('.bridge-activities-overlay')).toHaveLength(1);
