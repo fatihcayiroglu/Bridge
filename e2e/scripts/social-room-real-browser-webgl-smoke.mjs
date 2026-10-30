@@ -59,7 +59,7 @@ try {
     headless: true, channel: 'chrome',
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
-  async function openSession(token, webgl1) {
+  async function openSession(token, webgl1, expectedPeers) {
     const context = await browser.newContext({ viewport: { width: 770, height: 520 } });
     const page = await context.newPage();
     pages.push({ page, context });
@@ -70,8 +70,8 @@ try {
     }, { port: fixture.port, token, serverId: fixture.serverId, webgl1 });
     await page.waitForFunction(() => {
       const s = window.__bridge3DSmoke;
-      return s?.status === 'online' && s.lastFrame?.peers.length === 1;
-    }, null, { timeout: 12000 });
+      return s?.status === 'online' && s.lastFrame?.peers.length === expectedPeers;
+    }, expectedPeers, { timeout: 12000 });
     const gpu = await page.evaluate(() => {
       const s = window.__bridge3DSmoke;
       const canvas = document.querySelector('canvas');
@@ -93,8 +93,8 @@ try {
 
   // Each page is an isolated, real Chromium browsing context, not an
   // in-process fake socket or a simulated renderer.
-  const alice = await openSession(fixture.aliceToken, false);
-  const bob = await openSession(fixture.bobToken, true);
+  const alice = await openSession(fixture.aliceToken, false, 1);
+  const bob = await openSession(fixture.bobToken, true, 2);
   await Promise.all([alice, bob].map(p => p.waitForFunction(() =>
     window.__bridge3DSmoke.lastFrame?.peers.length === 2, null, { timeout: 10000 })));
   const both = await Promise.all([alice, bob].map(p => p.evaluate(() => ({
