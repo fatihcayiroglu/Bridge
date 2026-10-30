@@ -9,6 +9,9 @@ export interface MiniGolfHandle {
   get state(): GolfState;
   shoot(degrees: number, power: number): boolean;
   reset(): void;
+  /** Server-owned ball resting point; no client-side shot physics in online mode. */
+  setAuthoritativeBall(x: number, z: number): boolean;
+  leaveOnline(): void;
   dispose(): void;
   readonly isGraphicsAvailable: boolean;
 }
@@ -127,13 +130,17 @@ function release(gl:Gl,gpu:Resources){
   gl.deleteBuffer(gpu.staticBuffer);gl.deleteBuffer(gpu.movingBuffer);
   gl.deleteProgram(gpu.program);gl.deleteShader(gpu.vertex);gl.deleteShader(gpu.fragment);
 }
-export function startMiniGolfPractice(canvas:HTMLCanvasElement,onState:(state:GolfState)=>void):MiniGolfHandle|null {
+export function startMiniGolfPractice(
+  canvas: HTMLCanvasElement, onState: (state: GolfState) => void,
+  onGraphicsLost?: () => void,
+): MiniGolfHandle | null {
   const context=selectSocialWebGLContext(canvas);
   if(!context)return null;
   const {gl,api}=context;
   const staticData=course();
   let gpu:Resources|null=allocate(gl,api,staticData);
   let state=newGolfRound(),disposed=false,lost=false,raf=0,lastTime=0,acc=0,lastDraw=0;
+  let authoritativeBall: { x: number; z: number } | null = null;
   const camera=view();
   onState(state);
   function draw(now:number){
@@ -156,7 +163,7 @@ export function startMiniGolfPractice(canvas:HTMLCanvasElement,onState:(state:Go
     };
     render(gpu.staticBuffer,staticData.length/6);
     const moving:number[]=[];
-    ball(moving,state.x,.23,state.z);
+    ball(moving,authoritativeBall?.x ?? state.x,.23,authoritativeBall?.z ?? state.z);
     gl.bindBuffer(gl.ARRAY_BUFFER,gpu.movingBuffer);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(moving),gl.DYNAMIC_DRAW);
     render(gpu.movingBuffer,moving.length/6);
@@ -169,7 +176,7 @@ export function startMiniGolfPractice(canvas:HTMLCanvasElement,onState:(state:Go
     lastTime=now;
     acc+=elapsed;
     let steps=0,changed=false;
-    while(acc>=GOLF_FIXED_DT&&steps<8){
+    while(!authoritativeBall&&acc>=GOLF_FIXED_DT&&steps<8){
       const next=stepGolf(state);
       changed ||= next!==state;
       state=next;
@@ -190,6 +197,7 @@ export function startMiniGolfPractice(canvas:HTMLCanvasElement,onState:(state:Go
   function contextLost(event:Event){
     event.preventDefault();lost=true;
     if(raf)cancelAnimationFrame(raf);raf=0;gpu=null;
+    onGraphicsLost?.();
     onState(state);
   }
   function contextRestored(){
@@ -205,12 +213,19 @@ export function startMiniGolfPractice(canvas:HTMLCanvasElement,onState:(state:Go
     get state(){return state;},
     get isGraphicsAvailable(){return !disposed&&!lost&&gpu!==null;},
     shoot(degrees,power){
-      if(disposed||lost||!gpu)return false;
+      if(disposed||lost||!gpu||authoritativeBall)return false;
       const next=strikeGolf(state,degrees,power);
       if(next===state)return false;
       state=next;onState(state);return true;
     },
     reset(){if(disposed)return;state=newGolfRound();acc=0;onState(state);},
+    setAuthoritativeBall(x,z) {
+      if(disposed||lost||!gpu||!Number.isFinite(x)||!Number.isFinite(z)||
+          Math.abs(x)>2.25||Math.abs(z)>4.6)return false;
+      authoritativeBall={x,z};
+      return true;
+    },
+    leaveOnline(){authoritativeBall=null;state=newGolfRound();acc=0;onState(state);},
     dispose(){
       if(disposed)return;disposed=true;
       if(raf)cancelAnimationFrame(raf);
