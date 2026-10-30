@@ -22,7 +22,8 @@ export function placeLocalCueBall(
   rules: LocalEightBallRules, table: PoolState,
   player: EightBallPlayer, x: number, z: number,
 ): LocalCuePlacement | null {
-  if(rules.ballInHand===null||rules.winner!==null||
+  if((rules.ballInHand!=='anywhere'&&rules.ballInHand!=='head-string')||
+      rules.winner!==null||
       !rules.last||rules.last.foul===null||
       rules.last.actor===player||
       rules.last.actor!==0&&rules.last.actor!==1||
