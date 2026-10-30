@@ -729,6 +729,9 @@ try {
   await fullPage.locator('[data-game-id="eight-ball-pool"]').click();
   await fullPage.locator('canvas.bridge-pool-canvas').waitFor({state:'visible'});
   assert.match(await fullPage.locator('.bridge-pool-status').textContent(), /Shots: 0|Vuruş: 0/);
+  assert.match(await fullPage.locator('.bridge-pool-status').textContent(),
+    /(?:Balls pocketed|Girilen toplar):\s*0\/15/,
+    'real authenticated Bridge UI must show all 15 locally-racked targets');
   const poolWebGL=await fullPage.locator('canvas.bridge-pool-canvas').evaluate(canvas=>
     Boolean(canvas.getContext('webgl2')||canvas.getContext('webgl')));
   assert.equal(poolWebGL,true,'Pool practice requires actual WebGL');
