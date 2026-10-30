@@ -33,11 +33,13 @@ export function registerMiniGolfHandlers(
   // Never wire a privileged listener if the experiment is disabled.
   if (process.env.BRIDGE_MINI_GOLF_MULTIPLAYER !== '1') return;
   const joined = new Set<string>();
+  const joining = new Set<string>();
+  const canceledJoins = new Set<string>();
   let disconnected = false;
   const reject = (serverId: string | null, code = 'GOLF_UNAVAILABLE') =>
     socket.emit('mini-golf:error', { code, ...(serverId ? { serverId } : {}) });
   const reply = (game: ReturnType<typeof emptyGolfMatch>) =>
-    socket.emit('mini-golf:state', publicGolfMatch(game));
+    socket.emit('mini-golf:state', { ...publicGolfMatch(game), you: userId });
 
   async function remove(serverId: string): Promise<void> {
     await golfMatchStore.withLock(serverId, async () => {
@@ -58,9 +60,12 @@ export function registerMiniGolfHandlers(
 
   socket.on('mini-golf:join', isolateSocketHandler(socket, 'mini-golf:join', async (payload: unknown) => {
     const serverId = serverFrom(payload);
-    if (!serverId || disconnected || !await authorized(socket, userId, serverId)) {
+    if (!serverId || disconnected || joining.has(serverId) ||
+        !await authorized(socket, userId, serverId)) {
       reject(serverId); return;
     }
+    joining.add(serverId);
+    try {
     let denial = false;
     const game = await golfMatchStore.withLock(serverId, async () => {
       // Authorization before lock is not enough; a membership kick may race it.
@@ -79,12 +84,18 @@ export function registerMiniGolfHandlers(
       await golfMatchStore.save(serverId, state);
       return state;
     });
-    if (denial || !game || disconnected || !await authorized(socket, userId, serverId)) {
-      if (game) await remove(serverId);
-      reject(serverId); return;
+    if (denial || !game || disconnected || canceledJoins.has(serverId) ||
+        !await authorized(socket, userId, serverId)) {
+      if (game && game.players.some(p => p.socketId === socket.id)) await remove(serverId);
+      if (!disconnected && !canceledJoins.has(serverId)) reject(serverId);
+      return;
     }
     joined.add(serverId);
     reply(game);
+    } finally {
+      joining.delete(serverId);
+      canceledJoins.delete(serverId);
+    }
   }));
 
   socket.on('mini-golf:sync', isolateSocketHandler(socket, 'mini-golf:sync', async (payload: unknown) => {
@@ -139,12 +150,19 @@ export function registerMiniGolfHandlers(
 
   socket.on('mini-golf:leave', isolateSocketHandler(socket, 'mini-golf:leave', async (payload: unknown) => {
     const serverId = serverFrom(payload);
-    if (!serverId || !joined.has(serverId)) { reject(serverId); return; }
+    if (!serverId) { reject(null); return; }
+    if (!joined.has(serverId) && joining.has(serverId)) {
+      canceledJoins.add(serverId);
+      socket.emit('mini-golf:left', { serverId });
+      return;
+    }
+    if (!joined.has(serverId)) { reject(serverId); return; }
     await remove(serverId);
     socket.emit('mini-golf:left', { serverId });
   }));
   socket.on('disconnect', isolateSocketHandler(socket, 'mini-golf:disconnect', async () => {
     disconnected = true;
+    for (const serverId of joining) canceledJoins.add(serverId);
     for (const serverId of [...joined]) await remove(serverId);
   }));
 }
