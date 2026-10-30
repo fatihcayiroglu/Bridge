@@ -10,8 +10,11 @@ on:
       - codex/activities-3d-social-presence-authority-20261030
       - codex/activities-3d-context-recovery-20261030
       - codex/activities-3d-live-socket-proof-20261030
+      - codex/activities-3d-postgres-jwt-acceptance-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
+      - 'server/lib/liveMembership.ts'
+      - 'server/tests/live-membership-eviction.test.ts'
       - 'server/socket/index.ts'
       - 'server/tests/social-room-authority.test.ts'
       - 'server/scripts/social-room-real-redis-proof.cjs'
@@ -68,11 +71,11 @@ jobs:
       - name: Real social-room handler contract tests, zero skipped
         working-directory: server
         run: |
-          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/social-room-authority.test.ts --json --outputFile=social-room-evidence.json
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts --json --outputFile=social-room-evidence.json
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
-          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 12 ||
+          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 31 ||
               r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
               r.numPassedTests !== r.numTotalTests) {
             console.error('SOCIAL_3D_AUTHORITY_TESTS_UNQUALIFIED');
