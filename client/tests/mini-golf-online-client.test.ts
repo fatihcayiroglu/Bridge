@@ -24,10 +24,10 @@ function transport() {
 }
 const waiting = {
   serverId: 'server1', revision: 1, phase: 'waiting', you: 'alice',
-  turnUserId: null, players: [{ userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false }],
+  turnUserId: null, minPlayers: 2, maxPlayers: 8, players: [{ userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false }],
 } as const;
 const playing = {
-  serverId: 'server1', revision: 2, phase: 'playing', you: 'alice', turnUserId: 'alice',
+  serverId: 'server1', revision: 2, phase: 'playing', you: 'alice', turnUserId: 'alice', minPlayers: 2, maxPlayers: 8,
   players: [
     { userId: 'alice', x: 0, z: 3.6, strokes: 0, won: false },
     { userId: 'bob', x: 0, z: 3.6, strokes: 0, won: false },
