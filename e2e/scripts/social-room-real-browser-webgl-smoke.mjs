@@ -845,6 +845,41 @@ try {
   await fullPage.waitForFunction(() =>
     document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Opponent|Rakibinin/),
     null,{timeout:12000});
+
+  // Actual late-game transport loss: fourth member loses the socket while the
+  // other seven remain on the same Redis match. An eighth authenticated seat
+  // must be RESERVED (not released), all shots pause, and a fresh socket
+  // belonging to the same JWT principal can explicitly reclaim that seat.
+  await rosterPage.evaluate(() => window.__miniGolfRoster.drop(2));
+  await rosterPage.evaluate(() => window.__miniGolfRoster.sync(0));
+  await rosterPage.waitForFunction(() =>
+    window.__miniGolfRoster.players[0].states.at(-1)?.players[3]?.reconnecting === true,
+    null,{timeout:12000});
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/reconnecting|yeniden bağlanıyor/i),
+    null,{timeout:14000});
+  const previousErrorCount = await rosterPage.evaluate(() =>
+    window.__miniGolfRoster.players[0].errors.length);
+  await rosterPage.evaluate(() => window.__miniGolfRoster.shoot(0,0,60));
+  await rosterPage.waitForFunction(count =>
+    window.__miniGolfRoster.players[0].errors.length > count,
+    previousErrorCount,{timeout:12000});
+  assert.equal(await fullPage.locator('.bridge-mini-golf-shoot').isDisabled(),true,
+    'a peer transport gap must pause all local online shots');
+  await rosterPage.evaluate(() => window.__miniGolfRoster.reconnect(2));
+  await rosterPage.waitForFunction(() => window.__miniGolfRoster.players[2].ready,
+    null,{timeout:12000});
+  await rosterPage.evaluate(() => window.__miniGolfRoster.join(2));
+  await rosterPage.waitForFunction(() =>
+    window.__miniGolfRoster.players[2].states.at(-1)?.phase === 'playing' &&
+    window.__miniGolfRoster.players[2].states.at(-1)?.players.length === 8 &&
+    window.__miniGolfRoster.players[2].states.at(-1)?.players[3]?.reconnecting === false,
+    null,{timeout:12000});
+  await fullPage.waitForFunction(() =>
+    document.querySelector('.bridge-mini-golf-online-status')?.textContent?.match(/Opponent|Rakibinin/),
+    null,{timeout:14000});
+  console.log('BRIDGE_MINI_GOLF_REAL_PG_REDIS_EIGHT_PLAYER_REJOIN:1/1:0_skipped');
+
   for(let i=0;i<7;i++){
     await rosterPage.evaluate(i=>window.__miniGolfRoster.shoot(i,0,60),i);
     await rosterPage.waitForFunction(i=>{

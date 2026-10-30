@@ -35,6 +35,7 @@ const translations = {
     golfYou: '(sen)', golfPlayer: 'Oyuncu', golfGoal: 'Deliğe girdi',
     golfStart: 'Maçı başlat (2–8 kişi)', golfLobby: 'Bekleme odası',
     golfWaitStart: 'Maçın başlaması bekleniyor…',
+    golfReconnecting: 'Bağlantı yeniden kuruluyor', golfPaused: 'Oyuncu yeniden bağlanıyor · vuruşlar geçici olarak durduruldu.',
     socialHelp: 'Gerçek WebGL 3D alan. Yerel önizleme varsayılandır. Sunucunda deneysel ortak oda açıksa ve sen katılmayı seçersen arkadaş avatarları gösterilir; ses henüz bağlı değildir.',
     roomStatus: 'Yerel 3D prototip · Çok oyunculu değil', noWebgl: 'Bu cihazda WebGL açılamadı. 3D oda kullanılamıyor.',
     moveHelp: 'Hareket etmek için 3D alana dokun, sonra WASD veya ok tuşlarını kullan. Mobilde ekrandaki yön tuşlarını kullan.',
@@ -68,6 +69,7 @@ const translations = {
     golfYou: '(you)', golfPlayer: 'Player', golfGoal: 'Holed',
     golfStart: 'Start match (2–8 players)', golfLobby: 'Lobby',
     golfWaitStart: 'Waiting for host to start…',
+    golfReconnecting: 'Reconnecting', golfPaused: 'A player is reconnecting · shots temporarily paused.',
     socialHelp: 'Real WebGL 3D space. Local preview is the default. Shared avatars are available only when your server enables the experimental room and you explicitly join; voice is not connected yet.',
     roomStatus: 'Local 3D prototype · Not multiplayer', noWebgl: 'WebGL is not available on this device. The 3D room cannot run.',
     moveHelp: 'Focus the 3D room and use WASD or arrow keys. On mobile use the directional controls.',
@@ -190,7 +192,8 @@ function showMiniGolf(container: HTMLElement): void {
     match.players.forEach((p, index) => {
       const label = s.golfPlayer + ' ' + (index + 1) +
         (p.userId === match.you ? ' ' + s.golfYou : '') +
-        ' · ' + s.golfStrokes + ': ' + p.strokes + (p.won ? ' · ' + s.golfGoal : '');
+        ' · ' + s.golfStrokes + ': ' + p.strokes + (p.won ? ' · ' + s.golfGoal : '') +
+        (p.reconnecting ? ' · ' + s.golfReconnecting : '');
       scoreboard.append(element('li', '', label));
     });
     const displayed = match.players.find(p => p.userId === match.turnUserId) ??
@@ -198,17 +201,18 @@ function showMiniGolf(container: HTMLElement): void {
     if (!displayed || !miniGolf?.setAuthoritativeBall(displayed.x, displayed.z)) {
       onlineGolf?.dispose(); return;
     }
-    const canStart = match.phase === 'waiting' && match.players.length >= match.minPlayers &&
+    const paused = match.players.some(p => p.reconnecting);
+    const canStart = !paused && match.phase === 'waiting' && match.players.length >= match.minPlayers &&
       match.players.length <= match.maxPlayers && match.players[0]?.userId === match.you;
     startButton.hidden = !canStart;
     startButton.disabled = !canStart;
     const myTurn = match.phase === 'playing' && match.turnUserId === match.you;
-    const canShoot = myTurn && miniGolf.isGraphicsAvailable;
+    const canShoot = myTurn && !paused && miniGolf.isGraphicsAvailable;
     shoot.disabled = !canShoot;
     aim.disabled = !canShoot;
     power.disabled = !canShoot;
     reset.disabled = true;
-    onlineStatus.textContent = match.phase === 'waiting'
+    onlineStatus.textContent = paused ? s.golfPaused : match.phase === 'waiting'
       ? s.golfLobby + ' · ' + match.players.length + '/' + match.maxPlayers + ' · ' +
         (match.players.length < match.minPlayers ? s.golfWait : s.golfWaitStart) :
       match.phase === 'finished' ? s.golfFinished : myTurn ? s.golfTurn : s.golfOtherTurn;

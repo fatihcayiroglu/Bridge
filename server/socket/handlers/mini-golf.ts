@@ -10,6 +10,7 @@ import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions'
 import {
   golfMatchStore, emptyGolfMatch, resolveGolfShot, currentGolfTurn,
   golfGameOver, publicGolfMatch, removeGolfPlayer,
+  expireGolfSeats, suspendGolfSeat, resumeGolfSeat,
   GOLF_MIN_PLAYERS, GOLF_MAX_PLAYERS,
 } from './mini-golf-match';
 
@@ -42,11 +43,28 @@ export function registerMiniGolfHandlers(
   const reply = (game: ReturnType<typeof emptyGolfMatch>) =>
     socket.emit('mini-golf:state', { ...publicGolfMatch(game), you: userId });
 
+  /** All reconciliation happens under the same Redis lock as every shot. */
+  async function loadFresh(serverId: string) {
+    const game = await golfMatchStore.load(serverId);
+    if (expireGolfSeats(game, Date.now())) await golfMatchStore.save(serverId, game);
+    return game;
+  }
+
   async function remove(serverId: string): Promise<void> {
     await golfMatchStore.withLock(serverId, async () => {
-      const game = await golfMatchStore.load(serverId);
+      const game = await loadFresh(serverId);
       if (!removeGolfPlayer(game, socket.id)) return;
       await golfMatchStore.save(serverId, game);
+    });
+    joined.delete(serverId);
+  }
+
+  async function suspend(serverId: string): Promise<void> {
+    await golfMatchStore.withLock(serverId, async () => {
+      const game = await loadFresh(serverId);
+      if (suspendGolfSeat(game, socket.id, Date.now())) {
+        await golfMatchStore.save(serverId, game);
+      }
     });
     joined.delete(serverId);
   }
@@ -69,9 +87,15 @@ export function registerMiniGolfHandlers(
     const game = await golfMatchStore.withLock(serverId, async () => {
       // Authorization before lock is not enough; a membership kick may race it.
       if (!await authorized(socket, userId, serverId) || disconnected) { denial = true; return null; }
-      const state = await golfMatchStore.load(serverId);
+      const state = await loadFresh(serverId);
       const existing = state.players.find(p => p.socketId === socket.id && p.userId === userId);
       if (existing) return state;
+      // Reclaim only a server-reserved seat belonging to this authenticated
+      // PostgreSQL member; no client-provided resume token or userId trusted.
+      if (resumeGolfSeat(state, userId, socket.id, Date.now())) {
+        await golfMatchStore.save(serverId, state);
+        return state;
+      }
       if (state.players.length >= GOLF_MAX_PLAYERS || state.phase !== 'waiting' ||
           state.players.some(p => p.userId === userId || p.socketId === socket.id)) {
         denial = true; return null;
@@ -110,8 +134,9 @@ export function registerMiniGolfHandlers(
       if (disconnected || !await authorized(socket, userId, serverId)) {
         denied = true; return null;
       }
-      const state = await golfMatchStore.load(serverId);
+      const state = await loadFresh(serverId);
       if (state.phase !== 'waiting' ||
+          state.players.some(p => p.reconnectUntil !== undefined) ||
           state.players.length < GOLF_MIN_PLAYERS ||
           state.players.length > GOLF_MAX_PLAYERS ||
           state.players[0]?.userId !== userId ||
@@ -138,12 +163,15 @@ export function registerMiniGolfHandlers(
       if (serverId && joined.has(serverId)) await remove(serverId);
       reject(serverId); return;
     }
-    const game = await golfMatchStore.load(serverId);
-    if (!game.players.some(p => p.socketId === socket.id && p.userId === userId)) {
-      joined.delete(serverId); reject(serverId); return;
-    }
-    if (!await authorized(socket, userId, serverId)) {
-      await remove(serverId); reject(serverId); return;
+    const game = await golfMatchStore.withLock(serverId, async () => {
+      if (disconnected || !await authorized(socket, userId, serverId)) return null;
+      const state = await loadFresh(serverId);
+      return state.players.some(p => p.socketId === socket.id && p.userId === userId)
+        ? state : null;
+    });
+    if (!game || disconnected || !await authorized(socket, userId, serverId)) {
+      if (joined.has(serverId)) await remove(serverId);
+      reject(serverId); return;
     }
     reply(game);
   }));
@@ -163,9 +191,13 @@ export function registerMiniGolfHandlers(
     let denial = false;
     const game = await golfMatchStore.withLock(serverId, async () => {
       if (!await authorized(socket, userId, serverId) || disconnected) { denial = true; return null; }
-      const state = await golfMatchStore.load(serverId);
+      const state = await loadFresh(serverId);
       const player = state.players[state.turn];
-      if (state.phase !== 'playing' || !player || player.userId !== userId ||
+      // Freeze shots for a short, explicit reconnect grace. No one silently
+      // advances a match while another player's WebSocket is disconnected.
+      if (state.phase !== 'playing' ||
+          state.players.some(p => p.reconnectUntil !== undefined) ||
+          !player || player.userId !== userId ||
           player.socketId !== socket.id) { denial = true; return null; }
       const result = resolveGolfShot(player, data.degrees as number, data.power as number);
       if (!result) { denial = true; return null; }
@@ -196,6 +228,6 @@ export function registerMiniGolfHandlers(
   socket.on('disconnect', isolateSocketHandler(socket, 'mini-golf:disconnect', async () => {
     disconnected = true;
     for (const serverId of joining) canceledJoins.add(serverId);
-    for (const serverId of [...joined]) await remove(serverId);
+    for (const serverId of [...joined]) await suspend(serverId);
   }));
 }

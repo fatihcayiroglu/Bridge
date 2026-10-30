@@ -211,7 +211,7 @@ export function mountGolfOpponent(port: number, token: string, serverId: string)
  * All traffic goes through production JWT middleware and PostgreSQL/Redis.
  */
 export function mountGolfRoster(port: number, tokens: string[], serverId: string): void {
-  const players = tokens.map(token => {
+  function connect(token: string) {
     const socket = io('http://127.0.0.1:' + port, {
       auth: { token }, transports: ['websocket'],
       reconnection: false, forceNew: true, timeout: 7000,
@@ -221,7 +221,8 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
     socket.on('mini-golf:state', state => player.states.push(state));
     socket.on('mini-golf:error', error => player.errors.push(error));
     return player;
-  });
+  }
+  const players = tokens.map(connect);
   const state = {
     players,
     join(i: number) { players[i]!.socket.emit('mini-golf:join', { serverId }); },
@@ -231,6 +232,10 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
       players[i]!.socket.emit('mini-golf:shoot', { serverId, degrees, power });
     },
     leave(i: number) { players[i]!.socket.emit('mini-golf:leave', { serverId }); },
+    /** A real transport drop. Never sends a voluntary leave. */
+    drop(i: number) { players[i]!.socket.disconnect(); },
+    /** New authenticated transport; NO implicit game rejoin. */
+    reconnect(i: number) { players[i] = connect(tokens[i]!); },
     dispose() {
       for (const p of players) {
         p.socket.emit('mini-golf:leave', { serverId });

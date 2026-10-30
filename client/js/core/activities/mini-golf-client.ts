@@ -7,6 +7,7 @@ export interface OnlineGolfPlayer {
   readonly z: number;
   readonly strokes: number;
   readonly won: boolean;
+  readonly reconnecting: boolean;
 }
 export interface OnlineGolfMatch {
   readonly serverId: string;
@@ -48,10 +49,11 @@ function readMatch(raw: unknown, serverId: string): OnlineGolfMatch | null {
     if (!idOk(p.userId) || !Number.isFinite(p.x) || !Number.isFinite(p.z) ||
         Math.abs(p.x as number) > 2.25 || Math.abs(p.z as number) > 4.6 ||
         !Number.isSafeInteger(p.strokes) || (p.strokes as number) < 0 ||
-        (p.strokes as number) > 8 || typeof p.won !== 'boolean') return null;
+        (p.strokes as number) > 8 || typeof p.won !== 'boolean' ||
+        (p.reconnecting !== undefined && typeof p.reconnecting !== 'boolean')) return null;
     players.push({
       userId: p.userId, x: p.x as number, z: p.z as number,
-      strokes: p.strokes as number, won: p.won,
+      strokes: p.strokes as number, won: p.won, reconnecting: p.reconnecting === true,
     });
   }
   if (new Set(players.map(p => p.userId)).size !== players.length ||
@@ -149,7 +151,8 @@ export function joinOnlineMiniGolf(
       if (disposed || busy || !active || !socket.connected || !match ||
           match.phase !== 'waiting' || match.players.length < match.minPlayers ||
           match.players.length > match.maxPlayers ||
-          match.players[0]?.userId !== match.you) return false;
+          match.players[0]?.userId !== match.you ||
+          match.players.some(p => p.reconnecting)) return false;
       busy = true;
       onStatus('connecting');
       socket.emit('mini-golf:start', { serverId });
@@ -159,6 +162,7 @@ export function joinOnlineMiniGolf(
     shoot(degrees, power) {
       if (disposed || busy || !active || !socket.connected ||
           !match || match.phase !== 'playing' || match.turnUserId !== match.you ||
+          match.players.some(p => p.reconnecting) ||
           !Number.isFinite(degrees) || !Number.isFinite(power) ||
           Math.abs(degrees) > 70 || power < 10 || power > 100) return false;
       busy = true;
