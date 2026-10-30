@@ -238,9 +238,25 @@ export function mountGolfRoster(port: number, tokens: string[], serverId: string
     drop(i: number) { players[i]!.socket.disconnect(); },
     /** New authenticated transport; NO implicit game rejoin. */
     reconnect(i: number) { players[i] = connect(tokens[i]!); },
-    dispose() {
+    async dispose() {
+      // Real server leave acknowledgement is necessary: a bare emit()
+      // followed by disconnect() races with the 20s reconnect reservation and
+      // contaminates the next authenticated game in the same Redis fixture.
+      // Sequential acknowledgements also avoid seven concurrent Redis locks.
       for (const p of players) {
-        p.socket.emit('mini-golf:leave', { serverId });
+        if (!p.socket.connected) throw Error('Mini Golf roster cleanup socket disconnected before explicit leave');
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(Error('Mini Golf roster leave not acknowledged')), 8000);
+          p.socket.once('mini-golf:left', reply => {
+            clearTimeout(timer);
+            if (!reply || reply.serverId !== serverId) {
+              reject(Error('Mini Golf roster leave acknowledgement scoped to wrong server'));
+              return;
+            }
+            resolve();
+          });
+          p.socket.emit('mini-golf:leave', { serverId });
+        });
         p.socket.disconnect();
       }
     },
