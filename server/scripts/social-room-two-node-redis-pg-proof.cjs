@@ -46,12 +46,19 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
   const { evictUserFromServerRooms } = require('../dist/lib/liveMembership');
 
   const roomPrefix = 'social-node-' + randomBytes(7).toString('hex');
-  const ids = Object.freeze({
-    server: roomPrefix + '-server',
-    alice: roomPrefix + '-alice',
-    bob: roomPrefix + '-bob',
-    outside: roomPrefix + '-outside',
-  });
+  const ids = Object.freeze(process.argv[2] === 'worker'
+    ? {
+      server: process.env.SOCIAL_3D_CLUSTER_SERVER,
+      alice: process.env.SOCIAL_3D_CLUSTER_ALICE,
+      bob: process.env.SOCIAL_3D_CLUSTER_BOB,
+      outside: process.env.SOCIAL_3D_CLUSTER_OUTSIDE,
+    }
+    : {
+      server: roomPrefix + '-server',
+      alice: roomPrefix + '-alice',
+      bob: roomPrefix + '-bob',
+      outside: roomPrefix + '-outside',
+    });
   const sql = (query, args = []) => db._pool.query(query, args);
   const sign = userId => jwt.sign({ id: userId, username: userId, v: 0 },
     process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '2m' });
@@ -138,6 +145,9 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
             await db._pool.end();
             await disconnect();
             process.exitCode = 0;
+            // Parent observes a real completed worker exit. No SIGTERM before
+            // the worker has drained its DB and Redis clients.
+            process.disconnect();
           } else throw Error('Unknown worker command');
         } catch (error) {
           reply(null, String(error instanceof Error ? error.stack || error.message : error));
@@ -203,16 +213,18 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
         child.send({ id, action, ...extra });
       });
     }
-    return { ...detail, ready, command };
+    const exit = new Promise((resolve, reject) => {
+      child.once('exit', (code, signal) => {
+        if (code === 0 && !signal) resolve();
+        else reject(Error(label + ' shutdown failed: ' + code + '/' + signal + ' ' + detail.logs));
+      });
+    });
+    return { ...detail, ready, command, exit };
   }
 
   // IPC env values are never taken from a user socket. The room and all test
   // account identifiers are created by the orchestrator in a disposable DB.
   if (process.argv[2] === 'worker') {
-    ids.server = process.env.SOCIAL_3D_CLUSTER_SERVER;
-    ids.alice = process.env.SOCIAL_3D_CLUSTER_ALICE;
-    ids.bob = process.env.SOCIAL_3D_CLUSTER_BOB;
-    ids.outside = process.env.SOCIAL_3D_CLUSTER_OUTSIDE;
     workerMain();
   } else {
     const clients = [];
@@ -331,7 +343,15 @@ if (!process.env.DATABASE_URL?.includes(TEST_DB) ||
           worker.child.kill('SIGKILL');
         }
       }
-      for (const worker of workers) if (!worker.dead) worker.child.kill('SIGTERM');
+      for (const worker of workers) {
+        if (worker.dead) continue;
+        try { await worker.exit; }
+        catch (error) {
+          process.stderr.write('SOCIAL_3D_TWO_NODE_WORKER_EXIT_FAILED:' + error + '\n');
+          process.exitCode = 1;
+          worker.child.kill('SIGKILL');
+        }
+      }
       try {
         await socialRoomStore.withLock(ids.server,
           () => socialRoomStore.save(ids.server, { serverId: ids.server, peers: [] }));
