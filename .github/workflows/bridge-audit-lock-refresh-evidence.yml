@@ -12,6 +12,8 @@ on:
       - 'package-lock.json'
       - 'server/package.json'
       - 'server/package-lock.json'
+      - 'electron/package.json'
+      - 'electron/package-lock.json'
       - '.github/workflows/bridge-audit-lock-refresh-evidence.yml'
 permissions:
   contents: read
@@ -29,12 +31,14 @@ jobs:
           npm install --package-lock-only --ignore-scripts --no-audit --no-fund
           cd server
           npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cd ../electron
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
       - name: Report exact changed lock JSON fields for manually reviewed commit
         run: |
           node - <<'NODE'
           const fs = require('node:fs');
           const cp = require('node:child_process');
-          for (const path of ['package-lock.json', 'server/package-lock.json']) {
+          for (const path of ['package-lock.json', 'server/package-lock.json', 'electron/package-lock.json']) {
             const before=JSON.parse(cp.execFileSync('git',['show','HEAD:'+path],{encoding:'utf8',maxBuffer:20_000_000}));
             const after=JSON.parse(fs.readFileSync(path,'utf8'));
             const entries={}, removed=[];
@@ -53,11 +57,13 @@ jobs:
           }
           NODE
       - name: Ensure npm lock regeneration produces NO changes
-        run: git diff --exit-code -- package-lock.json server/package-lock.json
+        run: git diff --exit-code -- package-lock.json server/package-lock.json electron/package-lock.json
       - name: Verify npm ci reproducible root install without executing lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify npm ci reproducible server install without executing lifecycle scripts
         run: cd server && npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify npm ci reproducible Electron install without executing lifecycle scripts
+        run: cd electron && npm ci --ignore-scripts --no-audit --no-fund
       - name: Audit root and all workspaces without bypass or exclusion
         run: npm audit --audit-level=high
       - name: Audit server dependencies without bypass or exclusion
@@ -75,3 +81,4 @@ jobs:
         run: |
           npm run build
           cd server && npm run build
+          cd ../electron && npm run compile
