@@ -42,7 +42,8 @@ describe('authenticated Activities entry: lazy load, single binding and fail-clo
     expect(mock.show).not.toHaveBeenCalled();
     el.click();
     await settle(el);
-    expect(mock.show).toHaveBeenCalledExactlyOnceWith('games');
+    expect(mock.show).toHaveBeenCalledTimes(1);
+    expect(mock.show).toHaveBeenCalledWith('games');
   });
   it('recovers the rail after a panel-import callback error, without exposing private details', async () => {
     const el=button();
