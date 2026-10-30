@@ -65,7 +65,7 @@ export function startLocalHotSeatLiveSession(
     match={table:copyTable(frame),rules:next};
     notify();
   };
-  const onLost=()=>{blocked=true;pending=null;};
+  const onLost=()=>{blocked=true;pending=null;notify();};
   try{renderer=factory(canvas,onState,onLost);}
   catch{return null;}
   if(!renderer)return null;
