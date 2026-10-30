@@ -7,6 +7,7 @@ import { joinSocialRoomPreview, type SocialClient, type SocialClientStatus, type
 import { startMiniGolfPractice, type MiniGolfHandle } from './mini-golf-webgl.ts';
 import type { GolfState } from './mini-golf-physics.ts';
 import { startPoolPractice, type PoolPracticeHandle } from './pool-practice-webgl.ts';
+import { showLocalPoolHotSeat, type LocalPoolHotSeatPanelHandle } from './pool-hotseat-panel.ts';
 import { POOL_TARGET_COUNT, type PoolState } from './pool-practice-physics.ts';
 import { declarePracticePocketCall, settlePracticePocketCall, type PracticePocketCall } from './pool-practice-call.ts';
 import { joinOnlineMiniGolf, type OnlineGolfSession, type OnlineGolfMatch, type OnlineGolfStatus } from './mini-golf-client.ts';
@@ -19,6 +20,7 @@ let room: SocialRoomHandle | null = null;
 let socialSession: SocialClient | null = null;
 let miniGolf: MiniGolfHandle | null = null;
 let poolPractice: PoolPracticeHandle | null = null;
+let poolHotSeat: LocalPoolHotSeatPanelHandle | null = null;
 let onlineGolf: OnlineGolfSession | null = null;
 let currentTab: ActivitiesTab = 'games';
 
@@ -49,6 +51,8 @@ function disposeRoom(): void {
   miniGolf = null;
   poolPractice?.dispose();
   poolPractice = null;
+  poolHotSeat?.dispose();
+  poolHotSeat = null;
   socialSession?.dispose();
   socialSession = null;
   room?.dispose();
@@ -310,6 +314,12 @@ function showPoolPractice(container:HTMLElement):void {
   });
   const heading=element('h3','bridge-mini-golf-heading','8-Ball Pool · '+s.poolSolo);
   const help=element('p','bridge-activities-help',s.poolHelp);
+  const hotSeat=makeButton(s.poolHotSeatLaunch,'bridge-room-direction bridge-pool-hotseat-launch',()=>{
+    poolPractice?.dispose();poolPractice=null;
+    poolHotSeat=showLocalPoolHotSeat(container,()=>{
+      poolHotSeat?.dispose();poolHotSeat=null;showPoolPractice(container);
+    });
+  });
   const canvas=element('canvas','bridge-activities-canvas bridge-pool-canvas');
   canvas.setAttribute('aria-label','3D Pool pocket practice');
   const status=element('p','bridge-room-status bridge-pool-status');
@@ -384,7 +394,7 @@ function showPoolPractice(container:HTMLElement):void {
     callPocket.disabled=!ready||!callEnabled.checked;
   }
   controls.append(callLabel,ballLabel,pocketLabel,aimLabel,powerLabel,shoot,reset);
-  container.append(back,heading,help,canvas,status,callResult,controls);
+  container.append(back,heading,help,hotSeat,canvas,status,callResult,controls);
   try{
     poolPractice=startPoolPractice(canvas,update,()=>{
       pending=null;callResult.textContent=s.poolCallUnverified;
