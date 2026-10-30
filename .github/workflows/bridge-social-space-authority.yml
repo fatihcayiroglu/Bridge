@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - codex/activities-3d-social-room-foundation-20261030
+      - codex/activities-3d-social-presence-authority-20261030
     paths:
       - 'server/socket/handlers/social-room*.ts'
       - 'server/socket/index.ts'
@@ -45,7 +46,7 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
-          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 10 ||
+          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 12 ||
               r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
               r.numPassedTests !== r.numTotalTests) {
             console.error('SOCIAL_3D_AUTHORITY_TESTS_UNQUALIFIED');
