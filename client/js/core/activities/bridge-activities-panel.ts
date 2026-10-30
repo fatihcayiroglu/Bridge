@@ -29,6 +29,8 @@ const translations = {
     onlineUnavailable: 'Çevrimiçi oda kullanılamıyor veya sunucuda kapalı. Yerel 3D oda çalışmaya devam ediyor.',
     onlineDisconnected: 'Ortak odadan ayrıldın. Yerel 3D oda açık.',
     onlineInvalid: 'Güvenilmeyen veya geçersiz oda verisi reddedildi.',
+    graphicsMode: 'Grafik motoru', quality: 'Grafik kalitesi', low: 'Düşük', balanced: 'Dengeli', high: 'Yüksek',
+    graphicsLost: '3D grafik bağlamı kayboldu. Oturum kapatıldı; 3D alanı yeniden açarak tekrar deneyin.',
   },
   en: {
     title: 'Bridge Activities', games: '3D Mini Games', social: '3D Social Space',
@@ -46,6 +48,8 @@ const translations = {
     onlineUnavailable: 'Shared room unavailable or disabled on server. Local 3D room remains available.',
     onlineDisconnected: 'You left the shared room. Local 3D room remains open.',
     onlineInvalid: 'Untrusted or malformed room snapshot was rejected.',
+    graphicsMode: 'Graphics API', quality: 'Graphics quality', low: 'Low', balanced: 'Balanced', high: 'High',
+    graphicsLost: '3D graphics context was lost. The room session was closed; reopen 3D Social Space to try again.',
   },
 } as const;
 
@@ -165,11 +169,37 @@ function showSocial(container: HTMLElement): void {
   );
   container.append(controls, element('p', 'bridge-activities-help', s.moveHelp));
   try {
-    room = startLocalSocialRoom(canvas, direction => socialSession?.step(direction));
+    const graphicsWarning = element('p', 'bridge-room-error');
+    graphicsWarning.setAttribute('role', 'status');
+    room = startLocalSocialRoom(canvas, direction => socialSession?.step(direction), () => {
+      socialSession?.dispose();
+      socialSession = null;
+      graphicsWarning.textContent = s.graphicsLost;
+      canvas.setAttribute('aria-disabled', 'true');
+    });
     if (!room) {
       container.append(element('p', 'bridge-room-error', s.noWebgl));
       return;
     }
+    const graphicsMode = element('p', 'bridge-room-status',
+      s.graphicsMode + ': ' + (room.graphicsApi === 'webgl2' ? 'WebGL 2' : 'WebGL 1'));
+    const qualityLabel = element('label', 'bridge-room-quality-label', s.quality);
+    qualityLabel.htmlFor = 'bridge-room-quality';
+    const qualitySelect = element('select', 'bridge-room-quality');
+    qualitySelect.id = 'bridge-room-quality';
+    for (const [value, title] of [['low', s.low], ['balanced', s.balanced], ['high', s.high]]) {
+      const option = element('option', '', title);
+      option.value = value;
+      if (value === 'balanced') option.selected = true;
+      qualitySelect.append(option);
+    }
+    qualitySelect.addEventListener('change', () => {
+      const selected = qualitySelect.value;
+      if (selected === 'low' || selected === 'balanced' || selected === 'high') {
+        room?.setQuality(selected);
+      }
+    });
+    container.append(graphicsMode, qualityLabel, qualitySelect, graphicsWarning);
     // The network protocol is an explicit, optional experiment. Merely opening
     // this tab neither joins a server room nor reads mic/camera permissions.
     const chosen = BridgeRegistry.call<unknown>('getCurrentServer');
