@@ -57,11 +57,11 @@ export function startLocalHotSeatLiveSession(
     if(frame.status==='moving')return;
     const shot=pending;pending=null;
     if(frame.shots!==shot.before.shots+1||frame.status!=='ready'&&
-        frame.status!=='complete') {blocked=true;return;}
+        frame.status!=='complete') {blocked=true;notify();return;}
     const next=shot.call
       ?resolveLocalCalledEightBallShot(shot.rules,shot.before,frame,shot.call)?.rules??null
       :resolveLocalEightBallShot(shot.rules,shot.before,frame);
-    if(!next){blocked=true;return;}
+    if(!next){blocked=true;notify();return;}
     match={table:copyTable(frame),rules:next};
     notify();
   };
