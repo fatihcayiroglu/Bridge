@@ -9,13 +9,15 @@ import {
 
 type Options={
   pocket?:readonly number[]; first?:number|null; rail?:boolean; scratch?:boolean;
+  breakRailIds?:readonly number[];
 };
 function shot(before:PoolState, o:Options={}) {
   const newly=new Set(o.pocket??[]);
   const balls=before.balls.map(b=>newly.has(b.id)?{...b,pocketed:true}:b);
   return {...before,balls,shots:before.shots+1,scratches:before.scratches+(o.scratch?1:0),
     pocketed:balls.filter(b=>b.id!==0&&b.pocketed).length,
-    firstObjectHit:o.first??null,railAfterContact:o.rail??false,status:'ready' as const};
+    firstObjectHit:o.first??null,railAfterContact:o.rail??false,
+    breakObjectRails:o.breakRailIds??[],status:'ready' as const};
 }
 function resolve(rules:LocalEightBallRules,before:PoolState,o:Options={}) {
   const after=shot(before,o);
@@ -40,9 +42,13 @@ describe('8-ball local-only adjudication foundation — no online or official ru
     const afterRail=stepPool({...running,balls:forcedRail,status:'moving'});
     expect(afterRail.firstObjectHit).toBe(1);
     expect(afterRail.railAfterContact).toBe(true);
+    expect(afterRail.breakObjectRails).toContain(2);
+    const duplicate=stepPool({...afterRail,balls:forcedRail,status:'moving'});
+    expect(duplicate.breakObjectRails.filter(id=>id===2)).toHaveLength(1);
     const nextShot=strikePool({...afterRail,status:'ready'},0,50);
     expect(nextShot.firstObjectHit).toBeNull();
     expect(nextShot.railAfterContact).toBe(false);
+    expect(nextShot.breakObjectRails).toEqual([]);
   });
   it('can score a full real 15-ball break using only emitted physics evidence',()=>{
     const before=newPoolPractice();
@@ -60,12 +66,57 @@ describe('8-ball local-only adjudication foundation — no online or official ru
   });
   it('keeps groups open on break and passes an empty legal shot',()=>{
     const {rules,after}=resolve(newLocalEightBallRules(),newPoolPractice(),
-      {first:1,rail:true});
+      {first:1,rail:true,breakRailIds:[1,2,3,4]});
     expect(rules.phase).toBe('open');
     expect(rules.currentPlayer).toBe(1);
     expect(rules.groups).toEqual([null,null]);
     expect(rules.last).toMatchObject({actor:0,pocketed:[],foul:null,retainedTurn:false});
     expect(after.shots).toBe(1);
+  });
+  it('blocks an illegal break with only three distinct cushions and requires incoming choice',()=>{
+    const {rules,after}=resolve(newLocalEightBallRules(),newPoolPractice(),
+      {first:1,rail:true,breakRailIds:[1,2,3]});
+    expect(rules.phase).toBe('illegal-break-choice');
+    expect(rules.currentPlayer).toBe(1);
+    expect(rules.last?.foul).toBe('illegal-break');
+    expect(rules.winner).toBeNull();
+    expect(resolveLocalEightBallShot(rules,after,shot(after,{first:2}))).toBeNull();
+  });
+  it('four DIFFERENT object cushions qualify even if nothing is pocketed',()=>{
+    const {rules}=resolve(newLocalEightBallRules(),newPoolPractice(),
+      {first:1,rail:true,breakRailIds:[1,2,3,4]});
+    expect(rules.phase).toBe('open');
+    expect(rules.last?.foul).toBeNull();
+    expect(rules.currentPlayer).toBe(1);
+  });
+  it('a pocketed object qualifies an otherwise quiet break without four rail contacts',()=>{
+    const {rules}=resolve(newLocalEightBallRules(),newPoolPractice(),
+      {first:1,pocket:[5],rail:false,breakRailIds:[]});
+    expect(rules.phase).toBe('open');
+    expect(rules.currentPlayer).toBe(0);
+    expect(rules.last?.pocketed).toEqual([5]);
+  });
+  it('rejects fabricated, duplicate or malformed break rail IDs before adjudication',()=>{
+    const before=newPoolPractice(),r=newLocalEightBallRules();
+    for(const ids of [[1,1,2,3],[0,1,2,3],[16,1,2,3],[-1,2,3,4],
+      [1.5,2,3,4],[1,2,3,NaN]]) {
+      expect(resolveLocalEightBallShot(r,before,shot(before,{
+        first:1,rail:true,breakRailIds:ids,
+      }))).toBeNull();
+    }
+    expect(resolveLocalEightBallShot(r,before,shot(before,{
+      first:null,rail:true,breakRailIds:[1,2,3,4],
+    }))).toBeNull();
+    expect(resolveLocalEightBallShot(r,before,shot(before,{
+      first:1,rail:false,breakRailIds:[1,2,3,4],
+    }))).toBeNull();
+  });
+  it('rejects inherited break-rail evidence on a subsequent ordinary shot',()=>{
+    const before={...newPoolPractice(),shots:2};
+    const r=assigned();
+    expect(resolveLocalEightBallShot(r,before,shot(before,{
+      first:1,rail:true,breakRailIds:[1],
+    }))).toBeNull();
   });
   it('never assigns solids or stripes on the break, even if one is pocketed',()=>{
     const {rules}=resolve(newLocalEightBallRules(),newPoolPractice(),
@@ -83,7 +134,7 @@ describe('8-ball local-only adjudication foundation — no online or official ru
   });
   it('assigns correct groups after first legal post-break solid or stripe pocket',()=>{
     const first=resolve(newLocalEightBallRules(),newPoolPractice(),
-      {first:1,rail:true});
+      {first:1,rail:true,breakRailIds:[1,2,3,4]});
     const second=resolve(first.rules,first.after,{first:10,pocket:[10],rail:true});
     expect(second.rules.groups).toEqual(['solids','stripes']);
     expect(second.rules.phase).toBe('assigned');
@@ -92,7 +143,7 @@ describe('8-ball local-only adjudication foundation — no online or official ru
   });
   it('requires explicit selection on mixed open-table pocket, never arbitrarily assigns',()=>{
     const first=resolve(newLocalEightBallRules(),newPoolPractice(),
-      {first:1,rail:true});
+      {first:1,rail:true,breakRailIds:[1,2,3,4]});
     const second=resolve(first.rules,first.after,
       {first:2,pocket:[2,9],rail:true});
     expect(second.rules.phase).toBe('choose-group');
