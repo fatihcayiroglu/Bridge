@@ -135,6 +135,8 @@ export function stepPool(s:PoolState):PoolState {
     }
   }
   const allPocketed=pocketed===POOL_TARGET_COUNT;
+  // Do not freeze the cue or remaining motion when the final target falls.
+  // Completion is only announced once the entire table has settled.
   return {balls,shots:s.shots,scratches,pocketed,status:
-    allPocketed?'complete':moving?'moving':'ready'};
+    moving?'moving':allPocketed?'complete':'ready'};
 }
