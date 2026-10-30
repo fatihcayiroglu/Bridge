@@ -4,10 +4,10 @@ import {
   strikePool, type PoolState,
 } from '../js/core/activities/pool-practice-physics.ts';
 import {newLocalEightBallRules,resolveLocalEightBallShot} from
-  '../js/core/activities/pool-eight-ball-rules.ts';
+  './prototypes/pool-eight-ball-rules.ts';
 import {chooseLocalEightOnBreak} from
-  '../js/core/activities/pool-eight-on-break.ts';
-import {placeLocalCueBall} from '../js/core/activities/pool-ball-in-hand.ts';
+  './prototypes/pool-eight-on-break.ts';
+import {placeLocalCueBall} from './prototypes/pool-ball-in-hand.ts';
 
 function pocketedEightBreak(scratched=false,extra:number[]=[]){
   const before=newPoolPractice();
