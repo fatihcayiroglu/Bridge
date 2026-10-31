@@ -152,6 +152,11 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     pointer(canvas,'pointerup',320,219.2); // moved > 12 CSS pixels
     expect(selected.value).toBe('0');
     pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointermove',330,219.2); // moved far...
+    pointer(canvas,'pointermove',289.8,219.2); // ...then came back
+    pointer(canvas,'pointerup',289.8,219.2);
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2);
     pointer(canvas,'pointercancel',289.8,219.2);
     pointer(canvas,'pointerup',289.8,219.2);
     expect(selected.value).toBe('0');
@@ -170,6 +175,25 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     expect(selected.value).toBe('11');
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('Player 1 · Moves: 0');
+  });
+  it('does not carry a held pointer press into the next player turn',()=>{
+    showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
+    const selected=document.querySelector<HTMLSelectElement>('.bridge-tower-block')!;
+    const canvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
+    canvas.getBoundingClientRect=()=>({
+      left:0,top:0,width:600,height:440,
+    } as DOMRect);
+    selected.value='1';
+    pointer(canvas,'pointerdown',289.8,219.2);
+    click('.bridge-tower-remove');
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Player 2 · Moves: 1');
+    // The old player's delayed pointer release must not target the new turn.
+    const newSelection=selected.value;
+    pointer(canvas,'pointerup',289.8,219.2);
+    expect(selected.value).toBe(newSelection);
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Player 2 · Moves: 1');
   });
   it('only the active player removes a physical block; collapse ends with the other winner',()=>{
     showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
