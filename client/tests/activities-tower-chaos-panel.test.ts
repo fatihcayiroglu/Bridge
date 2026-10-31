@@ -6,7 +6,7 @@ import {
 } from '../js/core/activities/tower-chaos-physics.ts';
 
 const mock=vi.hoisted(()=>({
-  dispose:vi.fn(),lost:null as null|(()=>void),
+  dispose:vi.fn(),highlight:vi.fn(),lost:null as null|(()=>void),
   mode:'available' as 'available'|'unavailable',
 }));
 vi.mock('../js/core/exclusive-surface.ts',()=>({closeExclusivePeers:vi.fn()}));
@@ -24,6 +24,12 @@ vi.mock('../js/core/activities/tower-chaos-webgl.ts',()=>({
       get match(){return current;},
       get graphicsAvailable(){return !disposed&&!lost;},
       graphicsApi:'webgl2',
+      select(id:number|null){
+        if(disposed||lost||(id!==null&&(
+          id<0||id>=15||current.phase!=='playing'||
+          !!current.blocks[id]?.removed)))return false;
+        mock.highlight(id);return true;
+      },
       remove(player:0|1,id:number){
         if(disposed||lost)return false;
         const next=removeTowerChaosBlock(current,player,id);
@@ -39,7 +45,7 @@ function click(selector:string):void{
   expect(b).not.toBeNull();b!.click();
 }
 beforeEach(()=>{
-  mock.dispose.mockClear();
+  mock.dispose.mockClear();mock.highlight.mockClear();
   vi.mocked(startTowerChaosWebGL).mockClear();
   mock.mode='available';mock.lost=null;
   document.documentElement.lang='en';
@@ -81,10 +87,12 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
       left:0,top:0,width:600,height:440,
     } as DOMRect);
     expect(selected.value).toBe('0');
+    expect(mock.highlight).toHaveBeenLastCalledWith(0);
     canvas.dispatchEvent(new MouseEvent('pointerup',{
       bubbles:true,clientX:289.8,clientY:219.2,button:0,
     }));
     expect(selected.value).toBe('11');
+    expect(mock.highlight).toHaveBeenLastCalledWith(11);
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('Player 1 · Moves: 0'); // pick alone never removes
     expect(document.querySelector('.bridge-tower-notice')?.textContent)
@@ -97,6 +105,12 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
       bubbles:true,clientX:289.8,clientY:219.2,button:2,
     }));
     expect(selected.value).toBe('11');
+    selected.value='4';selected.dispatchEvent(new Event('change',{bubbles:true}));
+    expect(mock.highlight).toHaveBeenLastCalledWith(4);
+    expect(document.querySelector('.bridge-tower-notice')?.textContent)
+      .toBe('Selected block 5');
+    selected.value='11';selected.dispatchEvent(new Event('change',{bubbles:true}));
+    expect(mock.highlight).toHaveBeenLastCalledWith(11);
     click('.bridge-tower-remove');
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('Player 2 · Moves: 1');
