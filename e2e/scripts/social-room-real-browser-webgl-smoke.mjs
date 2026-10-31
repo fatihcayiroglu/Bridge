@@ -875,6 +875,28 @@ try {
     'graphics recovery must not silently re-enable a suspended 8-Ball match');
   assert.match(await fullPage.locator('.bridge-pool-hotseat-notice').textContent(),
     /3D evidence was lost/);
+  const restart=fullPage.locator('.bridge-pool-hotseat-restart');
+  assert.equal(await restart.isVisible(),true,
+    'restart must require an explicit player action after real GPU loss');
+  await fullPage.locator('canvas.bridge-pool-canvas').evaluate(
+    canvas=>{canvas.dataset.poolRendererIdentity='lost-match';});
+  await restart.click();
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-pool-canvas');
+    const gl=canvas?.getContext('webgl2')||canvas?.getContext('webgl');
+    return canvas?.dataset.poolRendererIdentity!== 'lost-match' &&
+      Boolean(gl?.getParameter(gl.CURRENT_PROGRAM))&&
+      document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===false &&
+      document.querySelector('.bridge-pool-hotseat-restart')?.hidden===true;
+  },null,{timeout:10000});
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-status').textContent(),
+    /Player 1.*Break shot.*Shots: 0/,
+    'explicit new local match must use a fresh verified rack and first breaker');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent(),'',
+    'new local match must not carry any prior shot outcome or foul');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
+  assert.equal(await restart.isVisible(),false);
+  console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_EXPLICIT_NEW_RENDERER_AFTER_GPU_LOSS:1/1:0_skipped');
 
   await fullPage.locator('.bridge-pool-hotseat-back').click();
   assert.match(await fullPage.locator('.bridge-pool-status').textContent(),/Shots: 0/);

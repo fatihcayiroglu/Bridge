@@ -23,6 +23,7 @@ export function showLocalPoolHotSeat(
   let disposed=false;
   let live:LocalHotSeatLiveSession|null=null;
   let lastTurnKey:string|null=null;
+  let generation=0;
   const make=<K extends keyof HTMLElementTagNameMap>(
     tag:K,cls='',value?:string,
   ):HTMLElementTagNameMap[K]=>{
@@ -39,7 +40,7 @@ export function showLocalPoolHotSeat(
   });
   const heading=make('h3','bridge-mini-golf-heading',s.poolHotSeatTitle);
   const help=make('p','bridge-activities-help',s.poolHotSeatHelp);
-  const canvas=make('canvas','bridge-activities-canvas bridge-pool-canvas');
+  let canvas=make('canvas','bridge-activities-canvas bridge-pool-canvas');
   canvas.setAttribute('aria-label',s.poolHotSeatTitle);
   const status=make('p','bridge-room-status bridge-pool-hotseat-status');
   status.setAttribute('role','status');status.setAttribute('aria-live','polite');
@@ -81,6 +82,20 @@ export function showLocalPoolHotSeat(
     field(s.poolCallPocket,'bridge-pool-hotseat-pocket',pocket),shoot);
   safety.addEventListener('change',()=>{if(live)refresh(live.match);});
   const decisions=make('div','bridge-mini-golf-controls bridge-pool-hotseat-decisions');
+  const restart=button(s.poolHotSeatRestart,'bridge-room-direction bridge-pool-hotseat-restart',()=>{
+    if(disposed||restart.hidden)return;
+    startFresh();
+    if(!restart.hidden)restart.focus();
+    else shoot.focus();
+  });
+  restart.hidden=true;
+  restart.style.display='none';
+  const setRestartVisible=(visible:boolean)=>{
+    restart.hidden=!visible;
+    // This button also inherits a styled display class. An inline display
+    // fence keeps HTML hidden semantics correct even in shipped CSS.
+    restart.style.display=visible?'':'none';
+  };
   const offer=(value:string,act:()=>boolean)=>{
     // A rules decision replaces its own DOM node, so the browser otherwise
     // drops keyboard focus to <body>. Capture the ordinal before replacement
@@ -154,6 +169,7 @@ export function showLocalPoolHotSeat(
     if(blocked)notice.textContent=s.poolHotSeatBlocked;
     else if(live&&!moving&&notice.textContent===s.poolHotSeatPending)
       notice.textContent='';
+    setRestartVisible(blocked||(rules.phase==='finished'&&rules.winner!==null));
     const available=!blocked&&!moving&&(live?.graphicsAvailable??true);
     const canShoot=available&&snapshot.table.status==='ready'&&rules.ballInHand===null&&
       (rules.phase==='break'||rules.phase==='open'||rules.phase==='assigned');
@@ -193,17 +209,43 @@ export function showLocalPoolHotSeat(
         live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
-  container.append(back,heading,help,canvas,status,groupStatus,shotStatus,notice,controls,decisions);
-  try{
-    live=startLocalHotSeatLiveSession(canvas,refresh);
-    if(!live){
-      notice.textContent=s.noWebgl;shoot.disabled=true;aim.disabled=true;
-      power.disabled=true;safety.disabled=true;ball.disabled=true;pocket.disabled=true;
-    }else refresh(live.match);
-  }catch{
-    live?.dispose();live=null;
-    notice.textContent=s.noWebgl;shoot.disabled=true;aim.disabled=true;
-    power.disabled=true;safety.disabled=true;ball.disabled=true;pocket.disabled=true;
+  container.append(back,heading,help,canvas,status,groupStatus,shotStatus,notice,controls,decisions,restart);
+  function startFresh():void {
+    if(disposed)return;
+    // A reset after a finished/invalidated match is a NEW renderer and a NEW
+    // physical rack, never a mutating reset of a broken or completed match.
+    // Replace the canvas as well: a WebGL context which was lost must not
+    // silently recover and authorize the previous turn.
+    const old=live;live=null;
+    generation++;
+    old?.dispose();
+    if(generation>1){
+      const next=make('canvas','bridge-activities-canvas bridge-pool-canvas');
+      next.setAttribute('aria-label',s.poolHotSeatTitle);
+      canvas.replaceWith(next);
+      canvas=next;
+    }
+    const currentGeneration=generation;
+    lastTurnKey=null;
+    safety.checked=false;aim.value='0';power.value='60';
+    notice.textContent='';shotStatus.textContent='';
+    try {
+      const session=startLocalHotSeatLiveSession(canvas,snapshot=>{
+        if(!disposed&&generation===currentGeneration)refresh(snapshot);
+      });
+      if(!session)throw Error('POOL_LOCAL_GRAPHICS_UNAVAILABLE');
+      live=session;refresh(session.match);
+    } catch {
+      // No renderer means no playable state or score. Explicit retry stays
+      // possible but no stale session is ever reactivated.
+      live=null;setRestartVisible(true);
+      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';
+      notice.textContent=s.noWebgl;
+      shoot.disabled=true;aim.disabled=true;power.disabled=true;
+      safety.disabled=true;ball.disabled=true;pocket.disabled=true;
+      decisions.replaceChildren();
+    }
   }
-  return {dispose(){if(disposed)return;disposed=true;live?.dispose();live=null;}};
+  startFresh();
+  return {dispose(){if(disposed)return;disposed=true;generation++;live?.dispose();live=null;}};
 }
