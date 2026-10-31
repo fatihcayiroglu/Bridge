@@ -87,6 +87,12 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status()).toContain('Player 1');
     expect(status()).toContain('Break shot');
+    expect(document.querySelector('.bridge-pool-hotseat-cue-values')?.textContent)
+      .toBe('Cue settings: Cue aim 0° · Shot power 60%');
+    expect(document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-aim')
+      ?.getAttribute('aria-valuetext')).toBe('0 degrees');
+    expect(document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-power')
+      ?.getAttribute('aria-valuetext')).toBe('60 percent');
     expect(document.querySelector('.bridge-pool-hotseat-preview')?.textContent)
       .toBe('Declared shot: Player 1 · Break shot');
     expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent).toBe('');
@@ -169,7 +175,12 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     click('.bridge-pool-hotseat-launch');
     const power=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-power')!;
     const aim=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-aim')!;
-    power.value='10';aim.value='20';
+    power.value='10';power.dispatchEvent(new Event('input',{bubbles:true}));
+    aim.value='20';aim.dispatchEvent(new Event('input',{bubbles:true}));
+    expect(document.querySelector('.bridge-pool-hotseat-cue-values')?.textContent)
+      .toBe('Cue settings: Cue aim 20° · Shot power 10%');
+    expect(aim.getAttribute('aria-valuetext')).toBe('20 degrees');
+    expect(power.getAttribute('aria-valuetext')).toBe('10 percent');
     click('.bridge-pool-hotseat-shoot');
     expect(aim.value).toBe('20');
     expect(power.value).toBe('10'); // no reset until the verified shot settles
@@ -181,6 +192,10 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
       .toBe(true);
     renderer.emit?.();
     expect(aim.value).toBe('0');expect(power.value).toBe('60');
+    expect(document.querySelector('.bridge-pool-hotseat-cue-values')?.textContent)
+      .toBe('Cue settings: Cue aim 0° · Shot power 60%');
+    expect(aim.getAttribute('aria-valuetext')).toBe('0 degrees');
+    expect(power.getAttribute('aria-valuetext')).toBe('60 percent');
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent)
       .toContain('Decision for: Player 2');
@@ -230,6 +245,7 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     click('.bridge-pool-hotseat-restart');
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
       .toContain('WebGL');
+    expect(document.querySelector('.bridge-pool-hotseat-cue-values')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-preview')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-inventory')?.textContent).toBe('');
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
