@@ -111,7 +111,11 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     const decisions=[...document.querySelectorAll<HTMLButtonElement>(
       '.bridge-pool-hotseat-decisions button')];
     expect(decisions).toHaveLength(3);
+    decisions[1]!.focus();
+    expect(document.activeElement).toBe(decisions[1]);
     decisions[1]!.click(); // incoming player chooses a physical fresh rack
+    expect(document.activeElement).toBe(
+      document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot'));
     expect(status()).toContain('Player 2');
     expect(status()).toContain('Break shot');
     expect(status()).toContain('Shots: 0');
