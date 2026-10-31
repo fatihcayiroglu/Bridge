@@ -789,6 +789,11 @@ try {
   await fullPage.locator('.bridge-pool-hotseat-launch').click();
   const livePoolCanvas=fullPage.locator('canvas.bridge-pool-canvas');
   await livePoolCanvas.waitFor({state:'visible'});
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-pool-canvas');
+    const gl=canvas?.getContext('webgl2')||canvas?.getContext('webgl');
+    return Boolean(gl?.getParameter(gl.CURRENT_PROGRAM))&&canvas.width>0&&canvas.height>0;
+  },null,{timeout:10000});
   const localGpu=await livePoolCanvas.evaluate(canvas=>{
     const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
     return {available:Boolean(gl),program:Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)),
