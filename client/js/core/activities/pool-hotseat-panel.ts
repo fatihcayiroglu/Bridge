@@ -78,11 +78,25 @@ export function showLocalPoolHotSeat(
   safety.addEventListener('change',()=>{if(live)refresh(live.match);});
   const decisions=make('div','bridge-mini-golf-controls bridge-pool-hotseat-decisions');
   const offer=(value:string,act:()=>boolean)=>{
+    // A rules decision replaces its own DOM node, so the browser otherwise
+    // drops keyboard focus to <body>. Capture the ordinal before replacement
+    // and restore a usable destination after a genuine button action.
+    const position=decisions.querySelectorAll('button').length;
     decisions.append(button(value,'bridge-room-direction',()=>{
       if(!live||disposed)return;
-      if(!act())notice.textContent=s.poolHotSeatInvalid;
-      else notice.textContent='';
+      const accepted=act();
+      notice.textContent=accepted?'':s.poolHotSeatInvalid;
       refresh(live.match);
+      if(disposed)return;
+      const next=decisions.querySelectorAll<HTMLButtonElement>('button')[position] ??
+        decisions.querySelector<HTMLButtonElement>('button');
+      if(next)next.focus();
+      else {
+        const placement=decisions.querySelector<HTMLInputElement>('input');
+        if(placement)placement.focus();
+        else if(!shoot.disabled)shoot.focus();
+        else back.focus();
+      }
     }));
   };
   const phases:Record<EightBallPhase,string>={
