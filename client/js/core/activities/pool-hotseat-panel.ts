@@ -6,6 +6,7 @@ import {type EightBallPhase,type EightBallFoul} from './pool-eight-ball-rules.ts
 import {activityStringsForLanguage} from './bridge-activities-copy.ts';
 import {localHotSeatCallBallIds} from './pool-hotseat-call-options.ts';
 import {localPoolShotSummary} from './pool-hotseat-shot-summary.ts';
+import {localHotSeatInventory} from './pool-hotseat-inventory.ts';
 
 
 export interface LocalPoolHotSeatPanelHandle { dispose():void; }
@@ -45,6 +46,7 @@ export function showLocalPoolHotSeat(
   const status=make('p','bridge-room-status bridge-pool-hotseat-status');
   status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   const groupStatus=make('p','bridge-room-status bridge-pool-hotseat-groups');
+  const inventoryStatus=make('p','bridge-room-status bridge-pool-hotseat-inventory');
   const shotStatus=make('p','bridge-room-status bridge-pool-hotseat-last-shot');
   shotStatus.setAttribute('role','status');shotStatus.setAttribute('aria-live','polite');
   const notice=make('p','bridge-room-status bridge-pool-hotseat-notice');
@@ -151,6 +153,12 @@ export function showLocalPoolHotSeat(
       (rules.groups[i]==='solids'?s.poolHotSeatSolidsGroup:
        rules.groups[i]==='stripes'?s.poolHotSeatStripesGroup:s.poolHotSeatUnassigned)
     ).join(' · ');
+    const inventory=localHotSeatInventory(snapshot);
+    inventoryStatus.textContent=inventory
+      ?s.poolHotSeatRemaining+': '+s.poolHotSeatSolidsGroup+' '+inventory.solidsRemaining+
+       ' · '+s.poolHotSeatStripesGroup+' '+inventory.stripesRemaining+
+       ' · '+(inventory.eightOnTable?s.poolHotSeatEightOnTable:s.poolHotSeatEightPocketed)
+      :'';
     const shot=localPoolShotSummary(snapshot);
     shotStatus.textContent=shot
       ?s.poolHotSeatLastShot+': '+s.poolHotSeatPlayer+' '+(shot.actor+1)+
@@ -209,7 +217,7 @@ export function showLocalPoolHotSeat(
         live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
-  container.append(back,heading,help,canvas,status,groupStatus,shotStatus,notice,controls,decisions,restart);
+  container.append(back,heading,help,canvas,status,groupStatus,inventoryStatus,shotStatus,notice,controls,decisions,restart);
   function startFresh():void {
     if(disposed)return;
     // A reset after a finished/invalidated match is a NEW renderer and a NEW
@@ -228,7 +236,7 @@ export function showLocalPoolHotSeat(
     const currentGeneration=generation;
     lastTurnKey=null;
     safety.checked=false;aim.value='0';power.value='60';
-    notice.textContent='';shotStatus.textContent='';
+    notice.textContent='';shotStatus.textContent='';inventoryStatus.textContent='';
     try {
       const session=startLocalHotSeatLiveSession(canvas,snapshot=>{
         if(!disposed&&generation===currentGeneration)refresh(snapshot);
@@ -239,7 +247,7 @@ export function showLocalPoolHotSeat(
       // No renderer means no playable state or score. Explicit retry stays
       // possible but no stale session is ever reactivated.
       live=null;setRestartVisible(true);
-      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';
+      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';inventoryStatus.textContent='';
       notice.textContent=s.noWebgl;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
       safety.disabled=true;ball.disabled=true;pocket.disabled=true;

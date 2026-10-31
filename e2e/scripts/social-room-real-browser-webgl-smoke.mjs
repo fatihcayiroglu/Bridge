@@ -807,6 +807,9 @@ try {
   assert.match(await fullPage.locator('.bridge-pool-hotseat-groups').textContent(),
     /Player 1: Not assigned.*Player 2: Not assigned/,
     'both 8-Ball players must have visibly unassigned groups at first break');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-inventory').textContent(),
+    /Remaining: Solids 7.*Stripes 7.*Eight on table/,
+    'real initial WebGL rack must show the full verified 7+7+eight inventory');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball option').count(),0,
     'no phantom called ball before the opening shot');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball').isDisabled(),true);
@@ -841,6 +844,9 @@ try {
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent(),'',
     're-rack must not narrate the previous match as an active foul');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-inventory').textContent(),
+    /Remaining: Solids 7.*Stripes 7.*Eight on table/,
+    'physical re-rack must restore an entire 7+7+eight inventory');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').evaluate(
     el=>el===document.activeElement),true,
     'keyboard focus must transfer from a replaced rules button to ready Shoot');
@@ -895,6 +901,9 @@ try {
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent(),'',
     'new local match must not carry any prior shot outcome or foul');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-inventory').textContent(),
+    /Remaining: Solids 7.*Stripes 7.*Eight on table/,
+    'a newly allocated GPU match must show fresh verified balls, not old counts');
   assert.equal(await restart.isVisible(),false);
   console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_EXPLICIT_NEW_RENDERER_AFTER_GPU_LOSS:1/1:0_skipped');
 
