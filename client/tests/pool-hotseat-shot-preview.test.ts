@@ -44,6 +44,10 @@ describe('pre-shot 8-Ball declaration only from verified local table and rules',
     }
     expect(localPoolShotPreview({...open,table:{...open.table,status:'moving'}},
       false,1,0)).toBeNull();
+    expect(localPoolShotPreview({...initial,table:{...initial.table,status:'complete'}},
+      false,1,0)).toBeNull();
+    expect(localPoolShotPreview({...initial,table:{...initial.table,shots:1},
+      rules:{...initial.rules,shotsResolved:1}},false,1,0)).toBeNull();
     expect(localPoolShotPreview({...open,table:{...open.table,pocketed:3}},
       false,1,0)).toBeNull();
     expect(localPoolShotPreview({...open,rules:{...open.rules,
