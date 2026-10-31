@@ -2,11 +2,11 @@ import {
   startLocalHotSeatLiveSession,type LocalHotSeatLiveSession,
 } from './pool-local-live-session.ts';
 import {type LocalHotSeatMatch} from './pool-local-hotseat.ts';
-import {type EightBallPhase} from './pool-eight-ball-rules.ts';
+import {type EightBallPhase,type EightBallFoul} from './pool-eight-ball-rules.ts';
 import {activityStringsForLanguage} from './bridge-activities-copy.ts';
 import {localHotSeatCallBallIds} from './pool-hotseat-call-options.ts';
 import {localPoolShotSummary} from './pool-hotseat-shot-summary.ts';
-import {type EightBallFoul} from './pool-eight-ball-rules.ts';
+
 
 export interface LocalPoolHotSeatPanelHandle { dispose():void; }
 
