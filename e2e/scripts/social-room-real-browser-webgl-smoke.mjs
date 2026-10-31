@@ -804,6 +804,12 @@ try {
   assert.ok(localGpu.width>0&&localGpu.height>0);
   assert.match(await fullPage.locator('.bridge-pool-hotseat-status').textContent(),
     /Player 1.*Break shot/);
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-groups').textContent(),
+    /Player 1: Not assigned.*Player 2: Not assigned/,
+    'both 8-Ball players must have visibly unassigned groups at first break');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball option').count(),0,
+    'no phantom called ball before the opening shot');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball').isDisabled(),true);
   const livePower=fullPage.locator('input.bridge-pool-hotseat-power');
   await livePower.focus();
   await fullPage.keyboard.press('Home');
@@ -819,13 +825,23 @@ try {
     'illegal break requires an explicit player choice, not a silent default');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
     'blocked decision must not permit the next cue strike');
-  await fullPage.locator('.bridge-pool-hotseat-decisions button').nth(1).click();
+  const rerackDecision=fullPage.locator('.bridge-pool-hotseat-decisions button').nth(1);
+  await rerackDecision.focus();
+  assert.equal(await rerackDecision.evaluate(el=>el===document.activeElement),true,
+    'keyboard must be able to focus an explicit Pool rules decision');
+  await fullPage.keyboard.press('Enter');
   await fullPage.waitForFunction(()=>
     /Player 2.*Break shot.*Shots: 0/.test(
       document.querySelector('.bridge-pool-hotseat-status')?.textContent||'') &&
     document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===false,
     null,{timeout:10000});
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').evaluate(
+    el=>el===document.activeElement),true,
+    'keyboard focus must transfer from a replaced rules button to ready Shoot');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-groups').textContent(),
+    /Player 1: Not assigned.*Player 2: Not assigned/);
+  console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_HOTSEAT_KEYBOARD_TURN_FOCUS:1/1:0_skipped');
 
   // Real WebGL context loss must permanently invalidate the current local
   // game, even if Chromium subsequently restores graphics. A stale physics
