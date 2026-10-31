@@ -14,6 +14,8 @@ const mockGetCachedPerms = jest.fn();
 const mockHasPermission = jest.fn();
 const mockCacheIncrement = jest.fn();
 const mockInvalidatePerms = jest.fn();
+const mockSocialRoleReconcile = jest.fn().mockResolvedValue(undefined);
+jest.mock('../lib/socialRoleAccess', () => ({ reconcileSocialRoleChange: (...args: unknown[]) => mockSocialRoleReconcile(...args) }));
 
 jest.mock('../db/loader', () => mockDb);
 
@@ -554,6 +556,7 @@ describe('registerEditHandlers', () => {
       const member = await mockDb.members.findOne({ userId: owner._id, serverId: server._id });
       expect(readRoles(member!.roles)).not.toContain('role-party');
       expect(mockInvalidatePerms).toHaveBeenCalledWith(server._id, owner._id);
+      expect(mockSocialRoleReconcile).toHaveBeenCalledWith(io, server._id, owner._id);
       expect(io._emitted).toContainEqual({
         ev: 'role:revoked',
         data: { serverId: server._id, roleId: 'role-party', emoji: '🎭' },

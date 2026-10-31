@@ -1,0 +1,99 @@
+name: Bridge dependency lock and audit integrity (supplemental)
+
+# A read-only supplemental gate: regenerates lockfiles in the disposable
+# runner and asserts ZERO drift against committed manifests, then performs
+# four unmodified npm audits, reproducible installs, strict type/build checks
+# and real client/server/Electron regression tests. No automatic write or merge.
+on:
+  pull_request:
+    branches:
+      - codex/activities-mini-golf-eight-player-lobby-20261030
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'server/package.json'
+      - 'server/package-lock.json'
+      - 'electron/package.json'
+      - 'electron/package-lock.json'
+      - '.github/workflows/bridge-audit-lock-refresh-evidence.yml'
+permissions:
+  contents: read
+jobs:
+  manifest-lock-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - name: Resolve manifests without scripts or changing tracked files
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cd server
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cd ../electron
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Report exact changed lock JSON fields for manually reviewed commit
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const cp = require('node:child_process');
+          for (const path of ['package-lock.json', 'server/package-lock.json', 'electron/package-lock.json']) {
+            const before=JSON.parse(cp.execFileSync('git',['show','HEAD:'+path],{encoding:'utf8',maxBuffer:20_000_000}));
+            const after=JSON.parse(fs.readFileSync(path,'utf8'));
+            const entries={}, removed=[];
+            const keys=new Set([...Object.keys(before.packages),...Object.keys(after.packages)]);
+            for(const key of keys){
+              const b=before.packages[key],a=after.packages[key];
+              if(JSON.stringify(b)!==JSON.stringify(a)){
+                if(a===undefined) removed.push(key);
+                else entries[key]=a;
+              }
+            }
+            const base={},changedRoots={};
+            for(const [key,value] of Object.entries(after)) if(key!=='packages' && JSON.stringify(before[key])!==JSON.stringify(value)) changedRoots[key]=value;
+            console.log('LOCK_REFRESH_DELTA='+JSON.stringify({path,changedRoots,entries,removed}));
+            console.log('LOCK_REFRESH_SUMMARY='+JSON.stringify({path,changed:Object.keys(entries).length,removed:removed.length}));
+          }
+          NODE
+      - name: Ensure npm lock regeneration produces NO changes
+        run: git diff --exit-code -- package-lock.json server/package-lock.json electron/package-lock.json
+      - name: Verify npm ci reproducible root install without executing lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify npm ci reproducible server install without executing lifecycle scripts
+        run: cd server && npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify npm ci reproducible Electron install without executing lifecycle scripts
+        run: cd electron && npm ci --ignore-scripts --no-audit --no-fund
+      - name: Audit root and all workspaces without bypass or exclusion
+        run: npm audit --audit-level=high
+      - name: Audit server dependencies without bypass or exclusion
+        run: cd server && npm audit --audit-level=high
+      - name: Audit Electron lock without bypass or exclusion
+        run: cd electron && npm audit --audit-level=high
+      - name: Audit E2E lock without bypass or exclusion
+        run: cd e2e && npm audit --audit-level=high
+      - name: Strict server and client TypeScript gates
+        run: |
+          npm run typecheck:server
+          npm run typecheck:client
+          cd server && npm run typecheck:test-strict
+      - name: Production server and client build with pinned dependencies
+        run: |
+          npm run build
+          cd server && npm run build
+          cd ../electron && npm run compile
+      - name: Real Mini Golf authority, revocation and 3D socket Jest tests (no skips)
+        run: |
+          cd server
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/mini-golf-authority.test.ts tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts --json --outputFile=security-upgrade-jest.json
+          node - <<'NODE'
+          const r=require('./security-upgrade-jest.json');
+          if(r.numTotalTests < 30 || r.numFailedTests || r.numPendingTests ||
+              r.numPassedTests !== r.numTotalTests)process.exit(1);
+          console.log('SECURITY_UPGRADE_JEST:'+r.numPassedTests+'/'+r.numTotalTests+':0_skipped');
+          NODE
+      - name: Real Mini Golf client and local physics tests under upgraded npm lock
+        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts
+      - name: Electron desktop Jest contracts under patched Electron
+        run: cd electron && npm test -- --runInBand --forceExit
