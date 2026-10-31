@@ -5,6 +5,7 @@ import {
 import {
   towerLegalBlockIds,type TowerMatch,
 } from './tower-chaos-physics.ts';
+import {towerHitTest} from './tower-chaos-hit-test.ts';
 
 export interface TowerChaosPanelHandle {dispose():void}
 /**
@@ -30,7 +31,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   };
   const back=button(s.backToGames,'bridge-room-direction bridge-tower-back',()=>{
     if(disposed)return;
-    disposed=true;generation++;live?.dispose();live=null;onBack();
+    disposed=true;generation++;canvas.removeEventListener('pointerup',chooseVisibleBlock);
+    live?.dispose();live=null;onBack();
   });
   const heading=node('h3','bridge-mini-golf-heading',s.towerTitle);
   const help=node('p','bridge-activities-help',s.towerHelp);
@@ -45,6 +47,20 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   const selected=node('select','bridge-tower-block');
   selected.setAttribute('aria-label',s.towerChoose);
   choose.append(selected);
+  // A pointer only chooses a block. The separate deliberate Remove button
+  // performs the rules-validated action, avoiding accidental touch removals.
+  const chooseVisibleBlock=(event:PointerEvent)=>{
+    if(disposed||blocked||!live?.graphicsAvailable||
+        event.currentTarget!==canvas||event.isPrimary===false||
+        event.button!==0||selected.disabled)return;
+    const bounds=canvas.getBoundingClientRect();
+    const id=towerHitTest(live.match,event.clientX-bounds.left,
+      event.clientY-bounds.top,bounds.width,bounds.height);
+    if(id===null||![...selected.options].some(o=>o.value===String(id)))return;
+    selected.value=String(id);
+    notice.textContent=s.towerPicked+' '+(id+1);
+  };
+  canvas.addEventListener('pointerup',chooseVisibleBlock);
   const remove=button(s.towerRemove,'bridge-room-direction bridge-tower-remove',()=>{
     if(disposed||blocked||!live||!live.graphicsAvailable||
         !live.remove(live.match.currentPlayer,Number(selected.value))){
@@ -76,7 +92,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
         ' · '+s.towerLayer+' '+(Math.floor(id/3)+1));
       option.value=String(id);return option;
     }));
-    if(legal.includes(Number(old)))selected.value=old;
+    if(old!==''&&legal.includes(Number(old)))selected.value=old;
+    else selected.selectedIndex=legal.length?0:-1;
     const finished=match.phase==='collapsed';
     const available=!blocked&&!!live?.graphicsAvailable;
     selected.disabled=!available||finished;
@@ -96,7 +113,9 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     selected.replaceChildren();selected.disabled=true;remove.disabled=true;
     const fresh=node('canvas','bridge-activities-canvas bridge-tower-canvas');
     fresh.setAttribute('aria-label',s.towerTitle);
+    canvas.removeEventListener('pointerup',chooseVisibleBlock);
     canvas.replaceWith(fresh);canvas=fresh;
+    canvas.addEventListener('pointerup',chooseVisibleBlock);
     const mine=generation;
     try{
       const next=startTowerChaosWebGL(canvas,snapshot=>{
@@ -116,5 +135,6 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   }
   begin();
   return {dispose(){if(disposed)return;disposed=true;generation++;
+    canvas.removeEventListener('pointerup',chooseVisibleBlock);
     live?.dispose();live=null;}};
 }

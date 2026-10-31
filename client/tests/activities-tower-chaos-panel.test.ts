@@ -73,6 +73,51 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     click('.bridge-activities-close');
     expect(document.getElementById('app')?.inert).toBe(false);
   });
+  it('touch and mouse choose a visible 3D block without accidentally taking the turn',()=>{
+    showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
+    const selected=document.querySelector<HTMLSelectElement>('.bridge-tower-block')!;
+    const canvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
+    canvas.getBoundingClientRect=()=>({
+      left:0,top:0,width:600,height:440,
+    } as DOMRect);
+    expect(selected.value).toBe('0');
+    canvas.dispatchEvent(new MouseEvent('pointerup',{
+      bubbles:true,clientX:289.8,clientY:219.2,button:0,
+    }));
+    expect(selected.value).toBe('11');
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Player 1 · Moves: 0'); // pick alone never removes
+    expect(document.querySelector('.bridge-tower-notice')?.textContent)
+      .toBe('Selected block 12');
+    canvas.dispatchEvent(new MouseEvent('pointerup',{
+      bubbles:true,clientX:999,clientY:999,button:0,
+    }));
+    expect(selected.value).toBe('11');
+    canvas.dispatchEvent(new MouseEvent('pointerup',{
+      bubbles:true,clientX:289.8,clientY:219.2,button:2,
+    }));
+    expect(selected.value).toBe('11');
+    click('.bridge-tower-remove');
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Player 2 · Moves: 1');
+    const loss=mock.lost;
+    loss?.();
+    canvas.dispatchEvent(new MouseEvent('pointerup',{
+      bubbles:true,clientX:289.8,clientY:219.2,button:0,
+    }));
+    expect(selected.disabled).toBe(true);
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('graphics unverified');
+    click('.bridge-tower-restart');
+    const newCanvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
+    expect(newCanvas).not.toBe(canvas);
+    // A retired event source cannot pick into the active generation.
+    canvas.dispatchEvent(new MouseEvent('pointerup',{
+      bubbles:true,clientX:289.8,clientY:219.2,button:0,
+    }));
+    expect(selected.value).toBe('0');
+    expect(document.querySelector('.bridge-tower-notice')?.textContent).toBe('');
+  });
   it('only the active player removes a physical block; collapse ends with the other winner',()=>{
     showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
     const options=document.querySelector<HTMLSelectElement>('.bridge-tower-block')!;

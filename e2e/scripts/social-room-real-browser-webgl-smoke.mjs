@@ -740,6 +740,20 @@ try {
   },null,{timeout:10000});
   const towerSelect=fullPage.locator('.bridge-tower-block');
   assert.equal(await towerSelect.locator('option').count(),15);
+  // A real Chromium pointer ray hits the exposed face of block 12 (id 11)
+  // at the production Tower camera, NOT a DOM option or synthetic click.
+  const towerRect=await fullPage.locator('canvas.bridge-tower-canvas').boundingBox();
+  assert.ok(towerRect&&towerRect.width>0&&towerRect.height>0);
+  await fullPage.locator('canvas.bridge-tower-canvas').click({position:{
+    x:towerRect.width/2-towerRect.height*0.0232,
+    y:towerRect.height*0.4982,
+  }});
+  assert.equal(await towerSelect.inputValue(),'11',
+    'real WebGL tower pointer ray must select the visible block, not a hidden one');
+  assert.match(await fullPage.locator('.bridge-tower-notice').textContent(),
+    /Selected block 12/);
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Player 1.*Moves: 0/,'pointer selection alone never consumes a turn');
   await towerSelect.selectOption('1');
   await fullPage.locator('.bridge-tower-remove').click();
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
