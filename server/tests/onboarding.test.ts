@@ -4,6 +4,8 @@ process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+const mockSocialRoleReconcile = jest.fn().mockResolvedValue(undefined);
+jest.mock('../lib/socialRoleAccess', () => ({ reconcileSocialRoleChange: (...args: unknown[]) => mockSocialRoleReconcile(...args) }));
 jest.mock('../lib/permissions', () => ({
   resolvePermissions: jest.fn(),
   hasPermission:      jest.fn(),
@@ -200,12 +202,14 @@ describe('Onboarding canonical scope + idempotent completion', () => {
     expect(first.status).toBe(200); expect(first.body.alreadyCompleted).toBeUndefined();
     const member=await db.members.findOne({userId:uid,serverId:sid});
     expect(member.roles).toContain(role);
+    expect(mockSocialRoleReconcile).toHaveBeenCalledWith(undefined, sid, uid);
     const welcomeRows=await db.messages.find({channelId:welcome});
     expect(welcomeRows).toHaveLength(1);
     expect(welcomeRows[0].content).toContain('@Scope User');
 
     const second=await request(app2).post(`/api/servers/${sid}/onboarding/complete`).set('Authorization',`Bearer ${auth}`).send({answers:{q1:'again'}});
     expect(second.status).toBe(200); expect(second.body.alreadyCompleted).toBe(true);
+    expect(mockSocialRoleReconcile).toHaveBeenCalledTimes(1);
     expect(await db.messages.find({channelId:welcome})).toHaveLength(1);
     const completions=await db.onboardingCompletions.find({serverId:sid,userId:uid});
     expect(completions).toHaveLength(1);
