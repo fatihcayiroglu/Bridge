@@ -64,6 +64,7 @@ on:
       - chatgpt/activities-pool-local-inventory-scoreboard-20261031
       - chatgpt/activities-pool-local-call-preview-20261031
       - chatgpt/activities-pool-per-turn-cue-safety-20261031
+      - chatgpt/activities-pool-verified-call-options-20261031
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
