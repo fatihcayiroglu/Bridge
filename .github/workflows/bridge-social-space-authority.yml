@@ -69,6 +69,7 @@ on:
       - chatgpt/activities-tower-chaos-local-physics-20261031
       - chatgpt/activities-tower-chaos-webgl-preview-20261031
       - chatgpt/activities-tower-chaos-pointer-picking-20261031
+      - chatgpt/activities-tower-selection-highlight-20261031
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
