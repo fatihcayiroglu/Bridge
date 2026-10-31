@@ -159,9 +159,12 @@ export function showLocalPoolHotSeat(
     const turnKey=rules.shotsResolved+':'+actor;
     const isNewTurn=lastTurnKey!==turnKey;
     if(isNewTurn){
-      // A shared device must never carry a previous player's declared shot
-      // into the next player's turn, even when that ball is still legal.
-      safety.checked=false;pocket.selectedIndex=0;lastTurnKey=turnKey;
+      // Every resolved shot is a new explicit cue setup, even when its actor
+      // keeps the turn. A shared device must never silently reuse the prior
+      // shot's aim, force, safety, called ball or pocket.
+      safety.checked=false;
+      aim.value='0';power.value='60';pocket.selectedIndex=0;
+      lastTurnKey=turnKey;
     }
     const previousBall=isNewTurn?'':ball.value;
     const calledIds=localHotSeatCallBallIds(snapshot);
