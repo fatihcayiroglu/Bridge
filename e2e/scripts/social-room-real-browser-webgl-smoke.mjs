@@ -752,10 +752,29 @@ try {
     'actual GPU-facing canvas hit must select nearest visible block 15');
   assert.match(await fullPage.locator('.bridge-tower-notice').textContent(),
     /Selected block 15/);
+  // Read back the actual WebGL2 ARRAY_BUFFER, not a mock DOM style/color.
+  // The selected physical block's first vertex uses a bright cyan RGB.
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-tower-canvas');
+    const gl=canvas?.getContext('webgl2');
+    if(!gl?.getParameter(gl.ARRAY_BUFFER_BINDING))return false;
+    const rgb=new Float32Array(3);
+    gl.getBufferSubData(gl.ARRAY_BUFFER,(15*216+3)*4,rgb);
+    return rgb[0]<0.15&&rgb[1]>0.8&&rgb[2]>0.9;
+  },null,{timeout:10000});
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
     /Player 1.*Moves: 0/,
     'clicking the 3D tower is selection only: no implicit removal');
   await towerSelect.selectOption('1');
+  await fullPage.waitForFunction(()=>{
+    const gl=document.querySelector('canvas.bridge-tower-canvas')?.getContext('webgl2');
+    if(!gl?.getParameter(gl.ARRAY_BUFFER_BINDING))return false;
+    const selectedRgb=new Float32Array(3),previousRgb=new Float32Array(3);
+    gl.getBufferSubData(gl.ARRAY_BUFFER,(2*216+3)*4,selectedRgb);
+    gl.getBufferSubData(gl.ARRAY_BUFFER,(15*216+3)*4,previousRgb);
+    return selectedRgb[0]<0.15&&selectedRgb[1]>0.8&&
+      previousRgb[0]>0.4&&previousRgb[1]<0.7;
+  },null,{timeout:10000});
   await fullPage.locator('.bridge-tower-remove').click();
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
     /Player 2.*Moves: 1/);

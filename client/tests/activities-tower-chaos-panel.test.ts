@@ -3,11 +3,11 @@ import {showBridgeActivities} from '../js/core/activities/bridge-activities-pane
 import {startTowerChaosWebGL} from '../js/core/activities/tower-chaos-webgl.ts';
 import {towerPickBlock} from '../js/core/activities/tower-chaos-picking.ts';
 import {
-  newTowerChaos,removeTowerChaosBlock,type TowerMatch,
+  newTowerChaos,removeTowerChaosBlock,towerLegalBlockIds,type TowerMatch,
 } from '../js/core/activities/tower-chaos-physics.ts';
 
 const mock=vi.hoisted(()=>({
-  dispose:vi.fn(),lost:null as null|(()=>void),
+  dispose:vi.fn(),selected:vi.fn(),lost:null as null|(()=>void),
   mode:'available' as 'available'|'unavailable',
 }));
 vi.mock('../js/core/exclusive-surface.ts',()=>({closeExclusivePeers:vi.fn()}));
@@ -25,6 +25,11 @@ vi.mock('../js/core/activities/tower-chaos-webgl.ts',()=>({
       get match(){return current;},
       get graphicsAvailable(){return !disposed&&!lost;},
       graphicsApi:'webgl2',
+      setSelectedBlock(id:number|null){
+        if(disposed||lost||(id!==null&&
+          !towerLegalBlockIds(current).includes(id)))return false;
+        mock.selected(id);return true;
+      },
       remove(player:0|1,id:number){
         if(disposed||lost)return false;
         const next=removeTowerChaosBlock(current,player,id);
@@ -63,7 +68,7 @@ function visibleTarget():{id:number;x:number;y:number}{
   throw Error('NO_VISIBLE_TOWER_BLOCK');
 }
 beforeEach(()=>{
-  mock.dispose.mockClear();
+  mock.dispose.mockClear();mock.selected.mockClear();
   vi.mocked(startTowerChaosWebGL).mockClear();
   mock.mode='available';mock.lost=null;
   document.documentElement.lang='en';
@@ -136,6 +141,7 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     pointer(canvas,'pointerdown',x,y);
     pointer(canvas,'pointerup',x,y);
     expect(selected.value).toBe(String(id));
+    expect(mock.selected).toHaveBeenLastCalledWith(id);
     expect(document.querySelector('.bridge-tower-notice')?.textContent)
       .toBe('Selected block '+(id+1));
     expect(document.querySelector('.bridge-tower-status')?.textContent)

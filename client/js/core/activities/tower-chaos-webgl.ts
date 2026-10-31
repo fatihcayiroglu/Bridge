@@ -1,5 +1,5 @@
 import {
-  isTowerMatch,newTowerChaos,removeTowerChaosBlock,
+  isTowerMatch,newTowerChaos,removeTowerChaosBlock,towerLegalBlockIds,
   type TowerMatch,type TowerPlayer,
 } from './tower-chaos-physics.ts';
 import {towerChaosGeometry} from './tower-chaos-geometry.ts';
@@ -17,6 +17,8 @@ export interface TowerChaosHandle {
   readonly graphicsAvailable:boolean;
   readonly graphicsApi:'webgl1'|'webgl2';
   remove(player:TowerPlayer,blockId:number):boolean;
+  /** Display-only target; cannot remove a block or change actor. */
+  setSelectedBlock(blockId:number|null):boolean;
   dispose():void;
 }
 type Gl=WebGLRenderingContext|WebGL2RenderingContext;
@@ -100,7 +102,7 @@ export function startTowerChaosWebGL(canvas:HTMLCanvasElement,
   let gpu:Gpu;
   try{gpu=allocate(gl,api);}catch{return null;}
   let match=newTowerChaos(),disposed=false,lost=false,detached=false,
-    raf=0,lastDraw=0,dirty=true;
+    raf=0,lastDraw=0,dirty=true,selectedId:number|null=null;
   const camera=view();
   function connected():boolean {
     if(!canvas.isConnected)detached=true;
@@ -116,7 +118,7 @@ export function startTowerChaosWebGL(canvas:HTMLCanvasElement,
       canvas.width=size.width;canvas.height=size.height;dirty=true;
     }
     if(!dirty&&now-lastDraw<1000/30)return;
-    const vertices=towerChaosGeometry(match);
+    const vertices=towerChaosGeometry(match,0,selectedId);
     if(!vertices){invalidate();return;}
     gl.viewport(0,0,size.width,size.height);
     gl.clearColor(.065,.095,.15,1);
@@ -170,7 +172,14 @@ export function startTowerChaosWebGL(canvas:HTMLCanvasElement,
       if(!available()||!isTowerMatch(match))return false;
       const next=removeTowerChaosBlock(match,player,blockId);
       if(!next)return false;
-      match=next;dirty=true;onState(copyMatch(match));start();
+      match=next;selectedId=null;dirty=true;onState(copyMatch(match));start();
+      return true;
+    },
+    setSelectedBlock(blockId){
+      if(!available()||match.phase!=='playing'||
+          (blockId!==null&&(!Number.isSafeInteger(blockId)||
+            !towerLegalBlockIds(match).includes(blockId))))return false;
+      if(selectedId!==blockId){selectedId=blockId;dirty=true;start();}
       return true;
     },
     dispose(){
