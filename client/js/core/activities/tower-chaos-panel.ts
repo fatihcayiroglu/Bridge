@@ -11,7 +11,8 @@ export interface TowerChaosPanelHandle {dispose():void}
 /**
  * Experimental local two-person Tower Chaos panel. No network or persistent
  * score, no unverified graphics play, no silent resume after WebGL context loss.
- * Block selection is an accessible native select (not a fake canvas hit).
+ * Block selection is shared by an accessible native select and a guarded
+ * physical pointer gesture; picking alone can never remove a block.
  */
 export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   TowerChaosPanelHandle {
@@ -31,7 +32,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   };
   const back=button(s.backToGames,'bridge-room-direction bridge-tower-back',()=>{
     if(disposed)return;
-    disposed=true;generation++;canvas.removeEventListener('pointerup',chooseVisibleBlock);
+    disposed=true;generation++;retireCanvasPicking(canvas);
+    retireFocusGuards();
     live?.dispose();live=null;onBack();
   });
   const heading=node('h3','bridge-mini-golf-heading',s.towerTitle);
@@ -48,18 +50,58 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   selected.setAttribute('aria-label',s.towerChoose);
   choose.append(selected);
   selected.addEventListener('change',()=>{
+    // Keyboard/assistive choice is authoritative over any pending press.
+    clearPress();
     if(disposed||blocked||!live?.graphicsAvailable||selected.disabled||
         selected.value==='')return;
     const id=Number(selected.value);
     if(!towerLegalBlockIds(live.match).includes(id)||!live.select(id))return;
     notice.textContent=s.towerPicked+' '+(id+1);
   });
-  // A pointer only chooses a block. The separate deliberate Remove button
-  // performs the rules-validated action, avoiding accidental touch removals.
-  const chooseVisibleBlock=(event:PointerEvent)=>{
+  // A press/release gesture only CHOOSES a visible block. Never act on
+  // an orphan pointerup, a different pointer, a drag, or a retired canvas.
+  type Press={pointerId:number;x:number;y:number;generation:number};
+  let pressed:Press|null=null;
+  const clearPress=()=>{pressed=null;};
+  const clearOnHidden=()=>{if(document.hidden)clearPress();};
+  window.addEventListener('blur',clearPress);
+  document.addEventListener('visibilitychange',clearOnHidden);
+  const retireFocusGuards=()=>{
+    window.removeEventListener('blur',clearPress);
+    document.removeEventListener('visibilitychange',clearOnHidden);
+  };
+  const eligible=(event:PointerEvent):boolean=>
+    event.isPrimary===true&&event.button===0&&
+    Number.isSafeInteger(event.pointerId)&&event.pointerId>=0&&
+    Number.isFinite(event.clientX)&&Number.isFinite(event.clientY);
+  const pressStart=(event:PointerEvent)=>{
+    pressed=null;
     if(disposed||blocked||!live?.graphicsAvailable||
-        event.currentTarget!==canvas||event.isPrimary===false||
-        event.button!==0||selected.disabled)return;
+        event.currentTarget!==canvas||selected.disabled||!eligible(event))return;
+    const rect=canvas.getBoundingClientRect();
+    if(!Number.isFinite(rect.width)||!Number.isFinite(rect.height)||
+        rect.width<=0||rect.height<=0||
+        event.clientX<rect.left||event.clientY<rect.top||
+        event.clientX>rect.left+rect.width||
+        event.clientY>rect.top+rect.height)return;
+    pressed={pointerId:event.pointerId,x:event.clientX,y:event.clientY,generation};
+  };
+  const trackPress=(event:PointerEvent)=>{
+    const start=pressed;
+    if(!start||start.pointerId!==event.pointerId)return;
+    // Pointermove reports button=-1 on hover in some implementations, so
+    // validate the identity and coordinates instead of reusing eligible().
+    if(event.isPrimary!==true||!Number.isFinite(event.clientX)||
+        !Number.isFinite(event.clientY)||
+        Math.hypot(event.clientX-start.x,event.clientY-start.y)>12)
+      pressed=null;
+  };
+  const chooseVisibleBlock=(event:PointerEvent)=>{
+    const start=pressed;pressed=null;
+    if(!start||disposed||blocked||!live?.graphicsAvailable||
+        event.currentTarget!==canvas||selected.disabled||!eligible(event)||
+        start.generation!==generation||start.pointerId!==event.pointerId||
+        Math.hypot(event.clientX-start.x,event.clientY-start.y)>12)return;
     const bounds=canvas.getBoundingClientRect();
     const id=towerHitTest(live.match,event.clientX-bounds.left,
       event.clientY-bounds.top,bounds.width,bounds.height);
@@ -67,8 +109,26 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     selected.value=String(id);
     selected.dispatchEvent(new Event('change',{bubbles:true}));
   };
-  canvas.addEventListener('pointerup',chooseVisibleBlock);
+  const bindCanvasPicking=(target:HTMLCanvasElement)=>{
+    target.addEventListener('pointerdown',pressStart);
+    target.addEventListener('pointermove',trackPress);
+    target.addEventListener('pointerup',chooseVisibleBlock);
+    target.addEventListener('pointercancel',clearPress);
+    target.addEventListener('pointerleave',clearPress);
+    target.addEventListener('lostpointercapture',clearPress);
+  };
+  const retireCanvasPicking=(target:HTMLCanvasElement)=>{
+    pressed=null;
+    target.removeEventListener('pointerdown',pressStart);
+    target.removeEventListener('pointermove',trackPress);
+    target.removeEventListener('pointerup',chooseVisibleBlock);
+    target.removeEventListener('pointercancel',clearPress);
+    target.removeEventListener('pointerleave',clearPress);
+    target.removeEventListener('lostpointercapture',clearPress);
+  };
   const remove=button(s.towerRemove,'bridge-room-direction bridge-tower-remove',()=>{
+    // A held pointer belongs to the old turn; release must not select in the next.
+    clearPress();
     if(disposed||blocked||!live||!live.graphicsAvailable||
         !live.remove(live.match.currentPlayer,Number(selected.value))){
       notice.textContent=s.towerInvalid;return;
@@ -125,9 +185,9 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     selected.replaceChildren();selected.disabled=true;remove.disabled=true;
     const fresh=node('canvas','bridge-activities-canvas bridge-tower-canvas');
     fresh.setAttribute('aria-label',s.towerTitle);
-    canvas.removeEventListener('pointerup',chooseVisibleBlock);
+    retireCanvasPicking(canvas);
     canvas.replaceWith(fresh);canvas=fresh;
-    canvas.addEventListener('pointerup',chooseVisibleBlock);
+    bindCanvasPicking(canvas);
     const mine=generation;
     try{
       const next=startTowerChaosWebGL(canvas,snapshot=>{
@@ -147,6 +207,6 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   }
   begin();
   return {dispose(){if(disposed)return;disposed=true;generation++;
-    canvas.removeEventListener('pointerup',chooseVisibleBlock);
+    retireCanvasPicking(canvas);retireFocusGuards();
     live?.dispose();live=null;}};
 }

@@ -773,6 +773,21 @@ try {
     gl.getBufferSubData(gl.ARRAY_BUFFER,((1+1)*216+3)*4,highlight);
     return other[0]<.9&&highlight[0]>.94&&highlight[1]>.85;
   },null,{timeout:10000});
+  // Real Chromium drag-out-and-back regression: the native <select> must
+  // stay on block 2 after an excursion beyond 12 CSS px, even if release
+  // lands on the very same physical block where the press began.
+  const towerGestureX=towerRect.x+towerRect.width/2-towerRect.height*0.0232;
+  const towerGestureY=towerRect.y+towerRect.height*0.4982;
+  await fullPage.mouse.move(towerGestureX,towerGestureY);
+  await fullPage.mouse.down();
+  await fullPage.mouse.move(towerGestureX+40,towerGestureY,{steps:5});
+  await fullPage.mouse.move(towerGestureX,towerGestureY,{steps:5});
+  await fullPage.mouse.up();
+  assert.equal(await towerSelect.inputValue(),'1',
+    'dragging out then back must not select a block');
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Player 1.*Moves: 0/,'drag must never spend a turn');
+  console.log('BRIDGE_3D_TOWER_REAL_CHROMIUM_DRAG_RETURN_GUARD:1/1:0_skipped');
   console.log('BRIDGE_3D_TOWER_REAL_CHROMIUM_GPU_SELECTION_HIGHLIGHT:1/1:0_skipped');
   await fullPage.locator('.bridge-tower-remove').click();
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
