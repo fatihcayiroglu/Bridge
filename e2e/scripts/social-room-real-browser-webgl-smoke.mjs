@@ -781,6 +781,50 @@ try {
   assert.equal(await fullPage.locator('#app').evaluate(el => el.inert), true,
     'keyboard focus checks must not lift inert app boundary');
 
+  // REAL Chromium + the shipped full app shell and GPU renderer (not the
+  // Vitest renderer double). Explicit same-device 8-Ball uses genuine
+  // fixed-step physics and cannot advance before the illegal-break decision.
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-status').count(),0,
+    'local 2-player game must never auto-start from solo practice');
+  await fullPage.locator('.bridge-pool-hotseat-launch').click();
+  const livePoolCanvas=fullPage.locator('canvas.bridge-pool-canvas');
+  await livePoolCanvas.waitFor({state:'visible'});
+  const localGpu=await livePoolCanvas.evaluate(canvas=>{
+    const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
+    return {available:Boolean(gl),program:Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)),
+      width:canvas.width,height:canvas.height};
+  });
+  assert.equal(localGpu.available,true,'local 2-player renderer must have a real WebGL context');
+  assert.equal(localGpu.program,true,'local 2-player renderer must link a real GLSL program');
+  assert.ok(localGpu.width>0&&localGpu.height>0);
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-status').textContent(),
+    /Player 1.*Break shot/);
+  const livePower=fullPage.locator('input.bridge-pool-hotseat-power');
+  await livePower.focus();
+  await fullPage.keyboard.press('Home');
+  assert.equal(await livePower.inputValue(),'10','real keyboard lowers the break to minimum power');
+  await fullPage.locator('.bridge-pool-hotseat-shoot').click();
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
+    'physical shot must lock controls until it settles');
+  await fullPage.waitForFunction(()=>
+    /Player 2.*Illegal break.*Shots: 1/.test(
+      document.querySelector('.bridge-pool-hotseat-status')?.textContent||''),
+    null,{timeout:15000});
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),3,
+    'illegal break requires an explicit player choice, not a silent default');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
+    'blocked decision must not permit the next cue strike');
+  await fullPage.locator('.bridge-pool-hotseat-decisions button').nth(1).click();
+  await fullPage.waitForFunction(()=>
+    /Player 2.*Break shot.*Shots: 0/.test(
+      document.querySelector('.bridge-pool-hotseat-status')?.textContent||'') &&
+    document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===false,
+    null,{timeout:10000});
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
+  await fullPage.locator('.bridge-pool-hotseat-back').click();
+  assert.match(await fullPage.locator('.bridge-pool-status').textContent(),/Shots: 0/);
+  console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_LOCAL_HOTSEAT_BREAK_RERACK:1/1:0_skipped');
+
   await fullPage.locator('.bridge-pool-back').click();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(),10);
   console.log('BRIDGE_3D_POOL_REAL_AUTH_APP_SOLO_SHOOT_RESET:1/1:0_skipped');
@@ -1249,9 +1293,29 @@ try {
   await mobilePage.locator('.bridge-pool-shoot').tap();
   await mobilePage.waitForFunction(()=>/Shots: 1|Vuruş: 1/.test(
     document.querySelector('.bridge-pool-status')?.textContent||''),null,{timeout:8000});
+  // Touch/mobile viewport is a real Chromium emulation, not a physical
+  // Android/iOS device. Verify visible player status, 44px tap target and
+  // the offline 3D renderer without claiming a native mobile acceptance.
+  await mobilePage.locator('.bridge-pool-hotseat-launch').tap();
+  await mobilePage.locator('.bridge-pool-hotseat-status').waitFor({state:'visible'});
+  const touchLocal=await mobilePage.evaluate(()=>{
+    const dialog=document.querySelector('.bridge-activities-dialog');
+    const shoot=document.querySelector('.bridge-pool-hotseat-shoot');
+    const canvas=document.querySelector('.bridge-pool-canvas');
+    return {overflow:(dialog?.scrollWidth||0)-(dialog?.clientWidth||0),
+      targetHeight:shoot?.getBoundingClientRect().height||0,
+      webgl:Boolean(canvas?.getContext('webgl2')||canvas?.getContext('webgl')),
+      status:document.querySelector('.bridge-pool-hotseat-status')?.textContent||''};
+  });
+  assert.ok(touchLocal.overflow<=3,'2-player Pool local mobile layout must not overflow');
+  assert.ok(touchLocal.targetHeight>=44,'2-player Pool mobile shoot needs a real touch target');
+  assert.equal(touchLocal.webgl,true);
+  assert.match(touchLocal.status,/Player 1.*Break shot/);
+  await mobilePage.locator('.bridge-pool-hotseat-back').tap();
   await mobilePage.locator('.bridge-pool-back').tap();
   assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
   await mobilePage.locator('.bridge-activities-close').tap();
+  console.log('BRIDGE_3D_POOL_MOBILE_CHROMIUM_TOUCH_LOCAL_HOTSEAT:1/1:0_skipped');
   console.log('BRIDGE_3D_POOL_MOBILE_CHROMIUM_TOUCH_SOLO:1/1:0_skipped');
   console.log('BRIDGE_MINI_GOLF_REAL_MOBILE_CHROMIUM_TOUCH:1/1:0_skipped');
 
