@@ -92,7 +92,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
         ' · '+s.towerLayer+' '+(Math.floor(id/3)+1));
       option.value=String(id);return option;
     }));
-    if(legal.includes(Number(old)))selected.value=old;
+    if(old!==''&&legal.includes(Number(old)))selected.value=old;
+    else selected.selectedIndex=legal.length?0:-1;
     const finished=match.phase==='collapsed';
     const available=!blocked&&!!live?.graphicsAvailable;
     selected.disabled=!available||finished;
