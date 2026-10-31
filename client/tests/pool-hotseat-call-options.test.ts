@@ -38,6 +38,21 @@ describe('local 8-ball legal called-ball UI hints (never rules authority)',()=>{
     expect(localHotSeatCallBallIds({...cleared,rules:{...cleared.rules,ballInHand:'anywhere'}}))
       .toEqual([]);
   });
+  it('never suggests a called ball from corrupt, moving or stale physical evidence',()=>{
+    const match={...base,rules:{...base.rules,phase:'open' as const}};
+    const reject=(m:LocalHotSeatMatch)=>{
+      expect(localHotSeatCallBallIds(m)).toEqual([]);
+    };
+    reject({...match,table:{...match.table,status:'moving'}});
+    reject({...match,table:{...match.table,status:'complete'}});
+    reject({...match,table:{...match.table,pocketed:6}});
+    reject({...match,rules:{...match.rules,shotsResolved:1}});
+    reject({...match,table:{...match.table,balls:match.table.balls.slice(1)}});
+    reject({...match,table:{...match.table,balls:match.table.balls.map((b,i)=>
+      i===1?{...b,id:0}:b)}});
+    reject({...match,table:{...match.table,balls:match.table.balls.map(b=>
+      b.id===0?{...b,pocketed:true}:b)}});
+  });
   it('fails closed when the assigned phase has not established a group',()=>{
     const match={...base,rules:{...base.rules,phase:'assigned' as const}};
     expect(localHotSeatCallBallIds(match)).toEqual([]);
