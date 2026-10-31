@@ -848,7 +848,7 @@ try {
   assert.equal(await livePower.getAttribute('aria-valuetext'),'60 percent');
   assert.match(await fullPage.locator('.bridge-pool-hotseat-cue-values').textContent(),
     /Cue aim 0°.*Shot power 60%/,
-    'the incoming player's readout cannot retain the previous cue values');
+    "the incoming player's readout cannot retain the previous cue values");
   const lastShotText=await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent();
   assert.match(lastShotText,/Last shot: Player 1.*Pocketed: 0.*Foul:.*Decision for: Player 2/,
     'narration must derive from settled physical break and the recorded foul');
