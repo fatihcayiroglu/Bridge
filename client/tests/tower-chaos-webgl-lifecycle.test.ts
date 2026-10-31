@@ -119,6 +119,32 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     expect(frames.size).toBe(0);
     expect(onLoss).not.toHaveBeenCalled();
   });
+  it('updates actual WebGL RGB buffers for valid selection without moving or scoring',()=>{
+    const driver=gpu();context.gl=driver as unknown as WebGLRenderingContext;
+    const handle=startTowerChaosWebGL(canvas(),vi.fn(),vi.fn())!;
+    flush(16);
+    const base=driver.bufferData.mock.calls[0]![1] as Float32Array;
+    expect(handle.match.moves).toBe(0);
+    expect(handle.setSelectedBlock(1)).toBe(true);
+    flush(48);
+    const highlight=driver.bufferData.mock.calls.at(-1)![1] as Float32Array;
+    expect(highlight.length).toBe(base.length);
+    expect([...highlight.slice(0,432)]).toEqual([...base.slice(0,432)]);
+    expect([...highlight.slice(648)]).toEqual([...base.slice(648)]);
+    expect([...highlight.slice(432,648)]).not.toEqual([...base.slice(432,648)]);
+    expect(handle.match.moves).toBe(0);
+    for(const id of [-1,15,16,17,1.5,NaN,Infinity]){
+      expect(handle.setSelectedBlock(id)).toBe(false);
+    }
+    expect(handle.remove(0,1)).toBe(true);
+    expect(handle.setSelectedBlock(1)).toBe(false);
+    flush(80);
+    const after=driver.bufferData.mock.calls.at(-1)![1] as Float32Array;
+    expect(after.length).toBe(base.length-216);
+    expect(handle.setSelectedBlock(null)).toBe(true);
+    handle.dispose();
+    expect(handle.setSelectedBlock(0)).toBe(false);
+  });
   it('fences graphics loss permanently, even if the context restores, with one warning',()=>{
     const driver=gpu();context.gl=driver as unknown as WebGLRenderingContext;
     const el=canvas();const onLost=vi.fn();
