@@ -15,10 +15,12 @@ export function localPoolShotPreview(
   match:LocalHotSeatMatch,safety:boolean,ballId:number,pocketIndex:number,
 ):LocalPoolShotPreview|null {
   if(!match||!match.rules||!match.table||!localHotSeatInventory(match)||
+      match.table.status!=='ready'||
       match.rules.winner!==null||match.rules.ballInHand!==null||
       (match.rules.currentPlayer!==0&&match.rules.currentPlayer!==1))return null;
   const {rules,table}=match;
-  if(rules.phase==='break')return {kind:'break',player:rules.currentPlayer};
+  if(rules.phase==='break')return table.shots===0&&rules.shotsResolved===0
+    ?{kind:'break',player:rules.currentPlayer}:null;
   if(rules.phase!=='open'&&rules.phase!=='assigned')return null;
   if(safety===true){
     const declaration=declareLocalPoolCall(rules,table,rules.currentPlayer,'safety');
