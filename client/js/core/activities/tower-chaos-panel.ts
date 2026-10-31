@@ -5,6 +5,7 @@ import {
 import {
   towerLegalBlockIds,type TowerMatch,
 } from './tower-chaos-physics.ts';
+import {towerPickBlock} from './tower-chaos-picking.ts';
 
 export interface TowerChaosPanelHandle {dispose():void}
 /**
@@ -60,6 +61,40 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     if(restart.hidden)selected.focus();
     else restart.focus();
   });
+  // Canvas taps only CHOOSE an available block. A separate confirmation button
+  // executes the turn; drags, secondary clicks and stale GPU sessions cannot.
+  function bindCanvasPicking(target:HTMLCanvasElement,owner:number):void {
+    let start:{id:number;x:number;y:number}|null=null;
+    target.addEventListener('pointerdown',event=>{
+      start=null;
+      if(disposed||blocked||owner!==generation||!live?.graphicsAvailable||
+          event.button!==0||!event.isPrimary)return;
+      start={id:event.pointerId,x:event.clientX,y:event.clientY};
+    });
+    target.addEventListener('pointercancel',()=>{start=null;});
+    target.addEventListener('pointerup',event=>{
+      const pressed=start;start=null;
+      if(!pressed||event.pointerId!==pressed.id||!event.isPrimary||
+          event.button!==0||Math.hypot(event.clientX-pressed.x,
+            event.clientY-pressed.y)>12||disposed||blocked||
+          owner!==generation||!live?.graphicsAvailable||
+          live.match.phase!=='playing')return;
+      const bounds=target.getBoundingClientRect();
+      if(!bounds.width||!bounds.height)return;
+      const x=(event.clientX-bounds.left)/bounds.width;
+      const y=(event.clientY-bounds.top)/bounds.height;
+      if(x<0||x>1||y<0||y>1)return;
+      const blockId=towerPickBlock(live.match,2*x-1,1-2*y,
+        bounds.width/bounds.height);
+      if(blockId===null||!towerLegalBlockIds(live.match).includes(blockId)){
+        notice.textContent=s.towerNoBlock;
+        return;
+      }
+      selected.value=String(blockId);
+      if(selected.value!==String(blockId))return;
+      notice.textContent=s.towerSelected+' '+(blockId+1);
+    });
+  }
   const setRestart=(visible:boolean)=>{
     restart.hidden=!visible;
     restart.style.display=visible?'':'none';
@@ -98,6 +133,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     fresh.setAttribute('aria-label',s.towerTitle);
     canvas.replaceWith(fresh);canvas=fresh;
     const mine=generation;
+    bindCanvasPicking(canvas,mine);
     try{
       const next=startTowerChaosWebGL(canvas,snapshot=>{
         if(!disposed&&mine===generation&&live)render(snapshot);
