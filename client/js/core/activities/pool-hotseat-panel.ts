@@ -89,6 +89,13 @@ export function showLocalPoolHotSeat(
     else shoot.focus();
   });
   restart.hidden=true;
+  restart.style.display='none';
+  const setRestartVisible=(visible:boolean)=>{
+    restart.hidden=!visible;
+    // This button also inherits a styled display class. An inline display
+    // fence keeps HTML hidden semantics correct even in shipped CSS.
+    restart.style.display=visible?'':'none';
+  };
   const offer=(value:string,act:()=>boolean)=>{
     // A rules decision replaces its own DOM node, so the browser otherwise
     // drops keyboard focus to <body>. Capture the ordinal before replacement
@@ -162,7 +169,7 @@ export function showLocalPoolHotSeat(
     if(blocked)notice.textContent=s.poolHotSeatBlocked;
     else if(live&&!moving&&notice.textContent===s.poolHotSeatPending)
       notice.textContent='';
-    restart.hidden=!(blocked||(rules.phase==='finished'&&rules.winner!==null));
+    setRestartVisible(blocked||(rules.phase==='finished'&&rules.winner!==null));
     const available=!blocked&&!moving&&(live?.graphicsAvailable??true);
     const canShoot=available&&snapshot.table.status==='ready'&&rules.ballInHand===null&&
       (rules.phase==='break'||rules.phase==='open'||rules.phase==='assigned');
@@ -231,7 +238,7 @@ export function showLocalPoolHotSeat(
     } catch {
       // No renderer means no playable state or score. Explicit retry stays
       // possible but no stale session is ever reactivated.
-      live=null;restart.hidden=false;
+      live=null;setRestartVisible(true);
       notice.textContent=s.noWebgl;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
       safety.disabled=true;ball.disabled=true;pocket.disabled=true;
