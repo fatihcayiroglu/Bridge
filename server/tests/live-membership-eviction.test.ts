@@ -33,6 +33,8 @@ describe('live membership revocation', () => {
     const channels = new Set(['c1']);
     const threads = new Set(['t1']);
     expect(roomBelongsToServer('server:s1', 's1', channels, threads)).toBe(true);
+    expect(roomBelongsToServer('social-3d:s1', 's1', channels, threads)).toBe(true);
+    expect(roomBelongsToServer('social-3d:s2', 's1', channels, threads)).toBe(false);
     expect(roomBelongsToServer('channel:c1', 's1', channels, threads)).toBe(true);
     expect(roomBelongsToServer('voice:c1', 's1', channels, threads)).toBe(true);
     // Faz 15'in `watch:<channelId>` odalari Faz 16'ya kadar bu sinifta DEGILDI:
@@ -53,6 +55,7 @@ describe('live membership revocation', () => {
       rooms: new Set([
         'socket-1', 'user:u1', 'server:s1', 'channel:c1', 'voice:c1', 'stage:c2',
         'canvas:c1', 'draw:c2', 'video-grid:c2', 'watch:c1', 'watch:c2', 'thread:t1', 'dm:d1', 'gdm:g1',
+        'social-3d:s1', 'social-3d:s2',
       ]),
       currentChannel: 'c1',
       currentVoiceChannel: 'c2',
@@ -66,11 +69,13 @@ describe('live membership revocation', () => {
 
     expect(leaves).toEqual(expect.arrayContaining([
       'server:s1', 'channel:c1', 'voice:c1', 'stage:c2', 'canvas:c1',
-      'draw:c2', 'video-grid:c2', 'watch:c1', 'watch:c2', 'thread:t1',
+      'draw:c2', 'video-grid:c2', 'watch:c1', 'watch:c2', 'thread:t1', 'social-3d:s1',
     ]));
     expect(socket.rooms.has('user:u1')).toBe(true);
     expect(socket.rooms.has('dm:d1')).toBe(true);
     expect(socket.rooms.has('gdm:g1')).toBe(true);
+    expect(socket.rooms.has('social-3d:s1')).toBe(false);
+    expect(socket.rooms.has('social-3d:s2')).toBe(true);
     expect(socket.currentChannel).toBeUndefined();
     expect(socket.currentVoiceChannel).toBeUndefined();
     expect(socket.currentVoiceServer).toBeUndefined();

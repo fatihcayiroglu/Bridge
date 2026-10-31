@@ -7,6 +7,7 @@ import { canManageRole, canViewChannel } from '../../lib/permissions';
 import { Messages, Members, ReactionRoles, Roles } from '../../db/repositories';
 import { hasPermission, PERMS, resolvePermissions } from '../../routes/roles';
 import { getCachedPerms, invalidatePerms } from '../../lib/permCache';
+import { reconcileSocialRoleChange } from '../../lib/socialRoleAccess';
 import { invalidateChannelMessages } from '../../lib/messageCache';
 import logger from '../../lib/logger';
 // Edit and delete rules live in ONE place, shared with the HTTP routes (Final21 Phase 16).
@@ -208,6 +209,7 @@ export function registerEditHandlers(
             roles.push(rule.roleId);
             await Members.setRoles(user._id, rule.serverId, roles);
             invalidatePerms(rule.serverId, user._id);
+            await reconcileSocialRoleChange(io, rule.serverId, user._id);
             io.to(`user:${user._id}`).emit('role:granted', {
               serverId: rule.serverId, roleId: rule.roleId, emoji,
             });
@@ -216,6 +218,7 @@ export function registerEditHandlers(
           roles = roles.filter((r: string) => r !== rule.roleId);
           await Members.setRoles(user._id, rule.serverId, roles);
           invalidatePerms(rule.serverId, user._id);
+          await reconcileSocialRoleChange(io, rule.serverId, user._id);
           io.to(`user:${user._id}`).emit('role:revoked', {
             serverId: rule.serverId, roleId: rule.roleId, emoji,
           });
