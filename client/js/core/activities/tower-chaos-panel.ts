@@ -33,6 +33,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   const back=button(s.backToGames,'bridge-room-direction bridge-tower-back',()=>{
     if(disposed)return;
     disposed=true;generation++;retireCanvasPicking(canvas);
+    retireFocusGuards();
     live?.dispose();live=null;onBack();
   });
   const heading=node('h3','bridge-mini-golf-heading',s.towerTitle);
@@ -49,6 +50,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   selected.setAttribute('aria-label',s.towerChoose);
   choose.append(selected);
   selected.addEventListener('change',()=>{
+    // Keyboard/assistive choice is authoritative over any pending press.
+    clearPress();
     if(disposed||blocked||!live?.graphicsAvailable||selected.disabled||
         selected.value==='')return;
     const id=Number(selected.value);
@@ -60,6 +63,13 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   type Press={pointerId:number;x:number;y:number;generation:number};
   let pressed:Press|null=null;
   const clearPress=()=>{pressed=null;};
+  const clearOnHidden=()=>{if(document.hidden)clearPress();};
+  window.addEventListener('blur',clearPress);
+  document.addEventListener('visibilitychange',clearOnHidden);
+  const retireFocusGuards=()=>{
+    window.removeEventListener('blur',clearPress);
+    document.removeEventListener('visibilitychange',clearOnHidden);
+  };
   const eligible=(event:PointerEvent):boolean=>
     event.isPrimary===true&&event.button===0&&
     Number.isSafeInteger(event.pointerId)&&event.pointerId>=0&&
@@ -105,6 +115,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     target.addEventListener('pointerup',chooseVisibleBlock);
     target.addEventListener('pointercancel',clearPress);
     target.addEventListener('pointerleave',clearPress);
+    target.addEventListener('lostpointercapture',clearPress);
   };
   const retireCanvasPicking=(target:HTMLCanvasElement)=>{
     pressed=null;
@@ -113,6 +124,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     target.removeEventListener('pointerup',chooseVisibleBlock);
     target.removeEventListener('pointercancel',clearPress);
     target.removeEventListener('pointerleave',clearPress);
+    target.removeEventListener('lostpointercapture',clearPress);
   };
   const remove=button(s.towerRemove,'bridge-room-direction bridge-tower-remove',()=>{
     // A held pointer belongs to the old turn; release must not select in the next.
@@ -195,6 +207,6 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   }
   begin();
   return {dispose(){if(disposed)return;disposed=true;generation++;
-    retireCanvasPicking(canvas);
+    retireCanvasPicking(canvas);retireFocusGuards();
     live?.dispose();live=null;}};
 }
