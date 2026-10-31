@@ -46,6 +46,17 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   const selected=node('select','bridge-tower-block');
   selected.setAttribute('aria-label',s.towerChoose);
   choose.append(selected);
+  // Pointer and keyboard controls share one GPU target, while the independent
+  // Remove button remains the only action permitted to alter game rules.
+  selected.addEventListener('change',()=>{
+    if(disposed||blocked||!live?.graphicsAvailable||selected.disabled)return;
+    const id=Number(selected.value);
+    if(!towerLegalBlockIds(live.match).includes(id)||
+        !live.setSelectedBlock(id)){
+      notice.textContent=s.towerInvalid;return;
+    }
+    notice.textContent=s.towerSelected+' '+(id+1);
+  });
   const remove=button(s.towerRemove,'bridge-room-direction bridge-tower-remove',()=>{
     if(disposed||blocked||!live||!live.graphicsAvailable||
         !live.remove(live.match.currentPlayer,Number(selected.value))){
@@ -92,7 +103,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
       }
       selected.value=String(blockId);
       if(selected.value!==String(blockId))return;
-      notice.textContent=s.towerSelected+' '+(blockId+1);
+      selected.dispatchEvent(new Event('change',{bubbles:true}));
     });
   }
   const setRestart=(visible:boolean)=>{
@@ -116,6 +127,13 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     const available=!blocked&&!!live?.graphicsAvailable;
     selected.disabled=!available||finished;
     remove.disabled=!available||finished||legal.length===0;
+    if(available&&!finished&&legal.length) {
+      const id=Number(selected.value);
+      if(!legal.includes(id)||!live?.setSelectedBlock(id)){
+        remove.disabled=true;
+        notice.textContent=s.towerInvalid;
+      }
+    }
     setRestart(finished||!available);
     status.textContent=!available?s.towerGraphicsLost:
       finished?s.towerWinner+' '+((match.winner??0)+1)+' · '+
