@@ -69,7 +69,12 @@ export function showLocalPoolHotSeat(
   cueStatus.setAttribute('aria-live','off');
   function renderCueValues():void {
     if(disposed||!live||live.status==='blocked'||live.status==='disposed'||
-        !live.graphicsAvailable){cueStatus.textContent='';return;}
+        !live.graphicsAvailable){
+      cueStatus.textContent='';
+      aim.removeAttribute('aria-valuetext');
+      power.removeAttribute('aria-valuetext');
+      return;
+    }
     const angle=aim.value,force=power.value;
     aim.setAttribute('aria-valuetext',angle+' '+s.poolHotSeatDegrees);
     power.setAttribute('aria-valuetext',force+' '+s.poolHotSeatPercent);
