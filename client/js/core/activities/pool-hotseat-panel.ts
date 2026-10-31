@@ -152,6 +152,8 @@ export function showLocalPoolHotSeat(
       :s.poolHotSeatPlayer+' '+(actor+1)+' · '+phases[rules.phase]+
        ' · '+s.poolShots+': '+snapshot.table.shots;
     if(blocked)notice.textContent=s.poolHotSeatBlocked;
+    else if(live&&!moving&&notice.textContent===s.poolHotSeatPending)
+      notice.textContent='';
     const available=!blocked&&!moving&&(live?.graphicsAvailable??true);
     const canShoot=available&&snapshot.table.status==='ready'&&rules.ballInHand===null&&
       (rules.phase==='break'||rules.phase==='open'||rules.phase==='assigned');
