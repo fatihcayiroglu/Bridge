@@ -108,6 +108,15 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     expect(selected.disabled).toBe(true);
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('graphics unverified');
+    click('.bridge-tower-restart');
+    const newCanvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
+    expect(newCanvas).not.toBe(canvas);
+    // A retired event source cannot pick into the active generation.
+    canvas.dispatchEvent(new MouseEvent('pointerup',{
+      bubbles:true,clientX:289.8,clientY:219.2,button:0,
+    }));
+    expect(selected.value).toBe('0');
+    expect(document.querySelector('.bridge-tower-notice')?.textContent).toBe('');
   });
   it('only the active player removes a physical block; collapse ends with the other winner',()=>{
     showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
