@@ -58,12 +58,12 @@ function rayBox(eye:Vec3,direction:Vec3,origin:Vec3,rotation:number):
   const min:Vec3=[-.57/2,0,-1.88/2],max:Vec3=[.57/2,.32,1.88/2];
   let enter=-Infinity,exit=Infinity;
   for(let i=0;i<3;i++){
-    const start=localEye[i],step=localDir[i];
+    const start=localEye[i]!,step=localDir[i]!;
     if(Math.abs(step)<1e-10){
-      if(start<min[i]||start>max[i])return null;
+      if(start<min[i]!||start>max[i]!)return null;
       continue;
     }
-    const a=(min[i]-start)/step,b=(max[i]-start)/step;
+    const a=(min[i]!-start)/step,b=(max[i]!-start)/step;
     enter=Math.max(enter,Math.min(a,b));
     exit=Math.min(exit,Math.max(a,b));
     if(enter>exit)return null;
