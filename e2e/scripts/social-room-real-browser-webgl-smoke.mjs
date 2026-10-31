@@ -810,6 +810,9 @@ try {
   assert.match(await fullPage.locator('.bridge-pool-hotseat-inventory').textContent(),
     /Remaining: Solids 7.*Stripes 7.*Eight on table/,
     'real initial WebGL rack must show the full verified 7+7+eight inventory');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-preview').textContent(),
+    'Declared shot: Player 1 · Break shot',
+    'real GPU local game must show only active opening player intent');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball option').count(),0,
     'no phantom called ball before the opening shot');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball').isDisabled(),true);
@@ -827,6 +830,8 @@ try {
   const lastShotText=await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent();
   assert.match(lastShotText,/Last shot: Player 1.*Pocketed: 0.*Foul:.*Decision for: Player 2/,
     'narration must derive from settled physical break and the recorded foul');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-preview').textContent(),'',
+    'unresolved incoming player decision must not announce a playable target');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),3,
     'illegal break requires an explicit player choice, not a silent default');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
@@ -847,6 +852,9 @@ try {
   assert.match(await fullPage.locator('.bridge-pool-hotseat-inventory').textContent(),
     /Remaining: Solids 7.*Stripes 7.*Eight on table/,
     'physical re-rack must restore an entire 7+7+eight inventory');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-preview').textContent(),
+    'Declared shot: Player 2 · Break shot',
+    'real Enter re-rack must announce the incoming breaker, never prior player');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').evaluate(
     el=>el===document.activeElement),true,
     'keyboard focus must transfer from a replaced rules button to ready Shoot');
@@ -904,6 +912,9 @@ try {
   assert.match(await fullPage.locator('.bridge-pool-hotseat-inventory').textContent(),
     /Remaining: Solids 7.*Stripes 7.*Eight on table/,
     'a newly allocated GPU match must show fresh verified balls, not old counts');
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-preview').textContent(),
+    'Declared shot: Player 1 · Break shot',
+    'explicit new GPU match must not retain the old player intention');
   assert.equal(await restart.isVisible(),false);
   console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_EXPLICIT_NEW_RENDERER_AFTER_GPU_LOSS:1/1:0_skipped');
 
