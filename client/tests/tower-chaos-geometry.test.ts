@@ -44,6 +44,34 @@ describe('Tower Chaos local 3D vertices (not multiplayer or WebGL acceptance)',(
     expect(collapsed.phase).toBe('collapsed');
   });
 
+  it('highlights only a legal selected 3D block without changing geometry or rules',()=>{
+    const match=newTowerChaos();
+    const before=JSON.stringify(match);
+    const plain=towerChaosGeometry(match)!;
+    const tinted=towerChaosGeometry(match,0,11)!;
+    expect(tinted.length).toBe(plain.length);
+    expect([...tinted.slice(0,216)]).toEqual([...plain.slice(0,216)]);
+    for(let id=0;id<TOWER_BLOCK_COUNT;id++){
+      const start=(id+1)*216;
+      if(id!==11)expect([...tinted.slice(start,start+216)])
+        .toEqual([...plain.slice(start,start+216)]);
+    }
+    const firstColor=(11+1)*216+3;
+    expect([...tinted.slice(firstColor,firstColor+3)])
+      .toEqual([Math.fround(.96),Math.fround(.87),Math.fround(.36)]);
+    expect([...tinted.slice(firstColor,firstColor+3)])
+      .not.toEqual([...plain.slice(firstColor,firstColor+3)]);
+    expect(JSON.stringify(match)).toBe(before);
+    for(const invalid of [-1,15,17,1.1,NaN,Infinity])
+      expect(towerChaosGeometry(match,0,invalid)).toBeNull();
+    const first=removeTowerChaosBlock(match,0,11)!;
+    expect(towerChaosGeometry(first,0,11)).toBeNull();
+    const done=removeTowerChaosBlock(
+      removeTowerChaosBlock(match,0,1)!,1,0)!;
+    expect(towerChaosGeometry(done,0,2)).toBeNull();
+    expect(towerChaosGeometry(done,0,null)).not.toBeNull();
+  });
+
   it('refuses impossible animation or unverified match states',()=>{
     const g=newTowerChaos();
     for(const progress of [-1,0.01,1.01,NaN,Infinity,-Infinity]){

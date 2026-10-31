@@ -47,6 +47,13 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   const selected=node('select','bridge-tower-block');
   selected.setAttribute('aria-label',s.towerChoose);
   choose.append(selected);
+  selected.addEventListener('change',()=>{
+    if(disposed||blocked||!live?.graphicsAvailable||selected.disabled||
+        selected.value==='')return;
+    const id=Number(selected.value);
+    if(!towerLegalBlockIds(live.match).includes(id)||!live.select(id))return;
+    notice.textContent=s.towerPicked+' '+(id+1);
+  });
   // A pointer only chooses a block. The separate deliberate Remove button
   // performs the rules-validated action, avoiding accidental touch removals.
   const chooseVisibleBlock=(event:PointerEvent)=>{
@@ -58,7 +65,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
       event.clientY-bounds.top,bounds.width,bounds.height);
     if(id===null||![...selected.options].some(o=>o.value===String(id)))return;
     selected.value=String(id);
-    notice.textContent=s.towerPicked+' '+(id+1);
+    selected.dispatchEvent(new Event('change',{bubbles:true}));
   };
   canvas.addEventListener('pointerup',chooseVisibleBlock);
   const remove=button(s.towerRemove,'bridge-room-direction bridge-tower-remove',()=>{
@@ -98,6 +105,11 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     const available=!blocked&&!!live?.graphicsAvailable;
     selected.disabled=!available||finished;
     remove.disabled=!available||finished||legal.length===0;
+    // The visual highlight follows both pointer and native keyboard input.
+    // The shader tint is never an authority for choosing the move outcome.
+    if(available&&selected.value!==''&&!finished)
+      live?.select(Number(selected.value));
+    else if(available)live?.select(null);
     setRestart(finished||!available);
     status.textContent=!available?s.towerGraphicsLost:
       finished?s.towerWinner+' '+((match.winner??0)+1)+' · '+

@@ -754,7 +754,26 @@ try {
     /Selected block 12/);
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
     /Player 1.*Moves: 0/,'pointer selection alone never consumes a turn');
+  // Read the real GPU VBO, rather than trusting only the DOM's selected ID.
+  // Block #12 must turn gold when selected; changing via the accessible
+  // native select must return it to wood and tint the newly chosen block.
+  await fullPage.waitForFunction(()=>{
+    const gl=document.querySelector('canvas.bridge-tower-canvas')?.getContext('webgl2');
+    if(!gl||!gl.getParameter(gl.ARRAY_BUFFER_BINDING))return false;
+    const sample=new Float32Array(3);
+    gl.getBufferSubData(gl.ARRAY_BUFFER,((11+1)*216+3)*4,sample);
+    return sample[0]>.94&&sample[1]>.85&&sample[2]>.34;
+  },null,{timeout:10000});
   await towerSelect.selectOption('1');
+  await fullPage.waitForFunction(()=>{
+    const gl=document.querySelector('canvas.bridge-tower-canvas')?.getContext('webgl2');
+    if(!gl||!gl.getParameter(gl.ARRAY_BUFFER_BINDING))return false;
+    const other=new Float32Array(3),highlight=new Float32Array(3);
+    gl.getBufferSubData(gl.ARRAY_BUFFER,((11+1)*216+3)*4,other);
+    gl.getBufferSubData(gl.ARRAY_BUFFER,((1+1)*216+3)*4,highlight);
+    return other[0]<.9&&highlight[0]>.94&&highlight[1]>.85;
+  },null,{timeout:10000});
+  console.log('BRIDGE_3D_TOWER_REAL_CHROMIUM_GPU_SELECTION_HIGHLIGHT:1/1:0_skipped');
   await fullPage.locator('.bridge-tower-remove').click();
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
     /Player 2.*Moves: 1/);

@@ -1,5 +1,5 @@
 import {
-  isTowerMatch,towerBlockPose,type TowerBlock,type TowerMatch,
+  isTowerMatch,towerLegalBlockIds,towerBlockPose,type TowerMatch,
 } from './tower-chaos-physics.ts';
 
 /**
@@ -11,6 +11,7 @@ type Color=readonly [number,number,number];
 const BASE:Color=[.23,.26,.30];
 const WOOD_A:Color=[.70,.43,.19];
 const WOOD_B:Color=[.83,.58,.29];
+const SELECTED:Color=[.96,.87,.36];
 
 function box(out:number[],x:number,y:number,z:number,
   width:number,height:number,length:number,rotation:number,color:Color):void {
@@ -36,10 +37,13 @@ function box(out:number[],x:number,y:number,z:number,
     }
   }
 }
-export function towerChaosGeometry(match:TowerMatch,collapseProgress=0):Float32Array|null{
+export function towerChaosGeometry(match:TowerMatch,collapseProgress=0,
+  selectedId:number|null=null):Float32Array|null{
   if(!isTowerMatch(match)||!Number.isFinite(collapseProgress)||
       collapseProgress<0||collapseProgress>1||
-      (match.phase!=='collapsed'&&collapseProgress!==0))return null;
+      (match.phase!=='collapsed'&&collapseProgress!==0)||
+      (selectedId!==null&&(!Number.isSafeInteger(selectedId)||
+        !towerLegalBlockIds(match).includes(selectedId))))return null;
   const vertices:number[]=[];
   box(vertices,0,-.16,0,3.7,.14,3.7,0,BASE);
   for(const block of match.blocks){
@@ -52,7 +56,8 @@ export function towerChaosGeometry(match:TowerMatch,collapseProgress=0):Float32A
     const drop=match.phase==='collapsed'
       ?collapseProgress*collapseProgress*.10*block.layer:0;
     box(vertices,pose.x+shift,pose.y-drop,pose.z,
-      .57,.32,1.88,pose.rotationY,block.layer%2===0?WOOD_A:WOOD_B);
+      .57,.32,1.88,pose.rotationY,
+      block.id===selectedId?SELECTED:block.layer%2===0?WOOD_A:WOOD_B);
   }
   if(vertices.length===0||vertices.length%36!==0||
       !vertices.every(Number.isFinite))return null;
