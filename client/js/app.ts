@@ -154,6 +154,8 @@ import { initDesktopDeepLinks } from './core/desktop-deeplink.ts'; // Desktop: b
 import { initNativePush } from './core/native-push.ts'; // P4: yerel cihaz jetonu uygulamanın kimlikli istemcisiyle kaydedilir
 import { initNativeDeepLinks } from './core/native-deeplink.ts'; // P4: bridge://… ve bildirim dokunuşu → izin denetimli gezinme
 import { bindWebPushToSession } from './core/notifications/web-push-client.ts'; // P4: çıkışta bu tarayıcının Web Push aboneliği biter
+// Bridge Activities rail opener: lazy-loads the 3D social space only after an authenticated click.
+import './core/activities/bridge-activities-entry.ts';
 // Sprint 82: Yeni özellik modülleri
 // import { initActivities }    from './core/activities/index.ts';
 // import { initSuperReactions } from './core/super-reactions/index.ts';

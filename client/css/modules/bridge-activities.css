@@ -1,0 +1,246 @@
+/* Bridge Activities / Social Space: isolated from message and voice panels. */
+#bridge-activities-entry {
+  flex-shrink: 0;
+  font-size: 1.35rem;
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border: 1px solid var(--brand-border);
+}
+#bridge-activities-entry:hover,
+#bridge-activities-entry:focus-visible { background: var(--surface-hover); outline-offset: 2px; }
+.bridge-activities-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-stage-modal);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+           max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: color-mix(in srgb, var(--bg-0) 88%, transparent);
+  box-sizing: border-box;
+}
+.bridge-activities-dialog {
+  box-sizing: border-box;
+  width: min(100%, 1000px);
+  max-height: min(94dvh, 900px);
+  overflow: auto;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.55);
+}
+.bridge-activities-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+  padding: 20px 24px 12px;
+}
+.bridge-activities-header h2 { margin: 0; font-size: 1.35rem; color: var(--text-primary); }
+.bridge-activities-header p { margin: 6px 0 0; color: var(--text-2); font-size: 0.9rem; }
+.bridge-activities-close {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: inherit;
+  font-size: 1.7rem;
+  cursor: pointer;
+}
+.bridge-activities-tabs { display: flex; gap: 8px; padding: 0 24px 16px; }
+.bridge-activities-tab {
+  border-radius: 10px;
+  padding: 11px 16px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.bridge-activities-tab[aria-selected="true"] {
+  background: var(--brand);
+  border-color: var(--brand-border);
+  color: var(--text-on-solid);
+}
+.bridge-activities-tab:focus-visible,
+.bridge-activities-close:focus-visible,
+.bridge-room-direction:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.bridge-activities-body { padding: 0 24px 24px; }
+.bridge-activities-help { margin: 4px 0 14px; color: var(--text-2); line-height: 1.5; }
+.bridge-activities-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); gap: 12px; }
+.bridge-activities-card {
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  border-radius: 12px;
+  padding: 16px;
+}
+.bridge-activities-card h3 { margin: 0 0 9px; font-size: 1rem; color: var(--text-primary); }
+.bridge-activities-card p { margin: 0 0 12px; color: var(--text-2); font-size: 0.85rem; }
+.bridge-activities-planned {
+  display: inline-block;
+  color: var(--success-text);
+  background: var(--green-bg);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.77rem;
+}
+.bridge-room-status { font-size: 0.84rem; font-weight: 600; color: var(--green); }
+.bridge-activities-canvas {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: clamp(240px, 48dvh, 510px);
+  border-radius: 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  outline-offset: 3px;
+}
+.bridge-room-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 12px 0; }
+.bridge-room-direction {
+  border: 1px solid var(--border-focus);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border-radius: 10px;
+  min-height: 44px;
+  padding: 10px 16px;
+  cursor: pointer;
+  touch-action: none;
+}
+.bridge-room-direction:active { background: var(--surface-pressed); }
+.bridge-room-error { color: var(--danger-text); }
+.bridge-room-quality-label { display: inline-flex; margin: 8px 10px 10px 0; color: var(--text-2); }
+.bridge-room-quality { min-height: 44px; min-width: 120px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--border-focus); background: var(--surface-raised); color: var(--text-primary); font: inherit; }
+.bridge-room-quality:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+@media (max-width: 580px) {
+  .bridge-activities-header { padding: 14px 14px 10px; }
+  .bridge-activities-tabs { padding: 0 14px 12px; }
+  .bridge-activities-tab { flex: 1; padding: 9px 7px; font-size: 0.85rem; }
+  .bridge-activities-body { padding: 0 14px 16px; }
+  .bridge-activities-grid { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
+}
+
+/* Local-only 3D Mini Golf practice: no network or multiplayer appearance. */
+.bridge-activities-solo {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--brand-bg);
+  color: var(--text-primary);
+  font-size: 0.77rem;
+}
+.bridge-mini-golf-launch { display: block; margin-top: 12px; width: 100%; }
+.bridge-mini-golf-heading { color: var(--text-primary); font-size: 1.1rem; }
+.bridge-mini-golf-canvas { height: clamp(260px, 48dvh, 500px); }
+.bridge-mini-golf-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-top: 12px;
+}
+.bridge-mini-golf-label {
+  display: flex;
+  flex: 1 1 150px;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: .9rem;
+}
+.bridge-mini-golf-label input { width: 100%; accent-color: var(--focus-ring); min-height: 44px; }
+.bridge-mini-golf-controls button { flex: 1 1 100px; }
+.bridge-mini-golf-controls button:disabled { opacity: .5; cursor: not-allowed; }
+.bridge-mini-golf-status { min-height: 1.5em; }
+
+/* Experimental Mini Golf scores are text-only; no player identity leak or
+   canvas overlay traps. The authoritative scoreboard stays fully readable. */
+.bridge-mini-golf-scoreboard {
+  list-style: decimal;
+  margin: 10px 0;
+  padding: 10px 18px 10px 32px;
+  border-radius: 10px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  line-height: 1.8;
+}
+.bridge-mini-golf-scoreboard:empty { display: none; }
+.bridge-mini-golf-online-status { min-height: 1.5em; }
+.bridge-mini-golf-online-button { margin-bottom: 6px; width: 100%; }
+
+/* Real multiplayer uses an eight-seat roster. Preserve hidden host controls
+   even when the general button class sets display, and keep scores scrollable. */
+.bridge-mini-golf-start[hidden] { display: none; }
+.bridge-mini-golf-start:not([hidden]) { display: block; width: 100%; margin: 8px 0; }
+.bridge-mini-golf-scoreboard { max-height: min(36dvh, 260px); overflow-y: auto; }
+
+/* A finished match exposes rematch voting only with explicit all-player consent. */
+.bridge-mini-golf-rematch[hidden] { display: none; }
+.bridge-mini-golf-rematch:not([hidden]) { display: block; width: 100%; margin: 8px 0; }
+
+/* Results are derived from an authenticated completed-round snapshot, never
+   from local shot animation. Shared ties retain their actual competition rank. */
+.bridge-mini-golf-results-heading { margin: 14px 0 6px; color: var(--text-primary); font-size: 1rem; }
+.bridge-mini-golf-results-heading[hidden] { display: none; }
+.bridge-mini-golf-results {
+  list-style: none;
+  padding: 10px 14px;
+  margin: 0 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  max-height: min(36dvh, 280px);
+  overflow-y: auto;
+}
+.bridge-mini-golf-results:empty { display: none; }
+.bridge-mini-golf-results li { padding: 5px 0; line-height: 1.45; }
+.bridge-mini-golf-results li + li { border-top: 1px solid var(--border); }
+
+/* Emulated touch and mobile WebViews: no 2-column overflow, safe 44px tap
+   targets and selectable sliders. Gameplay remains opt-in and WebGL-gated. */
+.bridge-mini-golf-controls { min-width: 0; }
+.bridge-mini-golf-controls button { min-height: 44px; }
+.bridge-mini-golf-label { min-width: 0; }
+.bridge-mini-golf-label input[type="range"] { touch-action: pan-x; }
+@media (max-width: 580px) {
+  .bridge-mini-golf-canvas { height: clamp(210px, 36dvh, 330px); }
+  .bridge-mini-golf-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .bridge-mini-golf-label { min-width: 0; }
+  .bridge-mini-golf-controls button { min-width: 0; }
+  .bridge-mini-golf-online-button, .bridge-mini-golf-rematch, .bridge-mini-golf-start { min-height: 48px; }
+}
+
+/* 8-Ball Pool local practice: uses the same responsive controls and semantic
+   design tokens as Mini Golf. No fullscreen or permission-grabbing layer. */
+.bridge-pool-canvas { height: clamp(260px, 48dvh, 500px); }
+.bridge-mini-golf-label input.bridge-pool-aim,
+.bridge-mini-golf-label input.bridge-pool-power {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--focus-ring);
+  touch-action: pan-y;
+}
+.bridge-pool-shoot,
+.bridge-pool-reset,
+.bridge-pool-back { min-height: 44px; }
+
+/* Explicit solo called-pocket challenge; small checkbox and accessible
+   touch-sized native selectors do not expand or overflow the modal. */
+.bridge-mini-golf-label .bridge-pool-call-enabled {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  accent-color: var(--focus-ring);
+}
+.bridge-mini-golf-label select.bridge-pool-call-ball,
+.bridge-mini-golf-label select.bridge-pool-call-pocket {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  min-height: 44px;
+}
+.bridge-pool-call-result { min-height: 1.5em; }
