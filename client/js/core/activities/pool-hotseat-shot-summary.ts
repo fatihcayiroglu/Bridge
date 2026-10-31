@@ -18,6 +18,8 @@ export function localPoolShotSummary(match:LocalHotSeatMatch):LocalPoolShotSumma
   const {rules,table}=match;
   const last=rules.last;
   if(!last||rules.shotsResolved!==table.shots||
+      (table.status!=='ready'&&table.status!=='complete')||
+      (rules.winner!==null)!==(rules.phase==='finished')||
       !Number.isSafeInteger(rules.shotsResolved)||rules.shotsResolved<1||
       (last.actor!==0&&last.actor!==1)||
       (rules.currentPlayer!==0&&rules.currentPlayer!==1)||
