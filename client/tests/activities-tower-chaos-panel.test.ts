@@ -1,6 +1,7 @@
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {showBridgeActivities} from '../js/core/activities/bridge-activities-panel.ts';
 import {startTowerChaosWebGL} from '../js/core/activities/tower-chaos-webgl.ts';
+import {towerPickBlock} from '../js/core/activities/tower-chaos-picking.ts';
 import {
   newTowerChaos,removeTowerChaosBlock,type TowerMatch,
 } from '../js/core/activities/tower-chaos-physics.ts';
@@ -37,6 +38,29 @@ vi.mock('../js/core/activities/tower-chaos-webgl.ts',()=>({
 function click(selector:string):void{
   const b=document.querySelector<HTMLButtonElement>(selector);
   expect(b).not.toBeNull();b!.click();
+}
+function pointer(canvas:HTMLCanvasElement,type:string,x:number,y:number,
+  button=0,id=7):void {
+  const event=new MouseEvent(type,{bubbles:true,clientX:x,clientY:y,button});
+  Object.defineProperties(event,{
+    pointerId:{value:id},isPrimary:{value:true},
+  });
+  canvas.dispatchEvent(event);
+}
+function mockCanvasRect(canvas:HTMLCanvasElement):void{
+  vi.spyOn(canvas,'getBoundingClientRect').mockReturnValue({
+    left:0,top:0,width:600,height:400,right:600,bottom:400,
+    x:0,y:0,toJSON:()=>({}),
+  } as DOMRect);
+}
+function visibleTarget():{id:number;x:number;y:number}{
+  const state=newTowerChaos();
+  for(let yi=0;yi<=80;yi++)for(let xi=0;xi<=80;xi++){
+    const nx=xi/40-1,ny=yi/40-1;
+    const id=towerPickBlock(state,nx,ny,1.5);
+    if(id!==null&&id!==0)return {id,x:(nx+1)*300,y:(1-ny)*200};
+  }
+  throw Error('NO_VISIBLE_TOWER_BLOCK');
 }
 beforeEach(()=>{
   mock.dispose.mockClear();
@@ -95,6 +119,43 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('Player 1 · Moves: 0');
     expect(options.options).toHaveLength(15);
+  });
+  it('taps a visible 3D block to select only; requires explicit Remove and fences drags',()=>{
+    showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
+    const canvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
+    mockCanvasRect(canvas);
+    const selected=document.querySelector<HTMLSelectElement>('.bridge-tower-block')!;
+    const {id,x,y}=visibleTarget();
+    const initial=selected.value;
+    pointer(canvas,'pointerdown',x,y);
+    pointer(canvas,'pointerup',x+40,y);
+    expect(selected.value).toBe(initial);
+    pointer(canvas,'pointerdown',x,y,2);
+    pointer(canvas,'pointerup',x,y,2);
+    expect(selected.value).toBe(initial);
+    pointer(canvas,'pointerdown',x,y);
+    pointer(canvas,'pointerup',x,y);
+    expect(selected.value).toBe(String(id));
+    expect(document.querySelector('.bridge-tower-notice')?.textContent)
+      .toBe('Selected block '+(id+1));
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Player 1 · Moves: 0');
+    // Only a separate deliberate button action commits a physical move.
+    click('.bridge-tower-remove');
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Moves: 1');
+    const after=selected.value;
+    pointer(canvas,'pointerdown',x,y);
+    pointer(canvas,'pointercancel',x,y);
+    pointer(canvas,'pointerup',x,y);
+    expect(selected.value).toBe(after);
+    const lost=mock.lost;
+    lost?.();
+    pointer(canvas,'pointerdown',x,y);
+    pointer(canvas,'pointerup',x,y);
+    expect(selected.disabled).toBe(true);
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('graphics unverified');
   });
   it('permanent graphics-loss fence, explicit GPU retry and stale event protection',()=>{
     showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
