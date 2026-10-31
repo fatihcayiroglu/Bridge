@@ -66,6 +66,7 @@ on:
       - chatgpt/activities-pool-per-turn-cue-safety-20261031
       - chatgpt/activities-pool-verified-call-options-20261031
       - chatgpt/activities-pool-cue-a11y-values-20261031
+      - chatgpt/activities-tower-chaos-local-physics-20261031
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
@@ -121,6 +122,10 @@ on:
       - 'client/js/core/activities/pool-hotseat-shot-preview.ts'
       - 'client/js/core/activities/tower-chaos-physics.ts'
       - 'client/js/core/activities/tower-chaos-geometry.ts'
+      - 'client/js/core/activities/tower-chaos-webgl.ts'
+      - 'client/js/core/activities/tower-chaos-panel.ts'
+      - 'client/tests/activities-tower-chaos-panel.test.ts'
+      - 'client/tests/tower-chaos-webgl-lifecycle.test.ts'
       - 'client/tests/tower-chaos-physics.test.ts'
       - 'client/tests/tower-chaos-geometry.test.ts'
       - 'client/tests/pool-hotseat-shot-preview.test.ts'
@@ -217,7 +222,7 @@ jobs:
           console.log('SOCIAL_3D_AUTHORITY_TESTS:' + r.numPassedTests + '/' + r.numTotalTests + ':0_skipped');
           NODE
       - name: 3D games local physics, online protocol and copy contracts
-        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts tests/bridge-activities-copy.test.ts tests/pool-practice-physics.test.ts tests/pool-eight-ball-rules.test.ts tests/pool-ball-in-hand.test.ts tests/pool-called-pocket.test.ts tests/pool-eight-on-break.test.ts tests/pool-practice-call.test.ts tests/pool-local-placement.test.ts tests/activities-webgl-renderer-lifecycle.test.ts tests/activities-panel-dom-lifecycle.test.ts tests/activities-pool-hotseat-panel.test.ts tests/pool-local-hotseat.test.ts tests/pool-hotseat-call-options.test.ts tests/pool-hotseat-shot-summary.test.ts tests/pool-hotseat-inventory.test.ts tests/pool-hotseat-shot-preview.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts tests/pool-local-live-session.test.ts tests/bridge-activities-foundation.test.ts tests/social-room-session-fail-closed-coverage.test.ts tests/activities-entry-lazy-boundary-coverage.test.ts
+        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts tests/bridge-activities-copy.test.ts tests/pool-practice-physics.test.ts tests/pool-eight-ball-rules.test.ts tests/pool-ball-in-hand.test.ts tests/pool-called-pocket.test.ts tests/pool-eight-on-break.test.ts tests/pool-practice-call.test.ts tests/pool-local-placement.test.ts tests/activities-webgl-renderer-lifecycle.test.ts tests/activities-panel-dom-lifecycle.test.ts tests/activities-pool-hotseat-panel.test.ts tests/pool-local-hotseat.test.ts tests/pool-hotseat-call-options.test.ts tests/pool-hotseat-shot-summary.test.ts tests/pool-hotseat-inventory.test.ts tests/pool-hotseat-shot-preview.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts tests/activities-tower-chaos-panel.test.ts tests/tower-chaos-webgl-lifecycle.test.ts tests/pool-local-live-session.test.ts tests/bridge-activities-foundation.test.ts tests/social-room-session-fail-closed-coverage.test.ts tests/activities-entry-lazy-boundary-coverage.test.ts
       - name: Design system token and modal stacking ratchets (no exemptions)
         run: cd client && npx vitest run --config vitest.config.mts tests/design-system-tokens.test.ts tests/z-index-scale.test.ts
       - name: Server build

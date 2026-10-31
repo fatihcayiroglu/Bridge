@@ -8,6 +8,7 @@ import { startMiniGolfPractice, type MiniGolfHandle } from './mini-golf-webgl.ts
 import type { GolfState } from './mini-golf-physics.ts';
 import { startPoolPractice, type PoolPracticeHandle } from './pool-practice-webgl.ts';
 import { showLocalPoolHotSeat, type LocalPoolHotSeatPanelHandle } from './pool-hotseat-panel.ts';
+import {showTowerChaosPanel,type TowerChaosPanelHandle} from './tower-chaos-panel.ts';
 import { POOL_TARGET_COUNT, type PoolState } from './pool-practice-physics.ts';
 import { declarePracticePocketCall, settlePracticePocketCall, type PracticePocketCall } from './pool-practice-call.ts';
 import { joinOnlineMiniGolf, type OnlineGolfSession, type OnlineGolfMatch, type OnlineGolfStatus } from './mini-golf-client.ts';
@@ -21,6 +22,7 @@ let socialSession: SocialClient | null = null;
 let miniGolf: MiniGolfHandle | null = null;
 let poolPractice: PoolPracticeHandle | null = null;
 let poolHotSeat: LocalPoolHotSeatPanelHandle | null = null;
+let towerChaos:TowerChaosPanelHandle|null=null;
 let onlineGolf: OnlineGolfSession | null = null;
 let currentTab: ActivitiesTab = 'games';
 
@@ -53,6 +55,7 @@ function disposeRoom(): void {
   poolPractice = null;
   poolHotSeat?.dispose();
   poolHotSeat = null;
+  towerChaos?.dispose();towerChaos=null;
   socialSession?.dispose();
   socialSession = null;
   room?.dispose();
@@ -428,6 +431,19 @@ function showGames(container: HTMLElement): void {
       element('span', game.state === 'solo-practice' ? 'bridge-activities-solo' : 'bridge-activities-planned',
         game.state === 'solo-practice' ? s.solo : s.planned),
     );
+    if(game.id==='tower-chaos'){
+      // A deliberately named PREVIEW, not the catalog's third completed game.
+      const preview=makeButton(s.towerLaunch,
+        'bridge-room-direction bridge-tower-launch',()=>{
+          towerChaos?.dispose();
+          towerChaos=showTowerChaosPanel(container,()=>{
+            towerChaos?.dispose();towerChaos=null;
+            container.replaceChildren();showGames(container);
+          });
+        });
+      preview.setAttribute('data-game-id','tower-chaos-preview');
+      card.append(preview);
+    }
     if (game.state === 'solo-practice') {
       const isGolf=game.id==='mini-golf';
       const play=makeButton(isGolf?s.tryGolf:s.tryPool,

@@ -4,7 +4,7 @@ name: Bridge Activities 3D foundation (supplemental)
 # Quality Gate/security audit/native acceptance. The audit remains blocking.
 on:
   pull_request:
-    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030, codex/activities-webgl2-fallback-quality-20261030, chatgpt/activities-pool-cue-a11y-values-20261031]
+    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030, codex/activities-webgl2-fallback-quality-20261030, chatgpt/activities-pool-cue-a11y-values-20261031, chatgpt/activities-tower-chaos-local-physics-20261031]
     paths:
       - 'client/js/core/activities/**'
       - 'client/js/core/exclusive-surface.ts'
@@ -14,6 +14,8 @@ on:
       - 'client/tests/bridge-activities-foundation.test.ts'
       - 'client/tests/tower-chaos-physics.test.ts'
       - 'client/tests/tower-chaos-geometry.test.ts'
+      - 'client/tests/activities-tower-chaos-panel.test.ts'
+      - 'client/tests/tower-chaos-webgl-lifecycle.test.ts'
       - 'client/tests/social-room-client.test.ts'
       - 'client/tests/social-room-render-policy.test.ts'
       - 'e2e/scripts/social-room-webgl-smoke.mjs'
@@ -46,7 +48,7 @@ jobs:
       - name: Focused feature Vitest, zero skips
         run: |
           cd client
-          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts tests/social-room-client.test.ts tests/social-room-render-policy.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts --reporter=json --outputFile=activities-3d-proof.json
+          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts tests/social-room-client.test.ts tests/social-room-render-policy.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts tests/activities-tower-chaos-panel.test.ts tests/tower-chaos-webgl-lifecycle.test.ts --reporter=json --outputFile=activities-3d-proof.json
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('activities-3d-proof.json', 'utf8'));
