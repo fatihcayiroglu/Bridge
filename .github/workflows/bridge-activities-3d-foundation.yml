@@ -4,7 +4,7 @@ name: Bridge Activities 3D foundation (supplemental)
 # Quality Gate/security audit/native acceptance. The audit remains blocking.
 on:
   pull_request:
-    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030, codex/activities-webgl2-fallback-quality-20261030, chatgpt/activities-pool-cue-a11y-values-20261031, chatgpt/activities-tower-chaos-local-physics-20261031, chatgpt/activities-tower-chaos-webgl-preview-20261031, chatgpt/activities-tower-chaos-pointer-picking-20261031]
+    branches: [main, codex/activities-3d-social-presence-authority-20261030, codex/activities-3d-social-client-sync-20261030, codex/activities-webgl2-fallback-quality-20261030, chatgpt/activities-pool-cue-a11y-values-20261031, chatgpt/activities-tower-chaos-local-physics-20261031, chatgpt/activities-tower-chaos-webgl-preview-20261031, chatgpt/activities-tower-chaos-pointer-picking-20261031, chatgpt/activities-tower-selection-highlight-20261031]
     paths:
       - 'client/js/core/activities/**'
       - 'client/js/core/exclusive-surface.ts'
