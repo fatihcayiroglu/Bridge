@@ -10,6 +10,8 @@ import { invalidateChannelMessages } from '../lib/messageCache';
 import { publishPersistedMessage } from '../lib/channelActivity';
 import logger from '../lib/logger';
 import { PERMS } from '../lib/permissions';
+import { invalidatePerms } from '../lib/permCache';
+import { reconcileSocialRoleChange } from '../lib/socialRoleAccess';
 import { parsePermissionMask } from '../lib/permissionMaskInvariant';
 import { authorizePluginAction, type PluginActionEvent } from './capabilities';
 import { machineContentRefused } from '../lib/messageContentPolicy';
@@ -182,6 +184,8 @@ export function registerPluginActionHandlers(hooks: HookBus, io: IOServer): void
 
       roles.push(roleId);
       await Members.setRoles(userId, serverId, roles);
+      invalidatePerms(serverId, userId);
+      await reconcileSocialRoleChange(state.io, serverId, userId);
 
       // Role membership is tenant-scoped state. Never broadcast it to every
       // connected account: only sockets that joined this server's room may
