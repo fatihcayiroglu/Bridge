@@ -8,7 +8,6 @@ import {
 const mock=vi.hoisted(()=>({
   dispose:vi.fn(),lost:null as null|(()=>void),
   mode:'available' as 'available'|'unavailable',
-  lossFence:false,
 }));
 vi.mock('../js/core/exclusive-surface.ts',()=>({closeExclusivePeers:vi.fn()}));
 vi.mock('../js/core/bridge-registry.ts',()=>({BridgeRegistry:{
@@ -18,16 +17,15 @@ vi.mock('../js/core/activities/tower-chaos-webgl.ts',()=>({
   startTowerChaosWebGL:vi.fn((_canvas:HTMLCanvasElement,
     notify:(m:TowerMatch)=>void,onLost:()=>void)=>{
     if(mock.mode==='unavailable')return null;
-    let current=newTowerChaos(),disposed=false;
-    mock.lossFence=false;
-    mock.lost=()=>{mock.lossFence=true;onLost();};
+    let current=newTowerChaos(),disposed=false,lost=false;
+    mock.lost=()=>{lost=true;onLost();};
     notify(current);
     return {
       get match(){return current;},
-      get graphicsAvailable(){return !disposed&&!mock.lossFence;},
+      get graphicsAvailable(){return !disposed&&!lost;},
       graphicsApi:'webgl2',
       remove(player:0|1,id:number){
-        if(disposed||mock.lossFence)return false;
+        if(disposed||lost)return false;
         const next=removeTowerChaosBlock(current,player,id);
         if(!next)return false;
         current=next;notify({...next});return true;
@@ -43,7 +41,7 @@ function click(selector:string):void{
 beforeEach(()=>{
   mock.dispose.mockClear();
   vi.mocked(startTowerChaosWebGL).mockClear();
-  mock.mode='available';mock.lost=null;mock.lossFence=false;
+  mock.mode='available';mock.lost=null;
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Origin</button><main id="app"></main>';
   document.getElementById('app')!.inert=false;
