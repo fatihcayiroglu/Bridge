@@ -4,6 +4,7 @@ import {
 import {type LocalHotSeatMatch} from './pool-local-hotseat.ts';
 import {type EightBallPhase} from './pool-eight-ball-rules.ts';
 import {activityStringsForLanguage} from './bridge-activities-copy.ts';
+import {localHotSeatCallBallIds} from './pool-hotseat-call-options.ts';
 
 export interface LocalPoolHotSeatPanelHandle { dispose():void; }
 
@@ -19,6 +20,7 @@ export function showLocalPoolHotSeat(
   container.replaceChildren();
   let disposed=false;
   let live:LocalHotSeatLiveSession|null=null;
+  let lastTurnKey:string|null=null;
   const make=<K extends keyof HTMLElementTagNameMap>(
     tag:K,cls='',value?:string,
   ):HTMLElementTagNameMap[K]=>{
@@ -39,6 +41,7 @@ export function showLocalPoolHotSeat(
   canvas.setAttribute('aria-label',s.poolHotSeatTitle);
   const status=make('p','bridge-room-status bridge-pool-hotseat-status');
   status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+  const groupStatus=make('p','bridge-room-status bridge-pool-hotseat-groups');
   const notice=make('p','bridge-room-status bridge-pool-hotseat-notice');
   notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');
   const controls=make('div','bridge-mini-golf-controls');
@@ -53,9 +56,6 @@ export function showLocalPoolHotSeat(
   const safety=make('input') as HTMLInputElement;
   safety.type='checkbox';safety.className='bridge-pool-hotseat-safety';
   const ball=make('select') as HTMLSelectElement;
-  for(let id=1;id<=15;id++){
-    const option=make('option','',String(id));option.value=String(id);ball.append(option);
-  }
   const pocket=make('select') as HTMLSelectElement;
   s.poolPocketNames.forEach((name,id)=>{
     const option=make('option','',name);option.value=String(id);pocket.append(option);
@@ -95,6 +95,22 @@ export function showLocalPoolHotSeat(
   function refresh(snapshot:LocalHotSeatMatch):void {
     if(disposed)return;
     const rules=snapshot.rules,actor=rules.currentPlayer;
+    const turnKey=rules.shotsResolved+':'+actor;
+    if(lastTurnKey!==turnKey){
+      // Safety is always a deliberate per-turn choice, never an inherited
+      // selection that silently passes the next player's turn.
+      safety.checked=false;lastTurnKey=turnKey;
+    }
+    const previousBall=ball.value;
+    const calledIds=localHotSeatCallBallIds(snapshot);
+    ball.replaceChildren(...calledIds.map(id=>{
+      const option=make('option','',String(id));option.value=String(id);return option;
+    }));
+    if(calledIds.includes(Number(previousBall)))ball.value=previousBall;
+    groupStatus.textContent=[0,1].map(i=>s.poolHotSeatPlayer+' '+(i+1)+': '+
+      (rules.groups[i]==='solids'?s.poolHotSeatSolidsGroup:
+       rules.groups[i]==='stripes'?s.poolHotSeatStripesGroup:s.poolHotSeatUnassigned)
+    ).join(' · ');
     const blocked=live?.status==='blocked'||live?.status==='disposed';
     const moving=live?.status==='moving';
     status.textContent=rules.phase==='finished'&&rules.winner!==null
@@ -105,11 +121,13 @@ export function showLocalPoolHotSeat(
     const available=!blocked&&!moving&&(live?.graphicsAvailable??true);
     const canShoot=available&&snapshot.table.status==='ready'&&rules.ballInHand===null&&
       (rules.phase==='break'||rules.phase==='open'||rules.phase==='assigned');
-    shoot.disabled=!canShoot;aim.disabled=!canShoot;power.disabled=!canShoot;
     const called=rules.phase!=='break'&&canShoot;
+    const canCall=called&&calledIds.length>0;
+    shoot.disabled=!canShoot||(called&&!safety.checked&&!canCall);
+    aim.disabled=!canShoot;power.disabled=!canShoot;
     safety.disabled=!called;
-    ball.disabled=!called||safety.checked;
-    pocket.disabled=!called||safety.checked;
+    ball.disabled=!canCall||safety.checked;
+    pocket.disabled=!canCall||safety.checked;
     decisions.replaceChildren();
     if(!available)return;
     if(rules.phase==='choose-group'){
@@ -139,7 +157,7 @@ export function showLocalPoolHotSeat(
         live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
-  container.append(back,heading,help,canvas,status,notice,controls,decisions);
+  container.append(back,heading,help,canvas,status,groupStatus,notice,controls,decisions);
   try{
     live=startLocalHotSeatLiveSession(canvas,refresh);
     if(!live){
