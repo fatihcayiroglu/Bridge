@@ -71,13 +71,14 @@ export function isTowerMatch(match:TowerMatch|null|undefined):match is TowerMatc
   }
   const last=match.last;
   if(!last||(last.player!==0&&last.player!==1)||
+    last.player!==(match.moves-1)%2||
     !Number.isSafeInteger(last.blockId)||last.blockId<0||
     last.blockId>=(TOWER_LAYERS-1)*3||
     !match.blocks[last.blockId]?.removed||
     typeof last.collapsed!=='boolean')return false;
   if(stable){
     if(last.collapsed||match.phase!=='playing'||match.winner!==null||
-      match.currentPlayer===last.player)return false;
+      match.currentPlayer!==match.moves%2)return false;
   }else{
     if(!last.collapsed||match.phase!=='collapsed'||
       match.winner!==(1-last.player)||match.currentPlayer!==last.player)
