@@ -1,10 +1,9 @@
 import { newPoolPractice, type PoolState } from './pool-practice-physics.ts';
 
 /**
- * LOCAL ONLY: a strict, pure rules foundation for future hot-seat 8-ball.
- * Not yet exposed as a playable competitive mode. Full WPA adjudication still
- * needs called shots, ball-in-hand placement, illegal-break choices and an
- * eight-on-break respot. Ambiguous cases fail closed instead of inventing wins.
+ * LOCAL ONLY: pure rules foundation for the experimental offline hot-seat
+ * preview. This is not complete or certified WPA competitive adjudication;
+ * ambiguous cases must fail closed rather than inventing wins.
  */
 export type EightBallGroup = 'solids' | 'stripes';
 export type EightBallPlayer = 0 | 1;

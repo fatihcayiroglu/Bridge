@@ -2,9 +2,11 @@ import {
   startLocalHotSeatLiveSession,type LocalHotSeatLiveSession,
 } from './pool-local-live-session.ts';
 import {type LocalHotSeatMatch} from './pool-local-hotseat.ts';
-import {type EightBallPhase} from './pool-eight-ball-rules.ts';
+import {type EightBallPhase,type EightBallFoul} from './pool-eight-ball-rules.ts';
 import {activityStringsForLanguage} from './bridge-activities-copy.ts';
 import {localHotSeatCallBallIds} from './pool-hotseat-call-options.ts';
+import {localPoolShotSummary} from './pool-hotseat-shot-summary.ts';
+
 
 export interface LocalPoolHotSeatPanelHandle { dispose():void; }
 
@@ -42,6 +44,8 @@ export function showLocalPoolHotSeat(
   const status=make('p','bridge-room-status bridge-pool-hotseat-status');
   status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   const groupStatus=make('p','bridge-room-status bridge-pool-hotseat-groups');
+  const shotStatus=make('p','bridge-room-status bridge-pool-hotseat-last-shot');
+  shotStatus.setAttribute('role','status');shotStatus.setAttribute('aria-live','polite');
   const notice=make('p','bridge-room-status bridge-pool-hotseat-notice');
   notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');
   const controls=make('div','bridge-mini-golf-controls');
@@ -106,6 +110,13 @@ export function showLocalPoolHotSeat(
     'break-foul-choice':s.poolHotSeatBreakFoul,
     'eight-respot-required':s.poolHotSeatEightRespot,finished:s.poolHotSeatFinished,
   };
+  const foulName:Record<EightBallFoul,string>={
+    'scratch':s.poolHotSeatFoulScratch,
+    'no-first-contact':s.poolHotSeatFoulNoContact,
+    'illegal-first-contact':s.poolHotSeatFoulWrongFirst,
+    'no-rail-after-contact':s.poolHotSeatFoulNoRail,
+    'illegal-break':s.poolHotSeatFoulBreak,
+  };
   function refresh(snapshot:LocalHotSeatMatch):void {
     if(disposed)return;
     const rules=snapshot.rules,actor=rules.currentPlayer;
@@ -125,6 +136,15 @@ export function showLocalPoolHotSeat(
       (rules.groups[i]==='solids'?s.poolHotSeatSolidsGroup:
        rules.groups[i]==='stripes'?s.poolHotSeatStripesGroup:s.poolHotSeatUnassigned)
     ).join(' · ');
+    const shot=localPoolShotSummary(snapshot);
+    shotStatus.textContent=shot
+      ?s.poolHotSeatLastShot+': '+s.poolHotSeatPlayer+' '+(shot.actor+1)+
+        ' · '+s.poolHotSeatBallsIn+': '+shot.pocketed+
+        ' · '+s.poolHotSeatFoul+': '+(shot.foul?foulName[shot.foul]:s.poolHotSeatNoFoul)+
+        ' · '+(shot.outcome==='winner'?s.poolHotSeatResult:
+          shot.outcome==='decision'?s.poolHotSeatNeedsDecision:s.poolHotSeatNext)+
+        ': '+s.poolHotSeatPlayer+' '+(shot.player+1)
+      :'';
     const blocked=live?.status==='blocked'||live?.status==='disposed';
     const moving=live?.status==='moving';
     status.textContent=rules.phase==='finished'&&rules.winner!==null
@@ -132,6 +152,8 @@ export function showLocalPoolHotSeat(
       :s.poolHotSeatPlayer+' '+(actor+1)+' · '+phases[rules.phase]+
        ' · '+s.poolShots+': '+snapshot.table.shots;
     if(blocked)notice.textContent=s.poolHotSeatBlocked;
+    else if(live&&!moving&&notice.textContent===s.poolHotSeatPending)
+      notice.textContent='';
     const available=!blocked&&!moving&&(live?.graphicsAvailable??true);
     const canShoot=available&&snapshot.table.status==='ready'&&rules.ballInHand===null&&
       (rules.phase==='break'||rules.phase==='open'||rules.phase==='assigned');
@@ -171,7 +193,7 @@ export function showLocalPoolHotSeat(
         live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
-  container.append(back,heading,help,canvas,status,groupStatus,notice,controls,decisions);
+  container.append(back,heading,help,canvas,status,groupStatus,shotStatus,notice,controls,decisions);
   try{
     live=startLocalHotSeatLiveSession(canvas,refresh);
     if(!live){

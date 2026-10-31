@@ -821,6 +821,9 @@ try {
     /Player 2.*Illegal break.*Shots: 1/.test(
       document.querySelector('.bridge-pool-hotseat-status')?.textContent||''),
     null,{timeout:15000});
+  const lastShotText=await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent();
+  assert.match(lastShotText,/Last shot: Player 1.*Pocketed: 0.*Foul:.*Decision for: Player 2/,
+    'narration must derive from settled physical break and the recorded foul');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),3,
     'illegal break requires an explicit player choice, not a silent default');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
@@ -836,6 +839,8 @@ try {
     document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===false,
     null,{timeout:10000});
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent(),'',
+    're-rack must not narrate the previous match as an active foul');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').evaluate(
     el=>el===document.activeElement),true,
     'keyboard focus must transfer from a replaced rules button to ready Shoot');
