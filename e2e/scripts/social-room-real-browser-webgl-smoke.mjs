@@ -740,6 +740,21 @@ try {
   },null,{timeout:10000});
   const towerSelect=fullPage.locator('.bridge-tower-block');
   assert.equal(await towerSelect.locator('option').count(),15);
+  // Real Chromium pointer hit at the projected camera centre. The closest
+  // visible physical block is #15 (zero-based id 14), not an invented overlay.
+  const towerCanvas=fullPage.locator('canvas.bridge-tower-canvas');
+  const towerBounds=await towerCanvas.boundingBox();
+  assert.ok(towerBounds?.width>0&&towerBounds.height>0);
+  await towerCanvas.click({position:{
+    x:towerBounds.width/2,y:towerBounds.height/2,
+  }});
+  assert.equal(await towerSelect.inputValue(),'14',
+    'actual GPU-facing canvas hit must select nearest visible block 15');
+  assert.match(await fullPage.locator('.bridge-tower-notice').textContent(),
+    /Selected block 15/);
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Player 1.*Moves: 0/,
+    'clicking the 3D tower is selection only: no implicit removal');
   await towerSelect.selectOption('1');
   await fullPage.locator('.bridge-tower-remove').click();
   assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
