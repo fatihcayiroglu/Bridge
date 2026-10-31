@@ -44,6 +44,39 @@ describe('Tower Chaos local 3D vertices (not multiplayer or WebGL acceptance)',(
     expect(collapsed.phase).toBe('collapsed');
   });
 
+  it('recolors only the selected real block without altering rule state or mesh count',()=>{
+    const match=newTowerChaos();
+    const snapshot=JSON.stringify(match);
+    const plain=towerChaosGeometry(match)!;
+    const bright=towerChaosGeometry(match,0,1)!;
+    expect(bright).toHaveLength(plain.length);
+    // One 216-float box follows the ground and first block. Geometry uses
+    // interleaved xyz/RGB so only selected block color channels may change.
+    const start=216*2,end=216*3;
+    expect([...bright.slice(0,start)]).toEqual([...plain.slice(0,start)]);
+    expect([...bright.slice(end)]).toEqual([...plain.slice(end)]);
+    let colorDiff=0;
+    for(let i=start;i<end;i++){
+      if(i%6<3)expect(bright[i]).toBe(plain[i]);
+      else if(bright[i]!==plain[i])colorDiff++;
+    }
+    expect(colorDiff).toBeGreaterThan(20);
+    expect(JSON.stringify(match)).toBe(snapshot);
+    expect(towerChaosGeometry(match)).toEqual(plain);
+    expect(towerChaosGeometry(match,0,null)).toEqual(plain);
+  });
+  it('never highlights invalid, removed, protected or finished blocks',()=>{
+    const game=newTowerChaos();
+    for(const id of [-1,15,16,17,18,1.5,NaN,Infinity,-Infinity]){
+      expect(towerChaosGeometry(game,0,id)).toBeNull();
+    }
+    const one=removeTowerChaosBlock(game,0,1)!;
+    expect(towerChaosGeometry(one,0,1)).toBeNull();
+    expect(towerChaosGeometry(one,0,4)).not.toBeNull();
+    const end=removeTowerChaosBlock(one,1,0)!;
+    expect(towerChaosGeometry(end,0,4)).toBeNull();
+    expect(towerChaosGeometry(end,1,null)).not.toBeNull();
+  });
   it('refuses impossible animation or unverified match states',()=>{
     const g=newTowerChaos();
     for(const progress of [-1,0.01,1.01,NaN,Infinity,-Infinity]){
