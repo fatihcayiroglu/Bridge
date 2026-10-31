@@ -15,7 +15,7 @@ export const translations = {
     poolHotSeatBack: 'Tek kişilik bilardoya dön',poolHotSeatRestart:'Yeni yerel maç başlat',poolHotSeatPlayer:'Oyuncu',
     poolHotSeatSolidsGroup:'Düz toplar',poolHotSeatStripesGroup:'Çizgili toplar',poolHotSeatUnassigned:'Grup belirlenmedi',
     poolHotSeatRemaining:'Masada kalan',poolHotSeatEightOnTable:'Siyah 8 masada',poolHotSeatEightPocketed:'Siyah 8 girdi',
-    poolHotSeatCueValues:'Isteka ayarı',poolHotSeatDegrees:'derece',poolHotSeatPercent:'yüzde',
+    poolHotSeatCueValues:'İsteka ayarı',poolHotSeatDegrees:'derece',poolHotSeatPercent:'yüzde',
     poolHotSeatPreview:'Vuruş ilanı',poolHotSeatPreviewBreak:'Açılış vuruşu',
     poolHotSeatPreviewSafety:'Güvenli vuruş: sıra devri',poolHotSeatPreviewBall:'Top',poolHotSeatPreviewPocket:'Cep',
     poolHotSeatLastShot:'Son vuruş',poolHotSeatBallsIn:'Girilen top',poolHotSeatFoul:'Faul',poolHotSeatNoFoul:'Yok',
