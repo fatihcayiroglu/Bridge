@@ -6,13 +6,17 @@ import {acceptLocalPoolPlacement} from '../js/core/activities/pool-local-placeme
 import {startPoolPractice,type PoolPracticeHandle} from '../js/core/activities/pool-practice-webgl.ts';
 
 const renderer=vi.hoisted(()=>({disposes:vi.fn(),
-  mode:'real' as 'real'|'forged'|'deferred-forged'|'deferred-real',emit:null as null|(()=>void)}));
+  mode:'real' as 'real'|'forged'|'deferred-forged'|'deferred-real'|'unavailable',
+  emit:null as null|(()=>void),lose:null as null|(()=>void)}));
 vi.mock('../js/core/exclusive-surface.ts',()=>({closeExclusivePeers:vi.fn()}));
 vi.mock('../js/core/bridge-registry.ts',()=>({BridgeRegistry:{
   register:vi.fn(),call:vi.fn(()=>null),get:vi.fn(()=>null),
 }}));
 vi.mock('../js/core/activities/pool-practice-webgl.ts',()=>({
-  startPoolPractice:vi.fn((_canvas:HTMLCanvasElement,onState:(s:PoolState)=>void):PoolPracticeHandle=>{
+  startPoolPractice:vi.fn((_canvas:HTMLCanvasElement,onState:(s:PoolState)=>void,
+    onLost?:()=>void):PoolPracticeHandle|null=>{
+    if(renderer.mode==='unavailable')return null;
+    renderer.lose=onLost??null;
     let state=newPoolPractice(),disposed=false;
     onState(state);
     return {
@@ -59,7 +63,7 @@ function click(selector:string):void {
   el!.click();
 }
 beforeEach(()=>{
-  renderer.disposes.mockClear();renderer.mode='real';renderer.emit=null;
+  renderer.disposes.mockClear();renderer.mode='real';renderer.emit=null;renderer.lose=null;
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
   // jsdom does not define HTMLElement.inert unless explicitly initialized.
@@ -156,6 +160,60 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
       .toContain('Decision for: Player 2');
     expect(document.querySelector('.bridge-pool-hotseat-status')?.textContent)
       .toContain('Illegal break');
+  });
+
+  it('requires explicit recovery after graphics loss and fences stale old renderer callbacks',()=>{
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    click('.bridge-pool-hotseat-launch');
+    const oldCanvas=document.querySelector('.bridge-pool-canvas');
+    const oldLost=renderer.lose;
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
+      .toBe(true);
+    oldLost?.();
+    expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
+      .toContain('3D evidence was lost');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
+      .toBe(false);
+    click('.bridge-pool-hotseat-restart');
+    expect(startPoolPractice).toHaveBeenCalledTimes(3);
+    expect(renderer.disposes).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('.bridge-pool-canvas')).not.toBe(oldCanvas);
+    expect(document.querySelector('.bridge-pool-hotseat-status')?.textContent)
+      .toContain('Player 1 · Break shot · Shots: 0');
+    expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent).toBe('');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
+      .toBe(true);
+    oldLost?.(); // stale loss event must not block the NEW verified renderer
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(false);
+    click('.bridge-pool-hotseat-back');
+    expect(renderer.disposes).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails closed when an explicit retry cannot allocate a new graphics context',()=>{
+    showBridgeActivities('games');
+    click('[data-game-id="eight-ball-pool"]');
+    click('.bridge-pool-hotseat-launch');
+    renderer.lose?.();
+    renderer.mode='unavailable';
+    click('.bridge-pool-hotseat-restart');
+    expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
+      .toContain('WebGL');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
+      .toBe(false);
+    renderer.mode='real';
+    click('.bridge-pool-hotseat-restart');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
+      .toBe(false);
+    expect(document.querySelector('.bridge-pool-hotseat-status')?.textContent)
+      .toContain('Player 1 · Break shot · Shots: 0');
   });
 
   it('blocks unsupported fabricated pocket outcomes and cannot continue with a fake winning frame',()=>{
