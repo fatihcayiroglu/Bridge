@@ -816,6 +816,11 @@ try {
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball option').count(),0,
     'no phantom called ball before the opening shot');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-ball').isDisabled(),true);
+  const liveAim=fullPage.locator('input.bridge-pool-hotseat-aim');
+  await liveAim.focus();
+  await fullPage.keyboard.press('ArrowRight');
+  assert.equal(await liveAim.inputValue(),'5',
+    'the first player deliberately changes cue angle using real Chromium keyboard');
   const livePower=fullPage.locator('input.bridge-pool-hotseat-power');
   await livePower.focus();
   await fullPage.keyboard.press('Home');
@@ -827,6 +832,10 @@ try {
     /Player 2.*Illegal break.*Shots: 1/.test(
       document.querySelector('.bridge-pool-hotseat-status')?.textContent||''),
     null,{timeout:15000});
+  assert.equal(await liveAim.inputValue(),'0',
+    'the incoming player must not inherit previous shot aim');
+  assert.equal(await livePower.inputValue(),'60',
+    'the incoming player must not inherit previous shot power');
   const lastShotText=await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent();
   assert.match(lastShotText,/Last shot: Player 1.*Pocketed: 0.*Foul:.*Decision for: Player 2/,
     'narration must derive from settled physical break and the recorded foul');
@@ -855,6 +864,10 @@ try {
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-preview').textContent(),
     'Declared shot: Player 2 · Break shot',
     'real Enter re-rack must announce the incoming breaker, never prior player');
+  assert.equal(await liveAim.inputValue(),'0');
+  assert.equal(await livePower.inputValue(),'60',
+    'opponent re-rack cannot reintroduce stale first-player cue force');
+  console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_FRESH_CUE_EVERY_TURN:1/1:0_skipped');
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').evaluate(
     el=>el===document.activeElement),true,
     'keyboard focus must transfer from a replaced rules button to ready Shoot');

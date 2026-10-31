@@ -124,11 +124,15 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     click('[data-game-id="eight-ball-pool"]');
     click('.bridge-pool-hotseat-launch');
     const power=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-power')!;
+    const aim=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-aim')!;
     power.value='10'; // real physics cannot reach the distant rack
+    aim.value='15';
     click('.bridge-pool-hotseat-shoot');
     const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status()).toContain('Player 2');
     expect(status()).toContain('Illegal break');
+    expect(aim.value).toBe('0'); // resolved shot always resets incoming setup
+    expect(power.value).toBe('60');
     expect(document.querySelector('.bridge-pool-hotseat-preview')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-inventory')?.textContent)
       .toBe('Remaining: Solids 7 · Stripes 7 · Eight on table');
@@ -151,6 +155,7 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     expect(status()).toContain('Player 2');
     expect(status()).toContain('Break shot');
     expect(status()).toContain('Shots: 0');
+    expect(aim.value).toBe('0');expect(power.value).toBe('60');
     expect(document.querySelector('.bridge-pool-hotseat-preview')?.textContent)
       .toBe('Declared shot: Player 2 · Break shot');
     expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent).toBe('');
@@ -163,8 +168,11 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     click('[data-game-id="eight-ball-pool"]');
     click('.bridge-pool-hotseat-launch');
     const power=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-power')!;
-    power.value='10';
+    const aim=document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-aim')!;
+    power.value='10';aim.value='20';
     click('.bridge-pool-hotseat-shoot');
+    expect(aim.value).toBe('20');
+    expect(power.value).toBe('10'); // no reset until the verified shot settles
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
       .toContain('Waiting for motion');
     expect(document.querySelector('.bridge-pool-hotseat-preview')?.textContent).toBe('');
@@ -172,6 +180,7 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
       .toBe(true);
     renderer.emit?.();
+    expect(aim.value).toBe('0');expect(power.value).toBe('60');
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent)
       .toContain('Decision for: Player 2');
