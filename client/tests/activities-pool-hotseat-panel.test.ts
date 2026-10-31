@@ -74,6 +74,12 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status()).toContain('Player 1');
     expect(status()).toContain('Break shot');
+    expect(document.querySelector('.bridge-pool-hotseat-groups')?.textContent)
+      .toContain('Player 1: Not assigned');
+    expect(document.querySelector<HTMLSelectElement>('.bridge-pool-hotseat-ball')?.options)
+      .toHaveLength(0);
+    expect(document.querySelector<HTMLSelectElement>('.bridge-pool-hotseat-ball')?.disabled)
+      .toBe(true);
     expect(document.querySelector('.bridge-pool-status')).toBeNull();
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled).toBe(false);
     click('.bridge-pool-hotseat-shoot');
