@@ -724,6 +724,68 @@ try {
     null, { timeout: 12000 });
   await fullPage.locator('.bridge-mini-golf-back').click();
   assert.equal(await fullPage.locator('.bridge-activities-card').count(), 10);
+
+  // Tower Chaos is still a PLANNED catalog entry, but has an explicit local
+  // experimental preview with genuine WebGL, alternating rules and GPU loss.
+  assert.equal(await fullPage.locator('.bridge-activities-planned').count(),8);
+  await fullPage.locator('[data-game-id="tower-chaos-preview"]').click();
+  await fullPage.locator('canvas.bridge-tower-canvas').waitFor({state:'visible'});
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Player 1.*Moves: 0/);
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-tower-canvas');
+    const gl=canvas?.getContext('webgl2')||canvas?.getContext('webgl');
+    return canvas?.width>0&&canvas.height>0&&
+      Boolean(gl?.getParameter(gl.CURRENT_PROGRAM));
+  },null,{timeout:10000});
+  const towerSelect=fullPage.locator('.bridge-tower-block');
+  assert.equal(await towerSelect.locator('option').count(),15);
+  await towerSelect.selectOption('1');
+  await fullPage.locator('.bridge-tower-remove').click();
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Player 2.*Moves: 1/);
+  await towerSelect.selectOption('0');
+  await fullPage.locator('.bridge-tower-remove').click();
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Winning player 1.*Moves: 2/,
+    'actual rules must award the surviving player after unsupported layer removal');
+  assert.equal(await fullPage.locator('.bridge-tower-remove').isDisabled(),true);
+  await fullPage.locator('canvas.bridge-tower-canvas').evaluate(canvas=>{
+    canvas.dataset.oldTowerCanvas='completed';
+  });
+  await fullPage.locator('.bridge-tower-restart').click();
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-tower-canvas');
+    const gl=canvas?.getContext('webgl2')||canvas?.getContext('webgl');
+    return canvas?.dataset.oldTowerCanvas!=='completed' &&
+      Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)) &&
+      /Player 1.*Moves: 0/.test(
+        document.querySelector('.bridge-tower-status')?.textContent||'');
+  },null,{timeout:10000});
+  await fullPage.locator('canvas.bridge-tower-canvas').evaluate(canvas=>{
+    const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
+    const ext=gl?.getExtension('WEBGL_lose_context');
+    if(!ext)throw Error('Real Chromium Tower WebGL loss extension missing');
+    ext.loseContext();
+  });
+  await fullPage.waitForFunction(()=>
+    document.querySelector('.bridge-tower-remove')?.disabled===true &&
+    document.querySelector('.bridge-tower-restart')?.hidden===false &&
+    /graphics unverified/.test(
+      document.querySelector('.bridge-tower-status')?.textContent||''),
+    null,{timeout:10000});
+  await fullPage.locator('.bridge-tower-restart').click();
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-tower-canvas');
+    const gl=canvas?.getContext('webgl2')||canvas?.getContext('webgl');
+    return Boolean(gl?.getParameter(gl.CURRENT_PROGRAM)) &&
+      document.querySelector('.bridge-tower-remove')?.disabled===false;
+  },null,{timeout:10000});
+  assert.match(await fullPage.locator('.bridge-tower-status').textContent(),
+    /Player 1.*Moves: 0/);
+  await fullPage.locator('.bridge-tower-back').click();
+  assert.equal(await fullPage.locator('.bridge-activities-card').count(),10);
+  console.log('BRIDGE_3D_TOWER_REAL_CHROMIUM_LOCAL_GPU_RULES_LOSS_RECOVERY:1/1:0_skipped');
   // Second playable prototype: actual logged-in Bridge UI, 3D WebGL
   // pocket-practice shot, deterministic local score and reset. Not online 8-ball.
   await fullPage.locator('[data-game-id="eight-ball-pool"]').click();
