@@ -74,6 +74,7 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status()).toContain('Player 1');
     expect(status()).toContain('Break shot');
+    expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-groups')?.textContent)
       .toContain('Player 1: Not assigned');
     expect(document.querySelector<HTMLSelectElement>('.bridge-pool-hotseat-ball')?.options)
@@ -107,6 +108,11 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status()).toContain('Player 2');
     expect(status()).toContain('Illegal break');
+    const last=document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent;
+    expect(last).toContain('Last shot: Player 1');
+    expect(last).toContain('Pocketed: 0');
+    expect(last).toContain('Decision for: Player 2');
+    expect(last).toContain('Foul:');
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled).toBe(true);
     const decisions=[...document.querySelectorAll<HTMLButtonElement>(
       '.bridge-pool-hotseat-decisions button')];
@@ -119,6 +125,7 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     expect(status()).toContain('Player 2');
     expect(status()).toContain('Break shot');
     expect(status()).toContain('Shots: 0');
+    expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent).toBe('');
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled).toBe(false);
   });
 
@@ -130,6 +137,7 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     click('.bridge-pool-hotseat-shoot');
     const status=document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status).toContain('Shots: 0');
+    expect(document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent).toBe('');
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
       .toContain('could not be verified');
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
