@@ -84,6 +84,8 @@
 
 
 import logger from '../lib/logger';
+import { invalidatePerms } from '../lib/permCache';
+import { reconcileSocialRoleChange } from '../lib/socialRoleAccess';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { publishPersistedMessage } from '../lib/channelActivity';
@@ -261,8 +263,19 @@ router.post('/:sid/onboarding/complete', authMiddleware, limits.write(), async (
     } catch (err) { logger.warn({ err, roleId, event: 'onboarding.role.resolve_error' }, 'Onboarding role resolution failed'); }
   }
   if (nextRoles.size !== currentRoles.length) {
-    try { await Members.setRoles(_u.id, sid, [...nextRoles]); }
-    catch (err) { logger.warn({ err, event: 'onboarding.role.assign_error' }, 'Onboarding role assignment failed'); }
+    let assigned = false;
+    try {
+      await Members.setRoles(_u.id, sid, [...nextRoles]);
+      assigned = true;
+    } catch (err) {
+      logger.warn({ err, event: 'onboarding.role.assign_error' }, 'Onboarding role assignment failed');
+    }
+    if (assigned) {
+      // Auto-assigned roles can remove CONNECT by switching the member from
+      // server defaults to an explicit role-only permission mask.
+      invalidatePerms(sid, _u.id);
+      await reconcileSocialRoleChange(req.app.get('io'), sid, _u.id);
+    }
   }
 
   // Send welcome message to welcome channel
