@@ -826,6 +826,35 @@ try {
     document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===false,
     null,{timeout:10000});
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-decisions button').count(),0);
+
+  // Real WebGL context loss must permanently invalidate the current local
+  // game, even if Chromium subsequently restores graphics. A stale physics
+  // callback is never sufficient to restore turn authority.
+  await fullPage.locator('canvas.bridge-pool-canvas').evaluate(canvas=>{
+    const gl=canvas.getContext('webgl2')||canvas.getContext('webgl');
+    const extension=gl?.getExtension('WEBGL_lose_context');
+    if(!extension)throw Error('Local Pool real WebGL context-loss extension missing');
+    window.__bridgePoolRestoreGraphics=()=>extension.restoreContext();
+    extension.loseContext();
+  });
+  await fullPage.waitForFunction(()=>
+    document.querySelector('.bridge-pool-hotseat-notice')?.textContent
+      ?.includes('3D evidence was lost') &&
+    document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===true,
+    null,{timeout:10000});
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-status').textContent(),
+    /Player 2.*Break shot.*Shots: 0/,'context loss must not invent a shot');
+  await fullPage.evaluate(()=>window.__bridgePoolRestoreGraphics());
+  await fullPage.waitForFunction(()=>{
+    const canvas=document.querySelector('canvas.bridge-pool-canvas');
+    const gl=canvas?.getContext('webgl2')||canvas?.getContext('webgl');
+    return Boolean(gl&&!gl.isContextLost()&&gl.getParameter(gl.CURRENT_PROGRAM));
+  },null,{timeout:10000});
+  assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
+    'graphics recovery must not silently re-enable a suspended 8-Ball match');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-notice').textContent(),
+    /3D evidence was lost/);
+
   await fullPage.locator('.bridge-pool-hotseat-back').click();
   assert.match(await fullPage.locator('.bridge-pool-status').textContent(),/Shots: 0/);
   console.log('BRIDGE_3D_POOL_REAL_CHROMIUM_LOCAL_HOTSEAT_BREAK_RERACK:1/1:0_skipped');
@@ -1316,11 +1345,31 @@ try {
   assert.ok(touchLocal.targetHeight>=44,'2-player Pool mobile shoot needs a real touch target');
   assert.equal(touchLocal.webgl,true);
   assert.match(touchLocal.status,/Player 1.*Break shot/);
+  const localMobilePower=mobilePage.locator('input.bridge-pool-hotseat-power');
+  await localMobilePower.tap({position:{x:2,y:20}});
+  assert.equal(await localMobilePower.inputValue(),'10',
+    'real touch must set legal minimum power, not an injected value');
+  await mobilePage.locator('.bridge-pool-hotseat-shoot').tap();
+  await mobilePage.waitForFunction(()=>
+    /Player 2.*Illegal break.*Shots: 1/.test(
+      document.querySelector('.bridge-pool-hotseat-status')?.textContent||''),
+    null,{timeout:15000});
+  assert.equal(await mobilePage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true);
+  await mobilePage.locator('.bridge-pool-hotseat-decisions button').nth(1).tap();
+  await mobilePage.waitForFunction(()=>
+    /Player 2.*Break shot.*Shots: 0/.test(
+      document.querySelector('.bridge-pool-hotseat-status')?.textContent||'') &&
+    document.querySelector('.bridge-pool-hotseat-shoot')?.disabled===false,
+    null,{timeout:10000});
+  assert.deepEqual(mobileErrors,[],
+    'real mobile Chromium local 8-Ball touch must not cause uncaught page errors');
   await mobilePage.locator('.bridge-pool-hotseat-back').tap();
   await mobilePage.locator('.bridge-pool-back').tap();
   assert.equal(await mobilePage.locator('.bridge-activities-card').count(),10);
   await mobilePage.locator('.bridge-activities-close').tap();
   console.log('BRIDGE_3D_POOL_MOBILE_CHROMIUM_TOUCH_LOCAL_HOTSEAT:1/1:0_skipped');
+  console.log('BRIDGE_3D_POOL_MOBILE_CHROMIUM_REAL_TOUCH_TURN_RERACK:1/1:0_skipped');
+  console.log('BRIDGE_3D_POOL_REAL_WEBGL_CONTEXT_LOSS_NO_RESUME:1/1:0_skipped');
   console.log('BRIDGE_3D_POOL_MOBILE_CHROMIUM_TOUCH_SOLO:1/1:0_skipped');
   console.log('BRIDGE_MINI_GOLF_REAL_MOBILE_CHROMIUM_TOUCH:1/1:0_skipped');
 
