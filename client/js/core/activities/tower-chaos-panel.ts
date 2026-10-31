@@ -31,7 +31,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   };
   const back=button(s.backToGames,'bridge-room-direction bridge-tower-back',()=>{
     if(disposed)return;
-    disposed=true;generation++;live?.dispose();live=null;onBack();
+    disposed=true;generation++;canvas.removeEventListener('pointerup',chooseVisibleBlock);
+    live?.dispose();live=null;onBack();
   });
   const heading=node('h3','bridge-mini-golf-heading',s.towerTitle);
   const help=node('p','bridge-activities-help',s.towerHelp);
@@ -50,7 +51,8 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   // performs the rules-validated action, avoiding accidental touch removals.
   const chooseVisibleBlock=(event:PointerEvent)=>{
     if(disposed||blocked||!live?.graphicsAvailable||
-        event.isPrimary===false||event.button!==0||selected.disabled)return;
+        event.currentTarget!==canvas||event.isPrimary===false||
+        event.button!==0||selected.disabled)return;
     const bounds=canvas.getBoundingClientRect();
     const id=towerHitTest(live.match,event.clientX-bounds.left,
       event.clientY-bounds.top,bounds.width,bounds.height);
@@ -110,6 +112,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
     selected.replaceChildren();selected.disabled=true;remove.disabled=true;
     const fresh=node('canvas','bridge-activities-canvas bridge-tower-canvas');
     fresh.setAttribute('aria-label',s.towerTitle);
+    canvas.removeEventListener('pointerup',chooseVisibleBlock);
     canvas.replaceWith(fresh);canvas=fresh;
     canvas.addEventListener('pointerup',chooseVisibleBlock);
     const mine=generation;
@@ -131,5 +134,6 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   }
   begin();
   return {dispose(){if(disposed)return;disposed=true;generation++;
+    canvas.removeEventListener('pointerup',chooseVisibleBlock);
     live?.dispose();live=null;}};
 }
