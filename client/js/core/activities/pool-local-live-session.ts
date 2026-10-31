@@ -14,9 +14,9 @@ import {
 import {type LocalEightBreakChoice} from './pool-eight-on-break.ts';
 
 /**
- * Local-only proof-of-integration adapter. Live 3D physics owns every shot
- * trace; this never accepts a caller-provided post-shot result or sends scores.
- * Not wired into the shipped Activities UI or a networked 8-Ball session.
+ * Local-only live 3D turn adapter used by the experimental Activities
+ * hot-seat screen. Physics owns every shot trace; no caller-provided shot
+ * outcomes or networked 8-Ball scores are accepted.
  */
 export interface LocalHotSeatLiveSession {
   readonly match:LocalHotSeatMatch;
