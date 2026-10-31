@@ -63,6 +63,21 @@ export function showLocalPoolHotSeat(
   aim.type='range';aim.min='-70';aim.max='70';aim.step='5';aim.value='0';
   const power=make('input') as HTMLInputElement;
   power.type='range';power.min='10';power.max='100';power.step='5';power.value='60';
+  // Native range controls expose their number, but not its physical unit.
+  // Keep the visual cue readout and screen-reader range values in sync.
+  const cueStatus=make('output','bridge-room-status bridge-pool-hotseat-cue-values');
+  cueStatus.setAttribute('aria-live','off');
+  function renderCueValues():void {
+    if(disposed||!live||live.status==='blocked'||live.status==='disposed'||
+        !live.graphicsAvailable){cueStatus.textContent='';return;}
+    const angle=aim.value,force=power.value;
+    aim.setAttribute('aria-valuetext',angle+' '+s.poolHotSeatDegrees);
+    power.setAttribute('aria-valuetext',force+' '+s.poolHotSeatPercent);
+    cueStatus.textContent=s.poolHotSeatCueValues+': '+s.poolAim+' '+angle+'° · '+
+      s.poolPower+' '+force+'%';
+  }
+  aim.addEventListener('input',renderCueValues);
+  power.addEventListener('input',renderCueValues);
   const safety=make('input') as HTMLInputElement;
   safety.type='checkbox';safety.className='bridge-pool-hotseat-safety';
   const ball=make('select') as HTMLSelectElement;
@@ -211,6 +226,7 @@ export function showLocalPoolHotSeat(
     safety.disabled=!called;
     ball.disabled=!canCall||safety.checked;
     pocket.disabled=!canCall||safety.checked;
+    renderCueValues();
     renderPreview();
     decisions.replaceChildren();
     if(!available)return;
@@ -241,7 +257,7 @@ export function showLocalPoolHotSeat(
         live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
-  container.append(back,heading,help,canvas,status,groupStatus,inventoryStatus,previewStatus,shotStatus,notice,controls,decisions,restart);
+  container.append(back,heading,help,canvas,status,groupStatus,inventoryStatus,previewStatus,shotStatus,notice,controls,cueStatus,decisions,restart);
   function startFresh():void {
     if(disposed)return;
     // A reset after a finished/invalidated match is a NEW renderer and a NEW
@@ -260,7 +276,7 @@ export function showLocalPoolHotSeat(
     const currentGeneration=generation;
     lastTurnKey=null;
     safety.checked=false;aim.value='0';power.value='60';
-    notice.textContent='';shotStatus.textContent='';inventoryStatus.textContent='';previewStatus.textContent='';
+    notice.textContent='';shotStatus.textContent='';inventoryStatus.textContent='';previewStatus.textContent='';cueStatus.textContent='';
     try {
       const session=startLocalHotSeatLiveSession(canvas,snapshot=>{
         if(!disposed&&generation===currentGeneration)refresh(snapshot);
@@ -271,7 +287,7 @@ export function showLocalPoolHotSeat(
       // No renderer means no playable state or score. Explicit retry stays
       // possible but no stale session is ever reactivated.
       live=null;setRestartVisible(true);
-      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';inventoryStatus.textContent='';previewStatus.textContent='';
+      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';inventoryStatus.textContent='';previewStatus.textContent='';cueStatus.textContent='';
       notice.textContent=s.noWebgl;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
       safety.disabled=true;ball.disabled=true;pocket.disabled=true;
