@@ -97,16 +97,36 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     expect((first[1] as Float32Array).length).toBe((TOWER_BLOCK_COUNT+1)*216);
     expect(driver.uniformMatrix4fv).toHaveBeenCalledTimes(2);
     expect(driver.viewport).toHaveBeenCalledWith(0,0,600,440);
+    expect(handle.select(11)).toBe(true);
+    flush(32);
+    const tinted=driver.bufferData.mock.calls.at(-1)![1] as Float32Array;
+    const initial=first[1] as Float32Array;
+    const pos=(11+1)*216+3;
+    expect([...tinted.slice(pos,pos+3)]).not.toEqual([...initial.slice(pos,pos+3)]);
+    expect([...tinted.slice(0,216)]).toEqual([...initial.slice(0,216)]);
+    expect(handle.match.moves).toBe(0); // selecting never takes a turn
+    expect(handle.select(15)).toBe(false);
+    expect(handle.select(NaN)).toBe(false);
+    expect(handle.select(1.5)).toBe(false);
+    expect(handle.select(11)).toBe(true);
+    expect(handle.select(null)).toBe(true);
+    flush(39);
+    expect([...driver.bufferData.mock.calls.at(-1)![1] as Float32Array])
+      .toEqual([...initial]);
+    expect(handle.select(11)).toBe(true);
     expect(handle.remove(1,1)).toBe(false);
     expect(handle.remove(0,15)).toBe(false);
     expect(handle.remove(0,1)).toBe(true);
     expect(handle.match.currentPlayer).toBe(1);
+    expect(handle.select(1)).toBe(false); // the removed block is no longer legal
     flush(48);
     expect(driver.drawArrays).toHaveBeenLastCalledWith(driver.TRIANGLES,0,
       TOWER_BLOCK_COUNT*36);
     expect(handle.remove(1,0)).toBe(true);
     expect(handle.match.winner).toBe(0);
     expect(handle.remove(1,2)).toBe(false);
+    expect(handle.select(2)).toBe(false);
+    expect(handle.select(null)).toBe(true); // finished match has no selected block
     flush(80);
     expect(driver.drawArrays).toHaveBeenLastCalledWith(driver.TRIANGLES,0,
       (TOWER_BLOCK_COUNT-1)*36);
@@ -116,6 +136,7 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     expect(driver.deleteShader).toHaveBeenCalledTimes(2);
     expect(handle.graphicsAvailable).toBe(false);
     expect(handle.remove(0,4)).toBe(false);
+    expect(handle.select(0)).toBe(false);
     expect(frames.size).toBe(0);
     expect(onLoss).not.toHaveBeenCalled();
   });
@@ -130,6 +151,7 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     expect(handle.graphicsAvailable).toBe(false);
     expect(onLost).toHaveBeenCalledOnce();
     expect(handle.remove(0,1)).toBe(false);
+    expect(handle.select(0)).toBe(false);
     driver.setLost(false);
     el.dispatchEvent(new Event('webglcontextrestored'));
     expect(handle.graphicsAvailable).toBe(false);
@@ -156,6 +178,7 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     document.body.append(el);
     expect(handle.graphicsAvailable).toBe(false); // no detached renderer re-arm
     expect(handle.remove(0,1)).toBe(false);
+    expect(handle.select(null)).toBe(false);
     handle.dispose();
   });
   it('releases partial shader/program/buffer allocations on hard GPU failures',()=>{
