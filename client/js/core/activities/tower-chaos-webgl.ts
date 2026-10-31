@@ -79,9 +79,9 @@ function view():Float32Array {
   const eye=TOWER_CAMERA_EYE;
   return new Float32Array([
     x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,
-    -x.reduce((a,n,i)=>a+n*eye[i],0),
-    -y.reduce((a,n,i)=>a+n*eye[i],0),
-    -z.reduce((a,n,i)=>a+n*eye[i],0),1,
+    -x.reduce((a,n,i)=>a+n*eye[i]!,0),
+    -y.reduce((a,n,i)=>a+n*eye[i]!,0),
+    -z.reduce((a,n,i)=>a+n*eye[i]!,0),1,
   ]);
 }
 
