@@ -31,3 +31,4 @@
 /* En sonda: dar pencere düzeltmeleri önceki breakpoint kurallarını
    kasıtlı olarak geçersiz kılar (kaynak sırası kazanır). */
 @import "./modules/responsive-fixes.css";
+@import "./modules/bridge-activities.css";
