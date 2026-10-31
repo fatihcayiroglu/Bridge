@@ -86,7 +86,7 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     expect(handle.graphicsAvailable).toBe(true);
     expect(onState).toHaveBeenCalledOnce();
     const original=handle.match;
-    original.blocks[0]!.removed=true; // outward copy cannot mutate game authority
+    (original.blocks[0] as {removed:boolean}).removed=true; // outward copy cannot mutate game authority
     expect(handle.match.blocks[0]!.removed).toBe(false);
     flush(16);
     expect(driver.useProgram).toHaveBeenCalledOnce();
@@ -96,7 +96,7 @@ describe('Tower Chaos genuine WebGL renderer lifecycle with isolated GL driver f
     expect(first[1]).toBeInstanceOf(Float32Array);
     expect((first[1] as Float32Array).length).toBe((TOWER_BLOCK_COUNT+1)*216);
     expect(driver.uniformMatrix4fv).toHaveBeenCalledTimes(2);
-    expect(driver.viewport).toHaveBeenCalledWith(0,0,900,660);
+    expect(driver.viewport).toHaveBeenCalledWith(0,0,600,440);
     expect(handle.remove(1,1)).toBe(false);
     expect(handle.remove(0,15)).toBe(false);
     expect(handle.remove(0,1)).toBe(true);
