@@ -95,6 +95,10 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
       .toBe(true);
     expect(document.querySelector('.bridge-pool-status')).toBeNull();
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
+      .toBe(true);
+    click('.bridge-pool-hotseat-restart'); // no early reset even on a synthetic click
+    expect(startPoolPractice).toHaveBeenCalledTimes(2);
     click('.bridge-pool-hotseat-shoot');
     expect(status()).toContain('Shots: 1');
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
@@ -120,6 +124,8 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     const status=()=>document.querySelector('.bridge-pool-hotseat-status')?.textContent;
     expect(status()).toContain('Player 2');
     expect(status()).toContain('Illegal break');
+    expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
+      .toBe(true); // outstanding opponent decision is NOT an end-of-game
     const last=document.querySelector('.bridge-pool-hotseat-last-shot')?.textContent;
     expect(last).toContain('Last shot: Player 1');
     expect(last).toContain('Pocketed: 0');
