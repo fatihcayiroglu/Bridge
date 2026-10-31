@@ -214,6 +214,11 @@ describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer 
     oldLost?.();
     expect(document.querySelector('.bridge-pool-hotseat-notice')?.textContent)
       .toContain('3D evidence was lost');
+    expect(document.querySelector('.bridge-pool-hotseat-cue-values')?.textContent).toBe('');
+    expect(document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-aim')
+      ?.hasAttribute('aria-valuetext')).toBe(false);
+    expect(document.querySelector<HTMLInputElement>('.bridge-pool-hotseat-power')
+      ?.hasAttribute('aria-valuetext')).toBe(false);
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-shoot')?.disabled)
       .toBe(true);
     expect(document.querySelector<HTMLButtonElement>('.bridge-pool-hotseat-restart')?.hidden)
