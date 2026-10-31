@@ -40,6 +40,17 @@ vi.mock('../js/core/activities/tower-chaos-webgl.ts',()=>({
     };
   }),
 }));
+function pointer(target:HTMLCanvasElement,type:string,x:number,y:number,
+  options:{pointerId?:number;button?:number;primary?:boolean}={}):void {
+  const event=new MouseEvent(type,{
+    bubbles:true,clientX:x,clientY:y,button:options.button??0,
+  });
+  Object.defineProperties(event,{
+    pointerId:{value:options.pointerId??1},
+    isPrimary:{value:options.primary??true},
+  });
+  target.dispatchEvent(event);
+}
 function click(selector:string):void{
   const b=document.querySelector<HTMLButtonElement>(selector);
   expect(b).not.toBeNull();b!.click();
@@ -88,22 +99,21 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     } as DOMRect);
     expect(selected.value).toBe('0');
     expect(mock.highlight).toHaveBeenLastCalledWith(0);
-    canvas.dispatchEvent(new MouseEvent('pointerup',{
-      bubbles:true,clientX:289.8,clientY:219.2,button:0,
-    }));
+    pointer(canvas,'pointerup',289.8,219.2); // orphan releases do nothing
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerup',289.8,219.2);
     expect(selected.value).toBe('11');
     expect(mock.highlight).toHaveBeenLastCalledWith(11);
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('Player 1 · Moves: 0'); // pick alone never removes
     expect(document.querySelector('.bridge-tower-notice')?.textContent)
       .toBe('Selected block 12');
-    canvas.dispatchEvent(new MouseEvent('pointerup',{
-      bubbles:true,clientX:999,clientY:999,button:0,
-    }));
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerup',999,999);
     expect(selected.value).toBe('11');
-    canvas.dispatchEvent(new MouseEvent('pointerup',{
-      bubbles:true,clientX:289.8,clientY:219.2,button:2,
-    }));
+    pointer(canvas,'pointerdown',289.8,219.2,{button:2});
+    pointer(canvas,'pointerup',289.8,219.2,{button:2});
     expect(selected.value).toBe('11');
     selected.value='4';selected.dispatchEvent(new Event('change',{bubbles:true}));
     expect(mock.highlight).toHaveBeenLastCalledWith(4);
@@ -116,9 +126,8 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
       .toContain('Player 2 · Moves: 1');
     const loss=mock.lost;
     loss?.();
-    canvas.dispatchEvent(new MouseEvent('pointerup',{
-      bubbles:true,clientX:289.8,clientY:219.2,button:0,
-    }));
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerup',289.8,219.2);
     expect(selected.disabled).toBe(true);
     expect(document.querySelector('.bridge-tower-status')?.textContent)
       .toContain('graphics unverified');
@@ -126,11 +135,41 @@ describe('experimental Tower Chaos shared-device DOM control and renderer lifecy
     const newCanvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
     expect(newCanvas).not.toBe(canvas);
     // A retired event source cannot pick into the active generation.
-    canvas.dispatchEvent(new MouseEvent('pointerup',{
-      bubbles:true,clientX:289.8,clientY:219.2,button:0,
-    }));
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerup',289.8,219.2);
     expect(selected.value).toBe('0');
     expect(document.querySelector('.bridge-tower-notice')?.textContent).toBe('');
+  });
+  it('ignores drag, cancel, leave, changed pointer identity and non-primary input',()=>{
+    showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
+    const selected=document.querySelector<HTMLSelectElement>('.bridge-tower-block')!;
+    const canvas=document.querySelector<HTMLCanvasElement>('.bridge-tower-canvas')!;
+    canvas.getBoundingClientRect=()=>({
+      left:0,top:0,width:600,height:440,
+    } as DOMRect);
+    pointer(canvas,'pointerup',289.8,219.2);
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerup',320,219.2); // moved > 12 CSS pixels
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointercancel',289.8,219.2);
+    pointer(canvas,'pointerup',289.8,219.2);
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerleave',289.8,219.2);
+    pointer(canvas,'pointerup',289.8,219.2);
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2,{pointerId:1});
+    pointer(canvas,'pointerup',289.8,219.2,{pointerId:2});
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2,{primary:false});
+    pointer(canvas,'pointerup',289.8,219.2,{primary:false});
+    expect(selected.value).toBe('0');
+    pointer(canvas,'pointerdown',289.8,219.2);
+    pointer(canvas,'pointerup',289.8,219.2);
+    expect(selected.value).toBe('11');
+    expect(document.querySelector('.bridge-tower-status')?.textContent)
+      .toContain('Player 1 · Moves: 0');
   });
   it('only the active player removes a physical block; collapse ends with the other winner',()=>{
     showBridgeActivities('games');click('[data-game-id="tower-chaos-preview"]');
