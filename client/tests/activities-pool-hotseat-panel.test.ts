@@ -54,6 +54,9 @@ beforeEach(()=>{
   renderer.disposes.mockClear();renderer.mode='real';renderer.emit=null;
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
+  // jsdom does not define HTMLElement.inert unless explicitly initialized.
+  // Mirror the authenticated shell's prior false state before modal entry.
+  document.getElementById('app')!.inert=false;
 });
 afterEach(()=>{
   document.dispatchEvent(new Event('bridge:auth-logout'));
@@ -63,6 +66,7 @@ afterEach(()=>{
 describe('explicit offline 8-ball hot-seat DOM UI with real fixed-step renderer physics',()=>{
   it('keeps solo default, deliberately enters local match, resolves real break and disposes on navigation',()=>{
     showBridgeActivities('games');
+    expect(document.getElementById('app')!.inert).toBe(true);
     expect(document.querySelector('.bridge-pool-hotseat-status')).toBeNull();
     click('[data-game-id="eight-ball-pool"]');
     expect(document.querySelector('.bridge-pool-status')?.textContent).toContain('Shots: 0');
