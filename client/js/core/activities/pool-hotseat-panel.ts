@@ -239,6 +239,7 @@ export function showLocalPoolHotSeat(
       // No renderer means no playable state or score. Explicit retry stays
       // possible but no stale session is ever reactivated.
       live=null;setRestartVisible(true);
+      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';
       notice.textContent=s.noWebgl;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
       safety.disabled=true;ball.disabled=true;pocket.disabled=true;
