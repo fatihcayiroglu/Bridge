@@ -821,10 +821,18 @@ try {
   await fullPage.keyboard.press('ArrowRight');
   assert.equal(await liveAim.inputValue(),'5',
     'the first player deliberately changes cue angle using real Chromium keyboard');
+  assert.equal(await liveAim.getAttribute('aria-valuetext'),'5 degrees');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-cue-values').textContent(),
+    /Cue aim 5°.*Shot power 60%/,
+    'the same live readout must reflect actual keyboard aim input');
   const livePower=fullPage.locator('input.bridge-pool-hotseat-power');
   await livePower.focus();
   await fullPage.keyboard.press('Home');
   assert.equal(await livePower.inputValue(),'10','real keyboard lowers the break to minimum power');
+  assert.equal(await livePower.getAttribute('aria-valuetext'),'10 percent');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-cue-values').textContent(),
+    /Cue aim 5°.*Shot power 10%/,
+    'real keyboard power input updates visible value and screen reader text');
   await fullPage.locator('.bridge-pool-hotseat-shoot').click();
   assert.equal(await fullPage.locator('.bridge-pool-hotseat-shoot').isDisabled(),true,
     'physical shot must lock controls until it settles');
@@ -836,6 +844,11 @@ try {
     'the incoming player must not inherit previous shot aim');
   assert.equal(await livePower.inputValue(),'60',
     'the incoming player must not inherit previous shot power');
+  assert.equal(await liveAim.getAttribute('aria-valuetext'),'0 degrees');
+  assert.equal(await livePower.getAttribute('aria-valuetext'),'60 percent');
+  assert.match(await fullPage.locator('.bridge-pool-hotseat-cue-values').textContent(),
+    /Cue aim 0°.*Shot power 60%/,
+    "the incoming player's readout cannot retain the previous cue values");
   const lastShotText=await fullPage.locator('.bridge-pool-hotseat-last-shot').textContent();
   assert.match(lastShotText,/Last shot: Player 1.*Pocketed: 0.*Foul:.*Decision for: Player 2/,
     'narration must derive from settled physical break and the recorded foul');
