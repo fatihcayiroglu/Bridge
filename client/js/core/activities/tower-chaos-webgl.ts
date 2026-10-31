@@ -3,6 +3,7 @@ import {
   type TowerMatch,type TowerPlayer,
 } from './tower-chaos-physics.ts';
 import {towerChaosGeometry} from './tower-chaos-geometry.ts';
+import {TOWER_CAMERA_EYE,TOWER_TAN_HALF_FOV,towerCameraBasis} from './tower-chaos-picking.ts';
 import {
   selectSocialWebGLContext,socialRoomShaderSources,socialRoomRenderSize,
 } from './social-room-render-policy.ts';
@@ -67,28 +68,23 @@ function release(gl:Gl,gpu:Gpu):void {
   gl.deleteShader(gpu.vertex);gl.deleteShader(gpu.fragment);
 }
 function projection(aspect:number):Float32Array {
-  const f=1/Math.tan(Math.PI/5),near=.1,far=45;
+  const f=1/TOWER_TAN_HALF_FOV,near=.1,far=45;
   return new Float32Array([
     f/aspect,0,0,0,0,f,0,0,0,0,(far+near)/(near-far),-1,
     0,0,2*far*near/(near-far),0,
   ]);
 }
 function view():Float32Array {
-  const eye=[5,5.5,8],focus=[0,1.15,0];
-  const unit=(v:number[]):number[]=>{
-    const d=Math.hypot(...v)||1;return v.map(n=>n/d);
-  };
-  const z=unit(eye.map((n,i)=>n-focus[i]!));
-  const x=unit([z[2]!,0,-z[0]!]);
-  const y=[z[1]!*x[2]!-z[2]!*x[1]!,z[2]!*x[0]!-z[0]!*x[2]!,
-    z[0]!*x[1]!-z[1]!*x[0]!];
+  const {right:x,up:y,back:z}=towerCameraBasis();
+  const eye=TOWER_CAMERA_EYE;
   return new Float32Array([
-    x[0]!,y[0]!,z[0]!,0,x[1]!,y[1]!,z[1]!,0,x[2]!,y[2]!,z[2]!,0,
+    x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,
     -x.reduce((a,n,i)=>a+n*eye[i]!,0),
     -y.reduce((a,n,i)=>a+n*eye[i]!,0),
     -z.reduce((a,n,i)=>a+n*eye[i]!,0),1,
   ]);
 }
+
 const copyMatch=(m:TowerMatch):TowerMatch=>({
   ...m,blocks:m.blocks.map(b=>({...b})),
   last:m.last?{...m.last}:null,
