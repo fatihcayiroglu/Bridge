@@ -15,6 +15,7 @@ on:
       - 'client/tests/tower-chaos-physics.test.ts'
       - 'client/tests/tower-chaos-geometry.test.ts'
       - 'client/tests/activities-tower-chaos-panel.test.ts'
+      - 'client/tests/tower-chaos-webgl-lifecycle.test.ts'
       - 'client/tests/social-room-client.test.ts'
       - 'client/tests/social-room-render-policy.test.ts'
       - 'e2e/scripts/social-room-webgl-smoke.mjs'
@@ -47,7 +48,7 @@ jobs:
       - name: Focused feature Vitest, zero skips
         run: |
           cd client
-          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts tests/social-room-client.test.ts tests/social-room-render-policy.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts tests/activities-tower-chaos-panel.test.ts --reporter=json --outputFile=activities-3d-proof.json
+          node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts tests/bridge-activities-foundation.test.ts tests/social-room-client.test.ts tests/social-room-render-policy.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts tests/activities-tower-chaos-panel.test.ts tests/tower-chaos-webgl-lifecycle.test.ts --reporter=json --outputFile=activities-3d-proof.json
           node - <<'NODE'
           const fs = require('node:fs');
           const r = JSON.parse(fs.readFileSync('activities-3d-proof.json', 'utf8'));
