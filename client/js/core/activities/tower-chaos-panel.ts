@@ -76,6 +76,16 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
         event.clientY>rect.top+rect.height)return;
     pressed={pointerId:event.pointerId,x:event.clientX,y:event.clientY,generation};
   };
+  const trackPress=(event:PointerEvent)=>{
+    const start=pressed;
+    if(!start||start.pointerId!==event.pointerId)return;
+    // Pointermove reports button=-1 on hover in some implementations, so
+    // validate the identity and coordinates instead of reusing eligible().
+    if(event.isPrimary!==true||!Number.isFinite(event.clientX)||
+        !Number.isFinite(event.clientY)||
+        Math.hypot(event.clientX-start.x,event.clientY-start.y)>12)
+      pressed=null;
+  };
   const chooseVisibleBlock=(event:PointerEvent)=>{
     const start=pressed;pressed=null;
     if(!start||disposed||blocked||!live?.graphicsAvailable||
@@ -91,6 +101,7 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   };
   const bindCanvasPicking=(target:HTMLCanvasElement)=>{
     target.addEventListener('pointerdown',pressStart);
+    target.addEventListener('pointermove',trackPress);
     target.addEventListener('pointerup',chooseVisibleBlock);
     target.addEventListener('pointercancel',clearPress);
     target.addEventListener('pointerleave',clearPress);
@@ -98,11 +109,14 @@ export function showTowerChaosPanel(container:HTMLElement,onBack:()=>void):
   const retireCanvasPicking=(target:HTMLCanvasElement)=>{
     pressed=null;
     target.removeEventListener('pointerdown',pressStart);
+    target.removeEventListener('pointermove',trackPress);
     target.removeEventListener('pointerup',chooseVisibleBlock);
     target.removeEventListener('pointercancel',clearPress);
     target.removeEventListener('pointerleave',clearPress);
   };
   const remove=button(s.towerRemove,'bridge-room-direction bridge-tower-remove',()=>{
+    // A held pointer belongs to the old turn; release must not select in the next.
+    clearPress();
     if(disposed||blocked||!live||!live.graphicsAvailable||
         !live.remove(live.match.currentPlayer,Number(selected.value))){
       notice.textContent=s.towerInvalid;return;
