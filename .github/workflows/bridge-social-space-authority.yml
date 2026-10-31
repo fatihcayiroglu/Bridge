@@ -185,6 +185,8 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
+      - name: Syntax-check real Chromium 3D entrypoint before costly dependencies
+        run: node --check e2e/scripts/social-room-real-browser-webgl-smoke.mjs
       - name: Install locked dependencies
         run: |
           npm ci --no-audit --no-fund
