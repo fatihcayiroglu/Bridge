@@ -7,6 +7,7 @@ import {activityStringsForLanguage} from './bridge-activities-copy.ts';
 import {localHotSeatCallBallIds} from './pool-hotseat-call-options.ts';
 import {localPoolShotSummary} from './pool-hotseat-shot-summary.ts';
 import {localHotSeatInventory} from './pool-hotseat-inventory.ts';
+import {localPoolShotPreview} from './pool-hotseat-shot-preview.ts';
 
 
 export interface LocalPoolHotSeatPanelHandle { dispose():void; }
@@ -47,6 +48,8 @@ export function showLocalPoolHotSeat(
   status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   const groupStatus=make('p','bridge-room-status bridge-pool-hotseat-groups');
   const inventoryStatus=make('p','bridge-room-status bridge-pool-hotseat-inventory');
+  const previewStatus=make('p','bridge-room-status bridge-pool-hotseat-preview');
+  previewStatus.setAttribute('role','status');previewStatus.setAttribute('aria-live','polite');
   const shotStatus=make('p','bridge-room-status bridge-pool-hotseat-last-shot');
   shotStatus.setAttribute('role','status');shotStatus.setAttribute('aria-live','polite');
   const notice=make('p','bridge-room-status bridge-pool-hotseat-notice');
@@ -83,6 +86,8 @@ export function showLocalPoolHotSeat(
     field(s.poolCallBall,'bridge-pool-hotseat-ball',ball),
     field(s.poolCallPocket,'bridge-pool-hotseat-pocket',pocket),shoot);
   safety.addEventListener('change',()=>{if(live)refresh(live.match);});
+  ball.addEventListener('change',renderPreview);
+  pocket.addEventListener('change',renderPreview);
   const decisions=make('div','bridge-mini-golf-controls bridge-pool-hotseat-decisions');
   const restart=button(s.poolHotSeatRestart,'bridge-room-direction bridge-pool-hotseat-restart',()=>{
     if(disposed||restart.hidden)return;
@@ -134,16 +139,31 @@ export function showLocalPoolHotSeat(
     'no-rail-after-contact':s.poolHotSeatFoulNoRail,
     'illegal-break':s.poolHotSeatFoulBreak,
   };
+  function renderPreview():void {
+    if(disposed||!live||live.status!=='ready'||!live.graphicsAvailable){
+      previewStatus.textContent='';return;
+    }
+    const preview=localPoolShotPreview(live.match,safety.checked,
+      Number(ball.value),Number(pocket.value));
+    previewStatus.textContent=preview
+      ?s.poolHotSeatPreview+': '+s.poolHotSeatPlayer+' '+(preview.player+1)+' · '+
+       (preview.kind==='break'?s.poolHotSeatPreviewBreak:
+        preview.kind==='safety'?s.poolHotSeatPreviewSafety:
+         s.poolHotSeatPreviewBall+' '+preview.ballId+' · '+s.poolHotSeatPreviewPocket+' '+
+           s.poolPocketNames[preview.pocketIndex])
+      :'';
+  }
   function refresh(snapshot:LocalHotSeatMatch):void {
     if(disposed)return;
     const rules=snapshot.rules,actor=rules.currentPlayer;
     const turnKey=rules.shotsResolved+':'+actor;
-    if(lastTurnKey!==turnKey){
-      // Safety is always a deliberate per-turn choice, never an inherited
-      // selection that silently passes the next player's turn.
-      safety.checked=false;lastTurnKey=turnKey;
+    const isNewTurn=lastTurnKey!==turnKey;
+    if(isNewTurn){
+      // A shared device must never carry a previous player's declared shot
+      // into the next player's turn, even when that ball is still legal.
+      safety.checked=false;pocket.selectedIndex=0;lastTurnKey=turnKey;
     }
-    const previousBall=ball.value;
+    const previousBall=isNewTurn?'':ball.value;
     const calledIds=localHotSeatCallBallIds(snapshot);
     ball.replaceChildren(...calledIds.map(id=>{
       const option=make('option','',String(id));option.value=String(id);return option;
@@ -188,6 +208,7 @@ export function showLocalPoolHotSeat(
     safety.disabled=!called;
     ball.disabled=!canCall||safety.checked;
     pocket.disabled=!canCall||safety.checked;
+    renderPreview();
     decisions.replaceChildren();
     if(!available)return;
     if(rules.phase==='choose-group'){
@@ -217,7 +238,7 @@ export function showLocalPoolHotSeat(
         live!.placeCue(actor,Number(x.value),Number(z.value)));
     }
   }
-  container.append(back,heading,help,canvas,status,groupStatus,inventoryStatus,shotStatus,notice,controls,decisions,restart);
+  container.append(back,heading,help,canvas,status,groupStatus,inventoryStatus,previewStatus,shotStatus,notice,controls,decisions,restart);
   function startFresh():void {
     if(disposed)return;
     // A reset after a finished/invalidated match is a NEW renderer and a NEW
@@ -236,7 +257,7 @@ export function showLocalPoolHotSeat(
     const currentGeneration=generation;
     lastTurnKey=null;
     safety.checked=false;aim.value='0';power.value='60';
-    notice.textContent='';shotStatus.textContent='';inventoryStatus.textContent='';
+    notice.textContent='';shotStatus.textContent='';inventoryStatus.textContent='';previewStatus.textContent='';
     try {
       const session=startLocalHotSeatLiveSession(canvas,snapshot=>{
         if(!disposed&&generation===currentGeneration)refresh(snapshot);
@@ -247,7 +268,7 @@ export function showLocalPoolHotSeat(
       // No renderer means no playable state or score. Explicit retry stays
       // possible but no stale session is ever reactivated.
       live=null;setRestartVisible(true);
-      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';inventoryStatus.textContent='';
+      status.textContent=s.poolHotSeatBlocked;groupStatus.textContent='';inventoryStatus.textContent='';previewStatus.textContent='';
       notice.textContent=s.noWebgl;
       shoot.disabled=true;aim.disabled=true;power.disabled=true;
       safety.disabled=true;ball.disabled=true;pocket.disabled=true;
