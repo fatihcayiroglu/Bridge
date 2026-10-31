@@ -22,7 +22,9 @@
     "rootDir": "../",
     "types": [
       "node"
-    ]
+    ],
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "**/*.ts",

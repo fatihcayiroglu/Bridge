@@ -1,0 +1,292 @@
+name: Bridge 3D Social Space authority (supplemental)
+
+# An isolated additional proof lane, NOT a substitute for Quality Gate or real
+# PostgreSQL/Redis cluster, mobile, security, or end-to-end acceptance.
+on:
+  pull_request:
+    branches:
+      - main
+      - codex/activities-3d-social-room-foundation-20261030
+      - codex/activities-3d-social-presence-authority-20261030
+      - codex/activities-3d-context-recovery-20261030
+      - codex/activities-3d-live-socket-proof-20261030
+      - codex/activities-3d-postgres-jwt-acceptance-20261030
+      - codex/activities-3d-social-eviction-scope-20261030
+      - codex/activities-3d-redis-peer-eviction-20261030
+      - codex/activities-3d-revocation-join-fence-20261030
+      - codex/activities-3d-role-access-eviction-20261030
+      - codex/activities-3d-automatic-role-revocation-20261030
+      - codex/activities-3d-two-node-socket-cluster-20261030
+      - codex/activities-3d-production-socket-bootstrap-20261030
+      - codex/activities-3d-real-browser-two-users-20261030
+      - codex/activities-3d-real-browser-context-recovery-20261030
+      - codex/activities-3d-browser-membership-revocation-20261030
+      - codex/activities-3d-social-error-ghost-cleanup-20261030
+      - codex/activities-3d-dual-webgl-context-dpr-20261030
+      - codex/activities-3d-real-panel-browser-proof-20261030
+      - codex/activities-3d-shipped-html-css-csp-20261030
+      - codex/activities-3d-multiserver-event-isolation-20261030
+      - codex/activities-3d-real-login-full-shell-e2e-20261030
+      - codex/activities-3d-mini-golf-solo-practice-20261030
+      - codex/activities-mini-golf-authoritative-two-player-contract-20261030
+      - codex/activities-mini-golf-explicit-online-ui-20261030
+      - codex/bridge-npm-audit-safe-upgrades-20261030
+      - codex/activities-mini-golf-reconnect-grace-20261030
+      - codex/activities-mini-golf-consensual-rematch-20261030
+      - codex/activities-mini-golf-ranked-results-mobile-touch-20261030
+      - codex/activities-mini-golf-mobile-online-two-player-20261030
+      - codex/activities-mini-golf-2to8-copy-20261030
+      - codex/activities-pool-solo-practice-20261030
+      - codex/activities-client-coverage-gate-20261030
+      - codex/activities-focus-trap-accessibility-20261030
+      - codex/activities-real-chromium-focus-20261030
+      - codex/activities-pool-full-rack-practice-20261030
+      - codex/activities-pool-shot-trace-eightball-rules-20261030
+      - codex/activities-pool-legal-break-four-rails-20261030
+      - codex/activities-pool-ball-in-hand-legal-placement-20261030
+      - codex/activities-pool-called-pocket-contract-20261030
+      - codex/activities-pool-eight-break-respot-20261030
+      - codex/activities-pool-called-pocket-practice-ui-20261030
+      - codex/activities-pool-safe-local-placement-renderer-20261031
+      - chatgpt/activities-pool-snapshot-boundary-20261031
+      - chatgpt/activities-pool-detached-canvas-guard-20261031
+      - chatgpt/activities-mini-golf-state-lifecycle-20261031
+      - chatgpt/activities-pool-called-practice-inventory-20261031
+      - chatgpt/activities-local-eightball-turn-coordinator-20261031
+      - chatgpt/activities-local-eightball-live-renderer-session-20261031
+      - chatgpt/activities-eightball-local-hotseat-ui-20261031
+      - chatgpt/activities-eightball-real-chromium-proof-20261031
+      - chatgpt/activities-eightball-browser-loss-touch-20261031
+      - chatgpt/activities-pool-hotseat-legal-call-controls-20261031
+      - chatgpt/activities-pool-hotseat-keyboard-focus-20261031
+      - chatgpt/activities-pool-hotseat-shot-status-20261031
+      - chatgpt/activities-pool-hotseat-explicit-restart-20261031
+      - chatgpt/activities-pool-local-inventory-scoreboard-20261031
+      - chatgpt/activities-pool-local-call-preview-20261031
+      - chatgpt/activities-pool-per-turn-cue-safety-20261031
+      - chatgpt/activities-pool-verified-call-options-20261031
+      - chatgpt/activities-pool-cue-a11y-values-20261031
+      - chatgpt/activities-tower-chaos-local-physics-20261031
+      - chatgpt/activities-tower-chaos-webgl-preview-20261031
+    paths:
+      - 'server/socket/handlers/mini-golf*.ts'
+      - 'server/tests/mini-golf-authority.test.ts'
+      - 'server/socket/handlers/social-room*.ts'
+      - 'server/socket/handlers/social-room-eviction.ts'
+      - 'server/lib/liveMembership.ts'
+      - 'server/routes/roles.ts'
+      - 'server/lib/socialRoleAccess.ts'
+      - 'server/plugins/actions.ts'
+      - 'server/socket/handlers/messages-edit.ts'
+      - 'server/routes/onboarding.ts'
+      - 'server/tests/social-role-mutation-hooks.test.ts'
+      - 'server/tests/plugin-actions.test.ts'
+      - 'server/tests/messages-edit.test.ts'
+      - 'server/tests/onboarding.test.ts'
+      - 'server/tests/live-membership-eviction.test.ts'
+      - 'server/socket/index.ts'
+      - 'server/tests/social-room-authority.test.ts'
+      - 'server/scripts/social-room-real-redis-proof.cjs'
+      - 'server/scripts/social-room-real-socket-proof.cjs'
+      - 'server/scripts/social-room-real-pg-jwt-proof.cjs'
+      - 'server/scripts/social-room-two-node-redis-pg-proof.cjs'
+      - 'server/scripts/social-room-production-socket-two-node-proof.cjs'
+      - 'server/scripts/social-room-real-browser-fixture.cjs'
+      - 'client/js/core/activities/social-room-client.ts'
+      - 'client/js/core/activities/bridge-game-catalog.ts'
+      - 'client/js/core/activities/mini-golf-client.ts'
+      - 'client/tests/mini-golf-online-client.test.ts'
+      - 'client/js/core/activities/mini-golf-physics.ts'
+      - 'client/js/core/activities/mini-golf-webgl.ts'
+      - 'client/tests/mini-golf-physics.test.ts'
+      - 'client/js/core/activities/bridge-activities-panel.ts'
+      - 'client/js/core/activities/bridge-activities-copy.ts'
+      - 'client/tests/bridge-activities-copy.test.ts'
+      - 'client/js/core/activities/pool-practice-physics.ts'
+      - 'client/js/core/activities/pool-practice-webgl.ts'
+      - 'client/tests/pool-practice-physics.test.ts'
+      - 'client/tests/prototypes/pool-eight-ball-rules.ts'
+      - 'client/tests/prototypes/pool-local-hotseat.ts'
+      - 'client/tests/pool-local-hotseat.test.ts'
+      - 'client/tests/prototypes/pool-local-live-session.ts'
+      - 'client/tests/pool-local-live-session.test.ts'
+      - 'client/js/core/activities/pool-eight-ball-rules.ts'
+      - 'client/js/core/activities/pool-called-pocket.ts'
+      - 'client/js/core/activities/pool-ball-in-hand.ts'
+      - 'client/js/core/activities/pool-eight-on-break.ts'
+      - 'client/js/core/activities/pool-local-hotseat.ts'
+      - 'client/js/core/activities/pool-local-live-session.ts'
+      - 'client/js/core/activities/pool-hotseat-panel.ts'
+      - 'client/js/core/activities/pool-hotseat-call-options.ts'
+      - 'client/js/core/activities/pool-hotseat-shot-summary.ts'
+      - 'client/js/core/activities/pool-hotseat-inventory.ts'
+      - 'client/js/core/activities/pool-hotseat-shot-preview.ts'
+      - 'client/js/core/activities/tower-chaos-physics.ts'
+      - 'client/js/core/activities/tower-chaos-geometry.ts'
+      - 'client/js/core/activities/tower-chaos-webgl.ts'
+      - 'client/js/core/activities/tower-chaos-panel.ts'
+      - 'client/tests/activities-tower-chaos-panel.test.ts'
+      - 'client/tests/tower-chaos-webgl-lifecycle.test.ts'
+      - 'client/js/core/activities/tower-chaos-hit-test.ts'
+      - 'client/tests/tower-chaos-hit-test.test.ts'
+      - 'client/tests/tower-chaos-physics.test.ts'
+      - 'client/tests/tower-chaos-geometry.test.ts'
+      - 'client/tests/pool-hotseat-shot-preview.test.ts'
+      - 'client/tests/pool-hotseat-inventory.test.ts'
+      - 'client/tests/pool-hotseat-shot-summary.test.ts'
+      - 'client/tests/pool-hotseat-call-options.test.ts'
+      - 'client/tests/activities-pool-hotseat-panel.test.ts'
+      - 'client/tests/pool-eight-ball-rules.test.ts'
+      - 'client/tests/pool-ball-in-hand.test.ts'
+      - 'client/tests/prototypes/pool-called-pocket.ts'
+      - 'client/tests/pool-called-pocket.test.ts'
+      - 'client/tests/prototypes/pool-eight-on-break.ts'
+      - 'client/tests/pool-eight-on-break.test.ts'
+      - 'client/js/core/activities/pool-practice-call.ts'
+      - 'client/js/core/activities/pool-local-placement.ts'
+      - 'client/tests/pool-local-placement.test.ts'
+      - 'client/tests/pool-practice-call.test.ts'
+      - 'client/tests/prototypes/pool-ball-in-hand.ts'
+      - 'client/tests/activities-webgl-renderer-lifecycle.test.ts'
+      - 'client/tests/activities-panel-dom-lifecycle.test.ts'
+      - 'client/tests/bridge-activities-foundation.test.ts'
+      - 'client/tests/social-room-session-fail-closed-coverage.test.ts'
+      - 'client/tests/activities-entry-lazy-boundary-coverage.test.ts'
+      - 'client/js/core/activities/bridge-activities-entry.ts'
+      - 'client/index.html'
+      - 'client/css/style.css'
+      - 'client/css/modules/bridge-activities.css'
+      - 'e2e/scripts/social-room-browser-entry.ts'
+      - 'e2e/scripts/social-room-real-browser-webgl-smoke.mjs'
+      - '.github/workflows/bridge-social-space-authority.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  social-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: bridge_social_3d_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: social_only_test_password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_social_3d_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Syntax-check real Chromium 3D entrypoint before costly dependencies
+        run: node --check e2e/scripts/social-room-real-browser-webgl-smoke.mjs
+      - name: Install locked dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+      - name: Strict server, client and test types
+        run: |
+          npm run typecheck:server
+          npm run typecheck:client
+          cd server && npm run typecheck:test-strict
+      - name: Real social-room and mini-golf handler contract tests, zero skipped
+        working-directory: server
+        run: |
+          node node_modules/jest/bin/jest.js --runInBand --runTestsByPath tests/mini-golf-authority.test.ts tests/social-room-authority.test.ts tests/live-membership-eviction.test.ts tests/social-role-mutation-hooks.test.ts tests/plugin-actions.test.ts tests/messages-edit.test.ts tests/onboarding.test.ts --json --outputFile=social-room-evidence.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync('social-room-evidence.json', 'utf8'));
+          if (!Number.isSafeInteger(r.numTotalTests) || r.numTotalTests < 49 ||
+              r.numFailedTests !== 0 || r.numPendingTests !== 0 ||
+              r.numPassedTests !== r.numTotalTests) {
+            console.error('SOCIAL_3D_AUTHORITY_TESTS_UNQUALIFIED');
+            process.exit(1);
+          }
+          console.log('SOCIAL_3D_AUTHORITY_TESTS:' + r.numPassedTests + '/' + r.numTotalTests + ':0_skipped');
+          NODE
+      - name: 3D games local physics, online protocol and copy contracts
+        run: cd client && npx vitest run --config vitest.config.mts tests/mini-golf-physics.test.ts tests/mini-golf-online-client.test.ts tests/bridge-activities-copy.test.ts tests/pool-practice-physics.test.ts tests/pool-eight-ball-rules.test.ts tests/pool-ball-in-hand.test.ts tests/pool-called-pocket.test.ts tests/pool-eight-on-break.test.ts tests/pool-practice-call.test.ts tests/pool-local-placement.test.ts tests/activities-webgl-renderer-lifecycle.test.ts tests/activities-panel-dom-lifecycle.test.ts tests/activities-pool-hotseat-panel.test.ts tests/pool-local-hotseat.test.ts tests/pool-hotseat-call-options.test.ts tests/pool-hotseat-shot-summary.test.ts tests/pool-hotseat-inventory.test.ts tests/pool-hotseat-shot-preview.test.ts tests/tower-chaos-physics.test.ts tests/tower-chaos-geometry.test.ts tests/activities-tower-chaos-panel.test.ts tests/tower-chaos-webgl-lifecycle.test.ts tests/tower-chaos-hit-test.test.ts tests/pool-local-live-session.test.ts tests/bridge-activities-foundation.test.ts tests/social-room-session-fail-closed-coverage.test.ts tests/activities-entry-lazy-boundary-coverage.test.ts
+      - name: Design system token and modal stacking ratchets (no exemptions)
+        run: cd client && npx vitest run --config vitest.config.mts tests/design-system-tokens.test.ts tests/z-index-scale.test.ts
+      - name: Server build
+        run: cd server && npm run build
+      - name: Production client HTML and stylesheet build
+        run: npm run build
+      - name: Two real independent Node processes against real Redis 7
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+        run: cd server && node scripts/social-room-real-redis-proof.cjs
+      - name: Two live Socket.IO clients + real Redis 7 cross-client events
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+        run: cd server && node scripts/social-room-real-socket-proof.cjs
+      - name: Real PostgreSQL membership, Bridge JWT and Redis live 3D sockets
+        env:
+          NODE_ENV: integration
+          DATABASE_URL: postgresql://bridge:social_only_test_password@127.0.0.1:5432/bridge_social_3d_test
+          REDIS_URL: redis://127.0.0.1:6379
+          JWT_SECRET: ci_social_3d_access_secret_32_chars_minimum
+          REFRESH_SECRET: ci_social_3d_refresh_secret_32_chars_minimum
+          BRIDGE_AUTO_MIGRATE: 'true'
+          BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
+        run: cd server && node scripts/social-room-real-pg-jwt-proof.cjs
+      - name: Two independent Socket.IO servers, real PostgreSQL 16 JWT and Redis 7 pub/sub
+        env:
+          NODE_ENV: integration
+          DATABASE_URL: postgresql://bridge:social_only_test_password@127.0.0.1:5432/bridge_social_3d_test
+          REDIS_URL: redis://127.0.0.1:6379
+          JWT_SECRET: ci_social_3d_access_secret_32_chars_minimum
+          REFRESH_SECRET: ci_social_3d_refresh_secret_32_chars_minimum
+          BRIDGE_AUTO_MIGRATE: 'true'
+          BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
+        run: cd server && node scripts/social-room-two-node-redis-pg-proof.cjs
+      - name: Two-node real production Socket.IO middleware and Redis/PG acceptance
+        env:
+          NODE_ENV: integration
+          DATABASE_URL: postgresql://bridge:social_only_test_password@127.0.0.1:5432/bridge_social_3d_test
+          REDIS_URL: redis://127.0.0.1:6379
+          JWT_SECRET: ci_social_3d_access_secret_32_chars_minimum
+          REFRESH_SECRET: ci_social_3d_refresh_secret_32_chars_minimum
+          BRIDGE_AUTO_MIGRATE: 'true'
+          BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
+        run: cd server && node scripts/social-room-production-socket-two-node-proof.cjs
+      - name: Real Chromium two-user WebGL2/WebGL1 and shipped Activities panel + Socket.IO/PG/Redis
+        env:
+          NODE_ENV: integration
+          DATABASE_URL: postgresql://bridge:social_only_test_password@127.0.0.1:5432/bridge_social_3d_test
+          REDIS_URL: redis://127.0.0.1:6379
+          JWT_SECRET: ci_social_3d_access_secret_32_chars_minimum
+          REFRESH_SECRET: ci_social_3d_refresh_secret_32_chars_minimum
+          BRIDGE_AUTO_MIGRATE: 'true'
+          BRIDGE_SOCIAL_3D_MULTIPLAYER: '1'
+        run: |
+          cd e2e
+          npm ci --no-audit --no-fund
+          node scripts/social-room-real-browser-webgl-smoke.mjs
+      - name: Preserve exact-head first attempt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: social-room-authority-proof
+          path: server/social-room-evidence.json
+          if-no-files-found: warn
