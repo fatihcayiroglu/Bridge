@@ -57,6 +57,7 @@ on:
       - chatgpt/activities-eightball-local-hotseat-ui-20261031
       - chatgpt/activities-eightball-real-chromium-proof-20261031
       - chatgpt/activities-eightball-browser-loss-touch-20261031
+      - chatgpt/activities-pool-hotseat-legal-call-controls-20261031
     paths:
       - 'server/socket/handlers/mini-golf*.ts'
       - 'server/tests/mini-golf-authority.test.ts'
