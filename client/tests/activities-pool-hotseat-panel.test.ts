@@ -63,7 +63,8 @@ function click(selector:string):void {
   el!.click();
 }
 beforeEach(()=>{
-  renderer.disposes.mockClear();renderer.mode='real';renderer.emit=null;renderer.lose=null;
+  renderer.disposes.mockClear();vi.mocked(startPoolPractice).mockClear();
+  renderer.mode='real';renderer.emit=null;renderer.lose=null;
   document.documentElement.lang='en';
   document.body.innerHTML='<button id="origin">Before</button><main id="app"></main>';
   // jsdom does not define HTMLElement.inert unless explicitly initialized.
